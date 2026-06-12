@@ -1,0 +1,14 @@
+---
+extends: existence
+ignorecase: true
+level: warning
+link: https://redhat-documentation.github.io/vale-at-red-hat/docs/reference-guide/slash/
+message: "Use either 'or' or 'and' in '%s'"
+tokens:
+  - '\w+/\w+'
+exceptions:
+  - "I/O"
+  - "SSL/TLS"
+  - "upstream/downstream"
+  - "z/OS"
+  - "z/OSMF"

@@ -1,0 +1,115 @@
+# Gohookbridge Server Kubernetes Deployment
+#
+# This manifest deploys the gohookbridge server component that receives webhooks from external sources
+# and relays them to gohookbridge clients. Use this when you need to expose a public endpoint for
+# receiving webhooks in your Kubernetes cluster.
+#
+# Configuration:
+# - Adjust --public-url to your actual domain where the service will be exposed
+# - Configure appropriate resource limits based on expected traffic
+# - For production use, consider setting up an Ingress with TLS or use a service mesh
+# - Raft data is stored on a PersistentVolumeClaim for durability across restarts
+# - To bootstrap initial config, create a ConfigMap or Secret with bootstrap.yaml
+#   and reference it via --bootstrap-config-file
+#
+# Usage:
+# kubectl apply -f gohookbridge-server-deployment.yaml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gohookbridge-server
+  labels:
+    app: gohookbridge-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gohookbridge-server
+  template:
+    metadata:
+      labels:
+        app: gohookbridge-server
+    spec:
+      containers:
+        - image: ghcr.io/webcenter-fr/gohookbridge:main
+          imagePullPolicy: Always
+          name: gohookbridge-server
+          args:
+            [
+              "server",
+              "--port",
+              "3333",
+              "--address",
+              "0.0.0.0",
+              "--public-url",
+              "https://yourserver.example.com",
+              "--raft-dir",
+              "/data/raft",
+              "--raft-node-id",
+              "node1",
+              "--raft-bind-addr",
+              "0.0.0.0:6001",
+            ]
+          ports:
+            - containerPort: 3333
+              name: http
+              protocol: TCP
+            - containerPort: 6001
+              name: raft
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3333
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3333
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 200m
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - "ALL"
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /data/raft
+              name: raft-data
+            - mountPath: /tmp
+              name: tmp-volume
+      volumes:
+        - name: raft-data
+          emptyDir: {}
+        - name: tmp-volume
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gohookbridge-server
+spec:
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 3333
+  selector:
+    app: gohookbridge-server
+  type: ClusterIP

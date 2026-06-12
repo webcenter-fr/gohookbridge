@@ -1,0 +1,131 @@
+before:
+  hooks:
+    - /bin/sh -c "printf {{.Version }} > gohookbridge/templates/version"
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    main: ./
+    binary: gohookbridge
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - s390x
+      - ppc64le
+    ldflags:
+      - -w
+      - -s
+archives:
+  - name_template: >-
+      {{ .Binary }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else if eq .Arch "darwin" }}MacOS
+      {{- else if eq .Arch "linux" }}Linux
+      {{- else if eq .Arch "windows" }}Windows
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+brews:
+  - name: gohookbridge
+    repository:
+      owner: webcenter-fr
+      name: gohookbridge
+    directory: Formula
+    homepage: "https://github.com/webcenter-fr/gohookbridge"
+    description: "gohookbridge - A webhook and https://smee.io forwarder"
+    install: |
+      bin.install "gohookbridge" => "gohookbridge"
+      output = Utils.popen_read("SHELL=bash #{bin}/gohookbridge completion bash")
+      (bash_completion/"gohookbridge").write output
+      output = Utils.popen_read("SHELL=zsh #{bin}/gohookbridge completion zsh")
+      (zsh_completion/"_gohookbridge").write output
+      output = Utils.popen_read("SHELL=zsh #{bin}/gohookbridge completion fish")
+      (fish_completion/"gohookbridge.fish").write output
+      prefix.install_metafiles
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  name_template: "{{ .Tag }}-next"
+
+release:
+  prerelease: "false"
+
+nfpms:
+  - file_name_template: >-
+      gohookbridge-
+      {{- .Version}}_{{.Os}}-
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else if eq .Arch "darwin" }}MacOS
+      {{- else if eq .Arch "linux" }}Linux
+      {{- else if eq .Arch "windows" }}Windows
+      {{- else }}{{ .Arch }}{{ end }}
+    homepage: https://github.com/webcenter-fr/gohookbridge
+    description: "gohookbridge - A webhook and https://smee.io forwarder"
+    maintainer: Chmouel Boudjnah <chmouel@chmouel.com>
+    license: MIT
+    formats:
+      - apk
+      - deb
+      - rpm
+    bindir: /usr/bin
+    contents:
+      - src: ./misc/gohookbridge-server.service
+        dst: /etc/systemd/system/gohookbridge-server.service
+        type: "config|noreplace"
+      - src: ./misc/gohookbridge.service
+        dst: /etc/systemd/system/gohookbridge-client.service
+        type: "config|noreplace"
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^Brew formula update"
+      - Merge pull request
+      - Merge branch
+      - go mod tidy
+      - Update README.md
+
+universal_binaries:
+  - replace: true
+    name_template: "gohookbridge"
+
+aurs:
+  - name: gohookbridge-bin
+    homepage: "https://github.com/webcenter-fr/gohookbridge"
+    description: "gohookbridge - A webhook and https://smee.io forwarder"
+    maintainers:
+      - "Chmouel Boudjnah <chmouel@chmouel.com>"
+    license: MIT
+    private_key: "{{ .Env.AUR_PRIVATE_KEY }}"
+    git_url: ssh://aur@aur.archlinux.org/gohookbridge-bin.git
+    package: |-
+      # bin
+      install -Dm755 "./gohookbridge" "${pkgdir}/usr/bin/gohookbridge"
+
+      # license
+      install -Dm644 "./LICENSE" "${pkgdir}/usr/share/licenses/gohookbridge/LICENSE"
+
+      # completions
+      mkdir -p "${pkgdir}/usr/share/bash-completion/completions/"
+      mkdir -p "${pkgdir}/usr/share/zsh/site-functions/"
+
+      for i in zsh bash fish;do
+        ./gohookbridge completion ${i} > gohookbridge.${i}
+      done
+
+      install -Dm644 "gohookbridge.fish" "${pkgdir}/usr/share/fish/vendor_completions.d/gohookbridge"
+      install -Dm644 "gohookbridge.bash" "${pkgdir}/usr/share/bash-completion/completions/gohookbridge"
+      install -Dm644 "gohookbridge.zsh" "${pkgdir}/usr/share/zsh/site-functions/_gohookbridge"

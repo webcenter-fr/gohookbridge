@@ -1,0 +1,13 @@
+---
+extends: substitution
+ignorecase: true
+level: warning
+link: https://redhat-documentation.github.io/vale-at-red-hat/docs/reference-guide/consciouslanguage/
+message: Use '%s' rather than '%s.'
+action:
+  name: replace
+swap:
+  blacklist: blocklist
+  whitelist: allowlist
+  master: primary|source|initiator|requester|controller|host|director
+  slave: secondary|replica|responder|device|worker|proxy|performer

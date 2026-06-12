@@ -1,0 +1,7 @@
+---
+extends: existence
+level: suggestion
+link: https://redhat-documentation.github.io/vale-at-red-hat/docs/reference-guide/oxfordcomma/
+message: "Use the Oxford comma in '%s'."
+tokens:
+  - '(?:[^,]+,){1,}\s\w+\sand'

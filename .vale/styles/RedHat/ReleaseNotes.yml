@@ -1,0 +1,10 @@
+---
+extends: substitution
+ignorecase: false
+level: suggestion
+link: https://redhat-documentation.github.io/vale-at-red-hat/docs/reference-guide/releasenotes/
+message: "For release notes, consider using '%s' rather than '%s'."
+# swap maps tokens in form of bad: good
+swap:
+  Now: With this update
+  Previously: Before this update

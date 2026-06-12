@@ -1,0 +1,10 @@
+[Unit]
+Description=Gohookbridge Server
+
+[Service]
+ExecStart=gohookbridge server
+User=gohookbridge
+EnvironmentFile=/etc/gohookbridge.env
+
+[Install]
+WantedBy=default.target
