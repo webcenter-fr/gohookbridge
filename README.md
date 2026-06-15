@@ -158,7 +158,7 @@ Key configuration:
 - Set `--raft-dir` to a persistent volume for Raft data durability
 - Add `--bootstrap-config-file` pointing to a ConfigMap or Secret with your bootstrap configuration
 - For security, configure webhook signatures, allowed IPs, and auth via `bootstrap.yaml` or Admin UI
-- Configure `trust_proxy` in global config when your Ingress is the sole path to gohookbridge and overwrites `X-Forwarded-For` / `X-Real-IP`; otherwise the allowlist can be bypassed by spoofed headers (see [SECURITY.md](./SECURITY.md#trusting-proxy-headers-safely))
+- Configure `behind_reverse_proxy` in global config when your Ingress is the sole path to gohookbridge and overwrites `X-Forwarded-For` / `X-Real-IP`; otherwise the allowlist can be bypassed by spoofed headers (see [SECURITY.md](./SECURITY.md#behind-a-reverse-proxy-safely))
 
 #### Client Deployment
 
@@ -357,7 +357,7 @@ global:
     session_secret: "your-32-byte-hex-secret"
     cors_origin: "https://dashboard.example.com"
     max_body_size: 26214400
-    trust_proxy: true
+    behind_reverse_proxy: true
   defaults:
     webhook_signatures: ["global-webhook-secret"]
     allowed_ips: ["192.30.252.0/22"]
@@ -480,9 +480,9 @@ Running gohookbridge server behind nginx requires some configuration:
 ```
 
 > [!IMPORTANT]
-> If you run gohookbridge with `trust_proxy: true` in global config (required for IP allowlisting to work behind a proxy), the proxy must be the only way to reach gohookbridge and must **overwrite** the forwarded headers. The examples above bind/proxy to `127.0.0.1:3333`, so keep that port off the public internet (do not publish it directly).
+> If you run gohookbridge with `behind_reverse_proxy: true` in global config (required for IP allowlisting to work behind a proxy), the proxy must be the only way to reach gohookbridge and must **overwrite** the forwarded headers. The examples above bind/proxy to `127.0.0.1:3333`, so keep that port off the public internet (do not publish it directly).
 >
-> The nginx snippet sets `X-Forwarded-For $remote_addr` (the connection address) rather than `$proxy_add_x_forwarded_for`. The latter *appends* to any client-supplied `X-Forwarded-For`, which would leave an attacker-controlled value first — and gohookbridge trusts the first entry. See [SECURITY.md](./SECURITY.md#trusting-proxy-headers-safely) for details.
+> The nginx snippet sets `X-Forwarded-For $remote_addr` (the connection address) rather than `$proxy_add_x_forwarded_for`. The latter *appends* to any client-supplied `X-Forwarded-For`, which would leave an attacker-controlled value first — and gohookbridge trusts the first entry. See [SECURITY.md](./SECURITY.md#behind-a-reverse-proxy-safely) for details.
 
 Note: Long-running connections may occasionally cause errors with nginx. Contributions to debug this are most welcome.
 
@@ -494,7 +494,7 @@ Note: Long-running connections may occasionally cause errors with nginx. Contrib
 - RBAC: role-based access control with three default roles (`admin`, `project_admin`, `project_viewer`). Custom roles via API.
 - All configuration is stored in the Raft consensus store and managed via Admin UI or `bootstrap.yaml`.
 
-For a full security reference — including webhook signature validation, IP restrictions, payload limits, channel name protection, and encrypted channels — see [SECURITY.md](./SECURITY.md).
+For a full security reference — including webhook signature validation, IP restrictions, payload limits, channel ID validation, and encrypted channels — see [SECURITY.md](./SECURITY.md).
 
 ## High Availability with NATS
 

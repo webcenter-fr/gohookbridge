@@ -17,7 +17,7 @@
     <n-grid v-if="channelsStore.channels.length > 0" :cols="4" :x-gap="12" :y-gap="12">
       <n-gi v-for="ch in channelsStore.channels" :key="ch.id">
         <n-card
-          :title="ch.name || ch.id"
+          :title="ch.id"
           size="small"
           hoverable
           @click="router.push({ name: 'channel-detail', params: { id: ch.id } })"

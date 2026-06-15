@@ -15,12 +15,17 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-type apiHandler struct {
-	rs *RaftStore
+type ChannelChangeNotifier interface {
+	OnChannelChanged(channelID string, ttlSeconds int)
 }
 
-func RegisterAPIHandlers(r chi.Router, rs *RaftStore) {
-	h := &apiHandler{rs: rs}
+type apiHandler struct {
+	rs              *RaftStore
+	channelNotifier ChannelChangeNotifier
+}
+
+func RegisterAPIHandlers(r chi.Router, rs *RaftStore, notifier ChannelChangeNotifier) {
+	h := &apiHandler{rs: rs, channelNotifier: notifier}
 
 	r.Route("/channels", func(r chi.Router) {
 		r.Use(RequirePermission(rs, PermChannelRead))
@@ -115,6 +120,10 @@ func (h *apiHandler) createChannel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if h.channelNotifier != nil {
+		resolved, _ := h.rs.ResolveChannelConfig(ch.ID)
+		h.channelNotifier.OnChannelChanged(ch.ID, resolved.MessageTTLSeconds)
+	}
 	writeJSON(w, http.StatusCreated, &ch)
 }
 
@@ -145,6 +154,10 @@ func (h *apiHandler) updateChannel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if h.channelNotifier != nil {
+		resolved, _ := h.rs.ResolveChannelConfig(ch.ID)
+		h.channelNotifier.OnChannelChanged(ch.ID, resolved.MessageTTLSeconds)
+	}
 	writeJSON(w, http.StatusOK, &ch)
 }
 
@@ -166,7 +179,7 @@ func (h *apiHandler) getGlobalConfig(w http.ResponseWriter, r *http.Request) {
 	resp := GlobalConfigResponse{
 		Server: ServerConfigResponse{
 			MaxBodySize:   cfg.Server.MaxBodySize,
-			TrustProxy:    cfg.Server.TrustProxy,
+			BehindReverseProxy:    cfg.Server.BehindReverseProxy,
 			CORSOrigin:    cfg.Server.CORSOrigin,
 			Footer:        cfg.Server.Footer,
 			SessionSecret: "<redacted>",
@@ -194,6 +207,15 @@ func (h *apiHandler) updateGlobalConfig(w http.ResponseWriter, r *http.Request) 
 	if err := h.rs.UpdateGlobalConfig(&cfg); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if h.channelNotifier != nil {
+		channels, _ := h.rs.ListChannels()
+		for _, ch := range channels {
+			if ch.MessageTTLSeconds == 0 {
+				resolved, _ := h.rs.ResolveChannelConfig(ch.ID)
+				h.channelNotifier.OnChannelChanged(ch.ID, resolved.MessageTTLSeconds)
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, &cfg)
 }
@@ -438,9 +460,9 @@ func writeCSV(w http.ResponseWriter, channels []*Channel) {
 	w.Header().Set("Content-Type", "text/csv")
 	w.Header().Set("Content-Disposition", "attachment; filename=channels.csv")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("id,name\n"))
+	w.Write([]byte("id\n"))
 	for _, ch := range channels {
-		fmt.Fprintf(w, "%s,%s\n", ch.ID, ch.Name)
+		fmt.Fprintf(w, "%s\n", ch.ID)
 	}
 }
 

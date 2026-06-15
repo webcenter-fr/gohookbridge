@@ -16,7 +16,6 @@ type Config struct {
 	Port        int
 	ClusterPort int
 	Routes      []string
-	BufferTTL   time.Duration
 	BufferSize  int
 }
 
@@ -31,12 +30,8 @@ type Broker struct {
 
 func New(cfg Config) (*Broker, error) {
 	b := &Broker{
-		buffer: NewRingBuffer(cfg.BufferSize, cfg.BufferTTL),
+		buffer: NewRingBuffer(cfg.BufferSize, DefaultMaxAge),
 		subs:   make(map[string]map[chan []byte]struct{}),
-	}
-
-	if cfg.Port == 0 {
-		return nil, nil
 	}
 
 	if cfg.NodeID == "" {
@@ -124,7 +119,11 @@ func (b *Broker) Publish(channel string, data []byte) error {
 	return b.nc.Publish("webhook."+channel, data)
 }
 
-func (b *Broker) Subscribe(channel string, drainLimit int) ([][]byte, chan []byte) {
+func (b *Broker) SetChannelTTL(channel string, ttl time.Duration) {
+	b.buffer.SetChannelTTL(channel, ttl)
+}
+
+func (b *Broker) Subscribe(channel string, since time.Time, drainLimit int) ([][]byte, chan []byte) {
 	ch := make(chan []byte, 100)
 
 	b.mu.Lock()
@@ -136,7 +135,9 @@ func (b *Broker) Subscribe(channel string, drainLimit int) ([][]byte, chan []byt
 	subs[ch] = struct{}{}
 	b.mu.Unlock()
 
-	since := time.Now().Add(-b.buffer.maxAge)
+	if since.IsZero() {
+		since = time.Now().Add(-b.buffer.maxAge)
+	}
 	historical := b.buffer.Get(channel, since, drainLimit)
 
 	return historical, ch

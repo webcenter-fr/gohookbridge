@@ -117,7 +117,7 @@ sequenceDiagram
 
 | Key | Value | Purpose |
 |---|---|---|
-| `/global/server/` | `ServerConfig` JSON | MaxBodySize, TrustProxy, CORS, etc. |
+| `/global/server/` | `ServerConfig` JSON | MaxBodySize, BehindReverseProxy, CORS, etc. |
 | `/global/defaults/` | `DefaultProjectConfig` JSON | Default signatures, allowed IPs, replay token |
 | `/projects/{id}/` | `Project` JSON | Per-project overrides |
 | `/users/{id}/` | `User` JSON | Username, password hash, roles, projects |

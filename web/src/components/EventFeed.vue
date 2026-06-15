@@ -13,6 +13,9 @@
         <n-input-group-label>Channel</n-input-group-label>
         <n-input :value="channel" readonly />
       </n-input-group>
+      <n-text v-if="messageTTL" depth="3" style="font-size: 12px; margin-top: 4px; display: block;">
+        Messages retained for {{ formatTTL(messageTTL) }}
+      </n-text>
     </n-spin>
     <n-list v-if="events.length > 0" style="max-height: 500px; overflow-y: auto;">
       <n-list-item v-for="evt in events" :key="evt.id">
@@ -42,9 +45,17 @@ defineProps<{
   events: { id: number; data: any; timestamp: string; event_id?: string }[]
   connected: boolean
   connecting: boolean
+  messageTTL?: number
 }>()
 
 const emit = defineEmits<{
   (e: 'replay', eventId: string): void
 }>()
+
+function formatTTL(seconds: number): string {
+  if (seconds >= 86400) return `${Math.floor(seconds / 86400)}d`
+  if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h`
+  if (seconds >= 60) return `${Math.floor(seconds / 60)}m`
+  return `${seconds}s`
+}
 </script>

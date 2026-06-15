@@ -1,7 +1,6 @@
 package store
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -359,7 +358,6 @@ func (rs *RaftStore) ResolveChannelConfig(id string) (*Channel, error) {
 			MaxBodySize:       global.Server.MaxBodySize,
 			WebhookSecret:     global.Defaults.WebhookSecret,
 			AllowedIPs:        global.Defaults.AllowedIPs,
-			ReplayToken:       global.Defaults.ReplayToken,
 			MessageTTLSeconds: global.Defaults.MessageTTLSeconds,
 		}, nil
 	}
@@ -481,25 +479,6 @@ func (rs *RaftStore) DeleteUser(id string) error {
 	return rs.applyCommand("delete", "/users/by-username/"+u.Username+"/", nil)
 }
 
-func (rs *RaftStore) ValidateReplayToken(channelID, token string) bool {
-	p, err := rs.GetChannel(channelID)
-	if err != nil {
-		global, _ := rs.GetGlobalConfig()
-		if global.Defaults.ReplayToken == "" {
-			return true
-		}
-		return constantTimeCompare(token, global.Defaults.ReplayToken)
-	}
-	if p.ReplayToken == "" {
-		global, _ := rs.GetGlobalConfig()
-		if global.Defaults.ReplayToken == "" {
-			return true
-		}
-		return constantTimeCompare(token, global.Defaults.ReplayToken)
-	}
-	return constantTimeCompare(token, p.ReplayToken)
-}
-
 func (rs *RaftStore) GetSetupModeEndTime() time.Time {
 	val, err := getFSMValue(rs.db, "/meta/setup_end")
 	if err != nil || val == nil {
@@ -538,16 +517,6 @@ func (rs *RaftStore) SetOIDCProviders(providers []OIDCProvider) error {
 		return err
 	}
 	return rs.applyCommand("set-json", "/global/auth/oidc_providers", val)
-}
-
-func constantTimeCompare(a, b string) bool {
-	aHash := sha256.Sum256([]byte(a))
-	bHash := sha256.Sum256([]byte(b))
-	result := 0
-	for i := 0; i < len(aHash); i++ {
-		result |= int(aHash[i]) ^ int(bHash[i])
-	}
-	return result == 0
 }
 
 func (rs *RaftStore) GetRole(name string) (*Role, error) {
@@ -753,8 +722,6 @@ func (rs *RaftStore) SetSessionSecret(secret string) error {
 	return rs.UpdateGlobalConfig(global)
 }
 
-var sha256Hash = sha256.Sum256
-
 func (rs *RaftStore) ResolveCORSOrigin() string {
 	global, err := rs.GetGlobalConfig()
 	if err != nil {
@@ -763,12 +730,12 @@ func (rs *RaftStore) ResolveCORSOrigin() string {
 	return global.Server.CORSOrigin
 }
 
-func (rs *RaftStore) ResolveTrustProxy() bool {
+func (rs *RaftStore) ResolveBehindReverseProxy() bool {
 	global, err := rs.GetGlobalConfig()
 	if err != nil {
 		return false
 	}
-	return global.Server.TrustProxy
+	return global.Server.BehindReverseProxy
 }
 
 func (rs *RaftStore) ResolveFooter() string {
@@ -777,4 +744,26 @@ func (rs *RaftStore) ResolveFooter() string {
 		return ""
 	}
 	return global.Server.Footer
+}
+
+func (rs *RaftStore) GetClientCursor(channel, clientID string) (*ClientCursor, error) {
+	key := "/cursors/" + channel + "/" + clientID + "/"
+	val, err := getFSMValue(rs.db, key)
+	if err != nil || val == nil {
+		return nil, nil
+	}
+	var c ClientCursor
+	if err := json.Unmarshal(val, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (rs *RaftStore) SetClientCursor(cursor *ClientCursor) error {
+	key := "/cursors/" + cursor.Channel + "/" + cursor.ClientID + "/"
+	val, err := json.Marshal(cursor)
+	if err != nil {
+		return err
+	}
+	return rs.applyCommand("set", key, val)
 }

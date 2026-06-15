@@ -88,29 +88,17 @@ func TestRingBufferEmptyGet(t *testing.T) {
 	assert.Equal(t, 0, len(historical))
 }
 
-func TestBrokerStartShutdown(t *testing.T) {
-	b, err := New(Config{
-		NodeID:     "test-node",
-		Port:       0,
-		BufferTTL:  time.Hour,
-		BufferSize: 100,
-	})
-	assert.NilError(t, err)
-	assert.Assert(t, b == nil)
-}
-
 func TestBrokerPublishSubscribe(t *testing.T) {
 	b, err := New(Config{
 		NodeID:     "test-pubsub",
 		Port:       4233,
-		BufferTTL:  time.Hour,
 		BufferSize: 100,
 	})
 	assert.NilError(t, err)
 	assert.Assert(t, b != nil)
 	defer b.Shutdown()
 
-	historical, live := b.Subscribe("testchannel", 10)
+	historical, live := b.Subscribe("testchannel", time.Time{}, 10)
 	assert.Equal(t, 0, len(historical))
 
 	err = b.Publish("testchannel", []byte("hello"))
@@ -127,12 +115,7 @@ func TestBrokerPublishSubscribe(t *testing.T) {
 }
 
 func TestBrokerSubscribeReturnsHistorical(t *testing.T) {
-	b, err := New(Config{
-		NodeID:     "test-hist",
-		Port:       4234,
-		BufferTTL:  time.Hour,
-		BufferSize: 100,
-	})
+	b, err := New(Config{NodeID: "test-hist", Port: 4234, BufferSize: 100})
 	assert.NilError(t, err)
 	assert.Assert(t, b != nil)
 	defer b.Shutdown()
@@ -144,7 +127,7 @@ func TestBrokerSubscribeReturnsHistorical(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	historical, live := b.Subscribe("histchan", 10)
+	historical, live := b.Subscribe("histchan", time.Time{}, 10)
 	assert.Equal(t, 2, len(historical))
 	assert.Equal(t, "old1", string(historical[0]))
 	assert.Equal(t, "old2", string(historical[1]))
@@ -160,4 +143,49 @@ func TestBrokerSubscribeReturnsHistorical(t *testing.T) {
 	}
 
 	b.Unsubscribe("histchan", live)
+}
+
+func TestBrokerSubscribeWithSince(t *testing.T) {
+	b, err := New(Config{NodeID: "test-since", Port: 4246, BufferSize: 100})
+	assert.NilError(t, err)
+	assert.Assert(t, b != nil)
+	defer b.Shutdown()
+
+	err = b.Publish("sincechan", []byte("before"))
+	assert.NilError(t, err)
+	time.Sleep(200 * time.Millisecond)
+
+	since := time.Now()
+	time.Sleep(50 * time.Millisecond)
+
+	err = b.Publish("sincechan", []byte("after1"))
+	assert.NilError(t, err)
+	err = b.Publish("sincechan", []byte("after2"))
+	assert.NilError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	historical, live := b.Subscribe("sincechan", since, 10)
+	assert.Equal(t, 2, len(historical))
+	assert.Equal(t, "after1", string(historical[0]))
+	assert.Equal(t, "after2", string(historical[1]))
+	b.Unsubscribe("sincechan", live)
+}
+
+func TestRingBufferPerChannelTTLEvictionMixed(t *testing.T) {
+	rb := NewRingBuffer(100, time.Hour)
+
+	rb.SetChannelTTL("short", 50*time.Millisecond)
+
+	rb.Append("short", []byte("short-lived"))
+	rb.Append("long", []byte("long-lived"))
+
+	time.Sleep(100 * time.Millisecond)
+	rb.evictExpired()
+
+	historicalShort := rb.Get("short", time.Time{}, 0)
+	assert.Equal(t, 0, len(historicalShort), "short TTL channel should be evicted")
+
+	historicalLong := rb.Get("long", time.Time{}, 0)
+	assert.Equal(t, 1, len(historicalLong), "long TTL channel should still exist")
+	assert.Equal(t, "long-lived", string(historicalLong[0]))
 }

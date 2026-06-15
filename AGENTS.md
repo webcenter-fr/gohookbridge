@@ -14,3 +14,10 @@ Do this when implement a new feature:
   - Integration test for backend (api, publisher, consumer (the client))
 - Ask to user before plan or implement if not clear
 - Ask user if you think there are better way, better pattern or better framework to implement the feature 
+
+# Plan rules
+- Follow the "Implement new feature" rules
+- You need to understand code to describe exact change on plan
+- Not ask to coder to discover code. Explain exacly what it must to do
+- You are the brain, the coder follow your exact instruction without thinking
+- Double check the impact of your change and respect all guidline and best practice

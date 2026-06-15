@@ -81,7 +81,7 @@ go run main.go server --address 0.0.0.0 --port 8081
 
 To auto-create an admin user on first boot (no bootstrap config needed), add the `--dev-admin` flag:
 
-go run main.go server --address 0.0.0.0 --port 8081 --dev-admin
+go run main.go server --dev-admin
 ```
 
 On first start with no users, this creates an `admin` user and writes the password to `raft-data/admin-password.txt`. Use `--dev-admin-password` to set a specific password instead of a random one.

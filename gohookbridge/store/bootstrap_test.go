@@ -15,7 +15,7 @@ func TestLoadBootstrap_YAML(t *testing.T) {
 	content := `global:
   server:
     maxbodysize: 100
-    trustproxy: true
+    behindreverseproxy: true
 users:
   - username: alice
     password: secret123
@@ -23,7 +23,6 @@ users:
     channels: ["*"]
 channels:
   - id: proj1
-    name: Project One
 `
 	err := os.WriteFile(path, []byte(content), 0644)
 	assert.NilError(t, err)
@@ -33,7 +32,7 @@ channels:
 
 	assert.Assert(t, cfg.Global != nil)
 	assert.Equal(t, cfg.Global.Server.MaxBodySize, 100)
-	assert.Assert(t, cfg.Global.Server.TrustProxy)
+	assert.Assert(t, cfg.Global.Server.BehindReverseProxy)
 
 	assert.Equal(t, len(cfg.Users), 1)
 	assert.Equal(t, cfg.Users[0].Username, "alice")
@@ -43,7 +42,6 @@ channels:
 
 	assert.Equal(t, len(cfg.Channels), 1)
 	assert.Equal(t, cfg.Channels[0].ID, "proj1")
-	assert.Equal(t, cfg.Channels[0].Name, "Project One")
 }
 
 func TestLoadBootstrap_JSON(t *testing.T) {
@@ -60,7 +58,7 @@ func TestLoadBootstrap_JSON(t *testing.T) {
 			{"username": "bob", "password": "pass", "roles": ["channel_viewer"], "channels": ["proj1"]}
 		],
 		"channels": [
-			{"id": "proj1", "name": "Project One"}
+			{"id": "proj1"}
 		]
 	}`
 	err := os.WriteFile(path, []byte(content), 0644)
@@ -104,7 +102,7 @@ func TestApplyBootstrap_GlobalConfig(t *testing.T) {
 			Server: ServerConfig{
 				MaxBodySize: 500,
 				CORSOrigin:  "https://app.example.com",
-				TrustProxy:  true,
+				BehindReverseProxy:  true,
 			},
 		},
 	}
@@ -116,7 +114,7 @@ func TestApplyBootstrap_GlobalConfig(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, got.Server.MaxBodySize, 500)
 	assert.Equal(t, got.Server.CORSOrigin, "https://app.example.com")
-	assert.Assert(t, got.Server.TrustProxy)
+	assert.Assert(t, got.Server.BehindReverseProxy)
 }
 
 func TestApplyBootstrap_Users_PasswordHashed(t *testing.T) {
@@ -154,8 +152,8 @@ func TestApplyBootstrap_Projects(t *testing.T) {
 
 	cfg := &BootstrapConfig{
 		Channels: []BootstrapChannel{
-			{ID: "proj-a", Name: "Project A"},
-			{ID: "proj-b", Name: "Project B"},
+			{ID: "proj-a"},
+			{ID: "proj-b"},
 		},
 	}
 
@@ -168,11 +166,11 @@ func TestApplyBootstrap_Projects(t *testing.T) {
 
 	gotA, err := rs.GetChannel("proj-a")
 	assert.NilError(t, err)
-	assert.Equal(t, gotA.Name, "Project A")
+	assert.Equal(t, gotA.ID, "proj-a")
 
 	gotB, err := rs.GetChannel("proj-b")
 	assert.NilError(t, err)
-	assert.Equal(t, gotB.Name, "Project B")
+	assert.Equal(t, gotB.ID, "proj-b")
 }
 
 func TestApplyBootstrap_DoubleApplication(t *testing.T) {
@@ -180,7 +178,7 @@ func TestApplyBootstrap_DoubleApplication(t *testing.T) {
 
 	cfg := &BootstrapConfig{
 		Channels: []BootstrapChannel{
-			{ID: "proj1", Name: "One"},
+			{ID: "proj1"},
 		},
 	}
 

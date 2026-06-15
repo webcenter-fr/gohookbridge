@@ -23,7 +23,6 @@ import (
 	"github.com/webcenter-fr/gohookbridge/gohookbridge/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/r3labs/sse/v2"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -36,7 +35,6 @@ const (
 	channelIDPattern  = "[a-zA-Z0-9_-]{1,64}"
 	channelPath       = "/{channel:" + channelIDPattern + "}"
 	eventsPath        = "/events/{channel:" + channelIDPattern + "}"
-	replayPath        = "/replay/{channel:" + channelIDPattern + "}"
 )
 
 var (
@@ -206,7 +204,7 @@ func validateWebhookSignature(secret string, payload []byte, r *http.Request) bo
 	return false
 }
 
-func handleWebhookPost(events *sse.Server, eventBroker *EventBroker, broker *nats.Broker, rs *store.RaftStore) http.HandlerFunc {
+func handleWebhookPost(broker *nats.Broker, rs *store.RaftStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now().UTC()
 		if !strings.Contains(r.Header.Get("Content-Type"), contentType) {
@@ -216,7 +214,12 @@ func handleWebhookPost(events *sse.Server, eventBroker *EventBroker, broker *nat
 		channel := chi.URLParam(r, "channel")
 		defer r.Body.Close()
 
-		maxBodySize, _ := rs.ResolveChannelMaxBodySize(channel)
+		chConfig, _ := rs.ResolveChannelConfig(channel)
+
+		maxBodySize := chConfig.MaxBodySize
+		if maxBodySize == 0 {
+			maxBodySize, _ = rs.ResolveChannelMaxBodySize(channel)
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodySize))
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -228,7 +231,10 @@ func handleWebhookPost(events *sse.Server, eventBroker *EventBroker, broker *nat
 			return
 		}
 
-		webhookSecret, _ := rs.ResolveChannelWebhookSecret(channel)
+		webhookSecret := chConfig.WebhookSecret
+		if webhookSecret == "" {
+			webhookSecret, _ = rs.ResolveChannelWebhookSecret(channel)
+		}
 		if webhookSecret != "" {
 			if !validateWebhookSignature(webhookSecret, body, r) {
 				http.Error(w, "invalid signature", http.StatusUnauthorized)
@@ -242,7 +248,11 @@ func handleWebhookPost(events *sse.Server, eventBroker *EventBroker, broker *nat
 			return
 		}
 
-		encryptionMode, encryptionKey, _, _ := rs.ResolveChannelEncryption(channel)
+		encryptionMode := chConfig.EncryptionMode
+		encryptionKey := chConfig.EncryptionKey
+		if encryptionMode == "" {
+			encryptionMode, encryptionKey, _, _ = rs.ResolveChannelEncryption(channel)
+		}
 
 		var payloadBytes []byte
 		if encryptionMode == "server_side" && encryptionKey != "" {
@@ -273,7 +283,11 @@ func handleWebhookPost(events *sse.Server, eventBroker *EventBroker, broker *nat
 			return
 		}
 
-		publishEvent(events, eventBroker, broker, channel, reencoded)
+		if chConfig.MessageTTLSeconds > 0 {
+			broker.SetChannelTTL(channel, time.Duration(chConfig.MessageTTLSeconds)*time.Second)
+		}
+
+		publishEvent(broker, channel, reencoded)
 
 		w.Header().Set(versionHeaderName, strings.TrimSpace(string(Version)))
 		w.WriteHeader(http.StatusAccepted)
@@ -293,67 +307,7 @@ func handleWebhookPost(events *sse.Server, eventBroker *EventBroker, broker *nat
 	}
 }
 
-func handleReplayPost(events *sse.Server, eventBroker *EventBroker, broker *nats.Broker, rs *store.RaftStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		channel := chi.URLParam(r, "channel")
-		if channel == "" {
-			http.Error(w, "Channel name missing in URL", http.StatusBadRequest)
-			return
-		}
-
-		if len(channel) > maxChannelLength {
-			http.Error(w, "Channel name exceeds maximum length", http.StatusBadRequest)
-			return
-		}
-
-		authorizationHeader := r.Header.Get("Authorization")
-		token := ""
-		if strings.HasPrefix(authorizationHeader, "Bearer ") {
-			token = strings.TrimPrefix(authorizationHeader, "Bearer ")
-		}
-		if !rs.ValidateReplayToken(channel, token) {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		now := time.Now().UTC()
-		maxBodySize, _ := rs.ResolveChannelMaxBodySize(channel)
-		r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodySize))
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			if strings.Contains(err.Error(), "http: request body too large") {
-				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		payload := make(map[string]any)
-		for k, v := range r.Header {
-			if strings.EqualFold(k, "Authorization") {
-				continue
-			}
-			payload[strings.ToLower(k)] = v[0]
-		}
-		payload["timestamp"] = fmt.Sprintf("%d", now.UnixMilli())
-		payload["bodyB"] = base64.StdEncoding.EncodeToString(body)
-		payload["content-type"] = contentType
-
-		reencoded, err := json.Marshal(payload)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		publishEvent(events, eventBroker, broker, channel, reencoded)
-
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte("replayed"))
-	}
-}
-
-func handleTestPayloadSend(events *sse.Server, eventBroker *EventBroker, broker *nats.Broker, rs *store.RaftStore) http.HandlerFunc {
+func handleTestPayloadSend(broker *nats.Broker, rs *store.RaftStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		channel := chi.URLParam(r, "channel")
 		if channel == "" {
@@ -397,7 +351,7 @@ func handleTestPayloadSend(events *sse.Server, eventBroker *EventBroker, broker 
 			return
 		}
 
-		publishEvent(events, eventBroker, broker, channel, reencoded)
+		publishEvent(broker, channel, reencoded)
 
 		w.WriteHeader(http.StatusAccepted)
 		resp := map[string]any{
@@ -451,8 +405,8 @@ func (r *ipRanges) contains(ip net.IP) bool {
 	return false
 }
 
-func getRealIP(r *http.Request, trustProxy bool) (net.IP, error) {
-	if trustProxy {
+func getRealIP(r *http.Request, behindReverseProxy bool) (net.IP, error) {
+	if behindReverseProxy {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			ips := strings.Split(xff, ",")
 			clientIP := strings.TrimSpace(ips[0])
@@ -505,8 +459,8 @@ func ipRestrictMiddleware(rs *store.RaftStore) func(http.Handler) http.Handler {
 				return
 			}
 
-			trustProxy := rs.ResolveTrustProxy()
-			clientIP, err := getRealIP(r, trustProxy)
+			behindReverseProxy := rs.ResolveBehindReverseProxy()
+			clientIP, err := getRealIP(r, behindReverseProxy)
 			if err != nil {
 				http.Error(w, "Failed to determine client IP", http.StatusBadRequest)
 				return
@@ -547,7 +501,7 @@ func retVersion(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-func handleEventsGet(eventBroker *EventBroker, broker *nats.Broker, protectedChannels *store.ProtectedChannels, rs *store.RaftStore) http.HandlerFunc {
+func handleEventsGet(broker *nats.Broker, protectedChannels *store.ProtectedChannels, rs *store.RaftStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		channel := chi.URLParam(r, "channel")
 		if channel == "" {
@@ -576,10 +530,12 @@ func handleEventsGet(eventBroker *EventBroker, broker *nats.Broker, protectedCha
 				return
 			}
 		}
-		if broker != nil && pubKey != nil {
+		if pubKey != nil {
 			http.Error(w, "protected channels not supported with NATS broker", http.StatusNotImplemented)
 			return
 		}
+
+		clientID := r.URL.Query().Get("client_id")
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -606,26 +562,42 @@ func handleEventsGet(eventBroker *EventBroker, broker *nats.Broker, protectedCha
 
 		clientGone := r.Context().Done()
 
-		if broker != nil {
-			historical, live := broker.Subscribe(channel, 100)
-			defer broker.Unsubscribe(channel, live)
-
-			for _, data := range historical {
-				fmt.Fprintf(w, "data: %s\n\n", data)
-				flusher.Flush()
+		var since time.Time
+		if clientID != "" {
+			cursor, _ := rs.GetClientCursor(channel, clientID)
+			if cursor != nil && cursor.LastTimestampMs > 0 {
+				since = time.UnixMilli(cursor.LastTimestampMs)
 			}
+		}
+		var lastMsgTs int64
+		historical, live := broker.Subscribe(channel, since, 100)
+		defer broker.Unsubscribe(channel, live)
 
-			sseLoop(w, flusher, live, clientGone, ticker)
-		} else {
-			subscriber := eventBroker.Subscribe(channel, pubKey)
-			defer eventBroker.Unsubscribe(channel, subscriber)
+		for _, data := range historical {
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			lastMsgTs = time.Now().UTC().UnixMilli()
+			flusher.Flush()
+		}
 
-			sseLoop(w, flusher, subscriber.Events, clientGone, ticker)
+		sseLoop(w, flusher, live, clientGone, ticker, &lastMsgTs)
+
+		if clientID != "" {
+			lastTs := lastMsgTs
+			if lastTs == 0 {
+				lastTs = time.Now().UTC().UnixMilli()
+			}
+			if err := rs.SetClientCursor(&store.ClientCursor{
+				Channel:         channel,
+				ClientID:        clientID,
+				LastTimestampMs: lastTs,
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: failed to save client cursor for %s/%s: %v\n", channel, clientID, err)
+			}
 		}
 	}
 }
 
-func sseLoop(w http.ResponseWriter, flusher http.Flusher, events <-chan []byte, clientGone <-chan struct{}, ticker *time.Ticker) {
+func sseLoop(w http.ResponseWriter, flusher http.Flusher, events <-chan []byte, clientGone <-chan struct{}, ticker *time.Ticker, lastMsgTs *int64) {
 	for {
 		select {
 		case <-clientGone:
@@ -635,6 +607,9 @@ func sseLoop(w http.ResponseWriter, flusher http.Flusher, events <-chan []byte, 
 				return
 			}
 			fmt.Fprintf(w, "data: %s\n\n", data)
+			if lastMsgTs != nil {
+				*lastMsgTs = time.Now().UTC().UnixMilli()
+			}
 			flusher.Flush()
 		case <-ticker.C:
 			fmt.Fprint(w, ": keepalive\n\n")
@@ -651,24 +626,12 @@ func generateUUID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
-func handleEventReplay(eventBroker *EventBroker, broker *nats.Broker, rs *store.RaftStore) http.HandlerFunc {
+func handleEventReplay(broker *nats.Broker, rs *store.RaftStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		channel := chi.URLParam(r, "channel")
 		eventID := chi.URLParam(r, "eventId")
 		if channel == "" || eventID == "" {
 			http.Error(w, "channel and eventId required", http.StatusBadRequest)
-			return
-		}
-
-		replayToken := r.Header.Get("X-Replay-Token")
-		if replayToken == "" {
-			authorizationHeader := r.Header.Get("Authorization")
-			if strings.HasPrefix(authorizationHeader, "Bearer ") {
-				replayToken = strings.TrimPrefix(authorizationHeader, "Bearer ")
-			}
-		}
-		if !rs.ValidateReplayToken(channel, replayToken) {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -689,7 +652,7 @@ func handleEventReplay(eventBroker *EventBroker, broker *nats.Broker, rs *store.
 			"x-replay":  "true",
 		}
 		reencoded, _ := json.Marshal(payload)
-		publishEvent(nil, eventBroker, broker, channel, reencoded)
+		publishEvent(broker, channel, reencoded)
 
 		w.WriteHeader(http.StatusAccepted)
 		json.NewEncoder(w).Encode(map[string]string{"status": "replayed", "event_id": eventID})
@@ -760,24 +723,17 @@ func writeJSONResponse(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func publishEvent(events *sse.Server, eventBroker *EventBroker, broker *nats.Broker, channel string, reencoded []byte) {
-	if broker != nil {
-		if err := broker.Publish(channel, reencoded); err != nil {
-			fmt.Fprintf(os.Stderr, "WARNING: nats publish error: %v\n", err)
-		}
-	} else {
-		events.CreateStream(channel)
-		events.Publish(channel, &sse.Event{Data: reencoded})
-		eventBroker.Publish(channel, reencoded)
+func publishEvent(broker *nats.Broker, channel string, reencoded []byte) {
+	if err := broker.Publish(channel, reencoded); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: nats publish error: %v\n", err)
 	}
 }
 
 func serve(c *cli.Context) error {
 	deprecatedEnvVars := map[string]string{
 		"GOSMEE_WEBHOOK_SIGNATURE":       "--webhook-signature",
-		"GOSMEE_REPLAY_TOKEN":            "--replay-token",
 		"GOSMEE_ALLOWED_IPS":             "--allowed-ips",
-		"GOSMEE_TRUST_PROXY":             "--trust-proxy",
+		"GOSMEE_TRUST_PROXY":             "--trust-proxy (deprecated, use global config server.behind_reverse_proxy)",
 		"GOSMEE_FOOTER":                  "--footer",
 		"GOSMEE_ENCRYPTED_CHANNELS_FILE": "--encrypted-channels-file",
 		"GOSMEE_CORS_ORIGIN":             "--cors-origin",
@@ -809,25 +765,25 @@ func serve(c *cli.Context) error {
 
 	protectedChannels := store.NewProtectedChannelsDynamic(rs)
 
-	events := sse.New()
-	events.AutoReplay = false
-	events.AutoStream = true
-	eventBroker := NewEventBroker()
-
 	natsCfg := nats.Config{
 		NodeID:      c.String("raft-node-id"),
 		Port:        c.Int("nats-port"),
 		ClusterPort: c.Int("nats-cluster-port"),
 		Routes:      c.StringSlice("nats-routes"),
-		BufferTTL:   c.Duration("nats-buffer-ttl"),
 		BufferSize:  c.Int("nats-buffer-size"),
 	}
 	broker, natsErr := nats.New(natsCfg)
 	if natsErr != nil {
 		return fmt.Errorf("init nats broker: %w", natsErr)
 	}
-	if broker != nil {
-		defer broker.Shutdown()
+	defer broker.Shutdown()
+
+	channels, _ := rs.ListChannels()
+	for _, ch := range channels {
+		resolved, _ := rs.ResolveChannelConfig(ch.ID)
+		if resolved.MessageTTLSeconds > 0 {
+			broker.SetChannelTTL(ch.ID, time.Duration(resolved.MessageTTLSeconds)*time.Second)
+		}
 	}
 
 	if c.Bool("dev-admin") {
@@ -891,7 +847,7 @@ func serve(c *cli.Context) error {
 	mainRouter.Get("/health", retVersion)
 	mainRouter.Get("/livez", retVersion)
 
-	mainRouter.Get(eventsPath, handleEventsGet(eventBroker, broker, protectedChannels, rs))
+	mainRouter.Get(eventsPath, handleEventsGet(broker, protectedChannels, rs))
 
 	// OIDC routes (registered dynamically from Raft config)
 	providers, _ := rs.OIDCProviders()
@@ -908,8 +864,7 @@ func serve(c *cli.Context) error {
 	mainRouter.NotFound(spaHandler().ServeHTTP)
 
 	// POST routes on restricted router
-	restrictedRouter.Post(channelPath, handleWebhookPost(events, eventBroker, broker, rs))
-	restrictedRouter.Post(replayPath, handleReplayPost(events, eventBroker, broker, rs))
+	restrictedRouter.Post(channelPath, handleWebhookPost(broker, rs))
 
 	// Public auth API routes — mounted before main /api to avoid middleware intercept
 	publicApiRouter := chi.NewRouter()
@@ -921,9 +876,10 @@ func serve(c *cli.Context) error {
 	// API routes — dynamic auth handles setup mode and authentication
 	apiRouter := chi.NewRouter()
 	apiRouter.Use(RequireAuthDynamic(rs))
-	store.RegisterAPIHandlers(apiRouter, rs)
-	apiRouter.Post("/send/{channel:"+channelIDPattern+"}", handleTestPayloadSend(events, eventBroker, broker, rs))
-	apiRouter.Post("/channels/{channel:"+channelIDPattern+"}/events/{eventId}/replay", handleEventReplay(eventBroker, broker, rs))
+	notifier := &brokerTTLNotifier{broker: broker, rs: rs}
+	store.RegisterAPIHandlers(apiRouter, rs, notifier)
+	apiRouter.Post("/send/{channel:"+channelIDPattern+"}", handleTestPayloadSend(broker, rs))
+	apiRouter.Post("/channels/{channel:"+channelIDPattern+"}/events/{eventId}/replay", handleEventReplay(broker, rs))
 	apiRouter.Post("/channels/{channel:"+channelIDPattern+"}/generate-encryption-key", handleGenerateEncryptionKey(rs))
 	mainRouter.Mount("/api", apiRouter)
 
@@ -945,6 +901,17 @@ func serve(c *cli.Context) error {
 		return http.Serve(autocert.NewListener(publicURL), finalRouter)
 	}
 	return http.ListenAndServe(portAddr, finalRouter)
+}
+
+type brokerTTLNotifier struct {
+	broker *nats.Broker
+	rs     *store.RaftStore
+}
+
+func (n *brokerTTLNotifier) OnChannelChanged(channelID string, ttlSeconds int) {
+	if ttlSeconds > 0 {
+		n.broker.SetChannelTTL(channelID, time.Duration(ttlSeconds)*time.Second)
+	}
 }
 
 func initDevAdmin(rs *store.RaftStore, password, raftDir string) error {

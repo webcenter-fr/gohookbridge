@@ -32,7 +32,7 @@ func TestRaftStore_HasData(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Assert(t, !hasData)
 
-	err = rs.CreateChannel(&Channel{ID: "test", Name: "test"})
+	err = rs.CreateChannel(&Channel{ID: "test"})
 	assert.NilError(t, err)
 	hasData, err = rs.HasData()
 	assert.NilError(t, err)
@@ -42,14 +42,13 @@ func TestRaftStore_HasData(t *testing.T) {
 func TestRaftStore_CreateProject(t *testing.T) {
 	rs := newTestRaftStore(t)
 
-	p := &Channel{ID: "proj1", Name: "Project One"}
+	p := &Channel{ID: "proj1"}
 	err := rs.CreateChannel(p)
 	assert.NilError(t, err)
 
 	got, err := rs.GetChannel("proj1")
 	assert.NilError(t, err)
 	assert.Equal(t, got.ID, "proj1")
-	assert.Equal(t, got.Name, "Project One")
 
 	err = rs.CreateChannel(&Channel{ID: "proj1"})
 	assert.ErrorContains(t, err, "already exists")
@@ -58,22 +57,21 @@ func TestRaftStore_CreateProject(t *testing.T) {
 func TestRaftStore_UpdateProject(t *testing.T) {
 	rs := newTestRaftStore(t)
 
-	err := rs.CreateChannel(&Channel{ID: "proj1", Name: "Original"})
+	err := rs.CreateChannel(&Channel{ID: "proj1"})
 	assert.NilError(t, err)
 
-	err = rs.UpdateChannel(&Channel{ID: "proj1", Name: "Updated", MaxBodySize: 999})
+	err = rs.UpdateChannel(&Channel{ID: "proj1", MaxBodySize: 999})
 	assert.NilError(t, err)
 
 	got, err := rs.GetChannel("proj1")
 	assert.NilError(t, err)
-	assert.Equal(t, got.Name, "Updated")
 	assert.Equal(t, got.MaxBodySize, 999)
 }
 
 func TestRaftStore_DeleteProject(t *testing.T) {
 	rs := newTestRaftStore(t)
 
-	err := rs.CreateChannel(&Channel{ID: "proj1", Name: "To Delete"})
+	err := rs.CreateChannel(&Channel{ID: "proj1"})
 	assert.NilError(t, err)
 
 	err = rs.DeleteChannel("proj1")
@@ -88,7 +86,7 @@ func TestRaftStore_ListProjects(t *testing.T) {
 
 	ids := []string{"p1", "p2", "p3"}
 	for _, id := range ids {
-		err := rs.CreateChannel(&Channel{ID: id, Name: "Project " + id})
+		err := rs.CreateChannel(&Channel{ID: id})
 		assert.NilError(t, err)
 	}
 
@@ -104,12 +102,11 @@ func TestRaftStore_GetGlobalConfig(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, cfg.Server.MaxBodySize, 26214400)
 	assert.Equal(t, cfg.Server.CORSOrigin, "*")
-	assert.Assert(t, !cfg.Server.TrustProxy)
+	assert.Assert(t, !cfg.Server.BehindReverseProxy)
 	assert.Equal(t, cfg.Server.Footer, "")
 	assert.Equal(t, cfg.Server.SessionSecret, "")
 	assert.Equal(t, cfg.Defaults.WebhookSecret, "")
 	assert.Assert(t, len(cfg.Defaults.AllowedIPs) == 0)
-	assert.Equal(t, cfg.Defaults.ReplayToken, "")
 }
 
 func TestRaftStore_UpdateGlobalConfig(t *testing.T) {
@@ -118,14 +115,13 @@ func TestRaftStore_UpdateGlobalConfig(t *testing.T) {
 	newCfg := &GlobalConfig{
 		Server: ServerConfig{
 			MaxBodySize: 100,
-			TrustProxy:  true,
+			BehindReverseProxy:  true,
 			CORSOrigin:  "https://example.com",
 			Footer:      "custom footer",
 		},
 		Defaults: DefaultChannelConfig{
 			WebhookSecret: "sig1",
 			AllowedIPs:    []string{"10.0.0.0/8"},
-			ReplayToken:   "token123",
 		},
 	}
 	err := rs.UpdateGlobalConfig(newCfg)
@@ -134,12 +130,11 @@ func TestRaftStore_UpdateGlobalConfig(t *testing.T) {
 	cfg, err := rs.GetGlobalConfig()
 	assert.NilError(t, err)
 	assert.Equal(t, cfg.Server.MaxBodySize, 100)
-	assert.Assert(t, cfg.Server.TrustProxy)
+	assert.Assert(t, cfg.Server.BehindReverseProxy)
 	assert.Equal(t, cfg.Server.CORSOrigin, "https://example.com")
 	assert.Equal(t, cfg.Server.Footer, "custom footer")
 	assert.Equal(t, cfg.Defaults.WebhookSecret, "sig1")
 	assert.DeepEqual(t, cfg.Defaults.AllowedIPs, []string{"10.0.0.0/8"})
-	assert.Equal(t, cfg.Defaults.ReplayToken, "token123")
 }
 
 func TestRaftStore_CRUD_Users(t *testing.T) {
@@ -220,7 +215,6 @@ func TestRaftStore_ProjectConfigFallback(t *testing.T) {
 		Defaults: DefaultChannelConfig{
 			WebhookSecret: "global-sig",
 			AllowedIPs:    []string{"10.0.0.0/8"},
-			ReplayToken:   "global-token",
 		},
 	})
 	assert.NilError(t, err)
@@ -231,9 +225,8 @@ func TestRaftStore_ProjectConfigFallback(t *testing.T) {
 	assert.Equal(t, resolved.MaxBodySize, 100)
 	assert.Equal(t, resolved.WebhookSecret, "global-sig")
 	assert.DeepEqual(t, resolved.AllowedIPs, []string{"10.0.0.0/8"})
-	assert.Equal(t, resolved.ReplayToken, "global-token")
 
-	err = rs.CreateChannel(&Channel{ID: "minimal-project", Name: "Minimal"})
+	err = rs.CreateChannel(&Channel{ID: "minimal-project"})
 	assert.NilError(t, err)
 
 	resolved, err = rs.ResolveChannelConfig("minimal-project")
@@ -241,11 +234,9 @@ func TestRaftStore_ProjectConfigFallback(t *testing.T) {
 	assert.Equal(t, resolved.MaxBodySize, 100)
 	assert.Equal(t, resolved.WebhookSecret, "global-sig")
 	assert.DeepEqual(t, resolved.AllowedIPs, []string{"10.0.0.0/8"})
-	assert.Equal(t, resolved.ReplayToken, "global-token")
 
 	err = rs.UpdateChannel(&Channel{
 		ID:            "minimal-project",
-		Name:          "Minimal",
 		MaxBodySize:   999,
 		WebhookSecret: "project-sig",
 	})
@@ -256,44 +247,44 @@ func TestRaftStore_ProjectConfigFallback(t *testing.T) {
 	assert.Equal(t, resolved.MaxBodySize, 999)
 	assert.Equal(t, resolved.WebhookSecret, "project-sig")
 	assert.DeepEqual(t, resolved.AllowedIPs, []string{"10.0.0.0/8"})
-	assert.Equal(t, resolved.ReplayToken, "global-token")
 }
 
-func TestRaftStore_ValidateReplayToken(t *testing.T) {
+func TestClientCursorCRUD(t *testing.T) {
 	rs := newTestRaftStore(t)
 
-	err := rs.CreateChannel(&Channel{
-		ID:          "secured",
-		ReplayToken: "secret-token",
-	})
+	cursor := &ClientCursor{
+		Channel:         "test-channel",
+		ClientID:        "test-client",
+		LastTimestampMs: 1234567890000,
+	}
+	err := rs.SetClientCursor(cursor)
 	assert.NilError(t, err)
 
-	assert.Assert(t, rs.ValidateReplayToken("secured", "secret-token"))
-	assert.Assert(t, !rs.ValidateReplayToken("secured", "wrong-token"))
-	assert.Assert(t, !rs.ValidateReplayToken("secured", ""))
+	got, err := rs.GetClientCursor("test-channel", "test-client")
+	assert.NilError(t, err)
+	assert.Assert(t, got != nil)
+	assert.Equal(t, got.Channel, "test-channel")
+	assert.Equal(t, got.ClientID, "test-client")
+	assert.Equal(t, got.LastTimestampMs, int64(1234567890000))
 
-	assert.Assert(t, rs.ValidateReplayToken("nonexistent", ""))
-	assert.Assert(t, rs.ValidateReplayToken("nonexistent", "anything"))
+	got, err = rs.GetClientCursor("nonexistent", "test-client")
+	assert.NilError(t, err)
+	assert.Assert(t, got == nil)
 
-	future := rs.UpdateGlobalConfig(&GlobalConfig{
-		Defaults: DefaultChannelConfig{
-			ReplayToken: "global-secret",
-		},
-	})
-	assert.NilError(t, future)
+	got, err = rs.GetClientCursor("test-channel", "nonexistent")
+	assert.NilError(t, err)
+	assert.Assert(t, got == nil)
 
-	err = rs.CreateChannel(&Channel{ID: "global-token-project"})
+	cursor2 := &ClientCursor{
+		Channel:         "test-channel",
+		ClientID:        "test-client",
+		LastTimestampMs: 1234567899999,
+	}
+	err = rs.SetClientCursor(cursor2)
 	assert.NilError(t, err)
 
-	assert.Assert(t, rs.ValidateReplayToken("global-token-project", "global-secret"))
-	assert.Assert(t, !rs.ValidateReplayToken("global-token-project", "wrong-token"))
-
-	err = rs.UpdateChannel(&Channel{
-		ID:          "global-token-project",
-		ReplayToken: "project-override",
-	})
+	got, err = rs.GetClientCursor("test-channel", "test-client")
 	assert.NilError(t, err)
-
-	assert.Assert(t, rs.ValidateReplayToken("global-token-project", "project-override"))
-	assert.Assert(t, !rs.ValidateReplayToken("global-token-project", "global-secret"))
+	assert.Assert(t, got != nil)
+	assert.Equal(t, got.LastTimestampMs, int64(1234567899999))
 }

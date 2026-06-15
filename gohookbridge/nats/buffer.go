@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const DefaultMaxAge = 24 * time.Hour
+
 type entry struct {
 	channel   string
 	data      []byte

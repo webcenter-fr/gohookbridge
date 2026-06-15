@@ -1,8 +1,6 @@
 package gohookbridge
 
 import (
-	"time"
-
 	"github.com/urfave/cli/v2"
 )
 
@@ -136,6 +134,17 @@ var clientFlags = []cli.Flag{
 		Usage:   "Path to the client encryption keypair JSON file",
 		EnvVars: []string{"GOSMEE_ENCRYPTION_KEY_FILE"},
 	},
+	&cli.BoolFlag{
+		Name:    "resume",
+		Aliases: []string{"r"},
+		Usage:   "Resume from last seen position on reconnect (uses client-id)",
+		Value:   false,
+	},
+	&cli.StringFlag{
+		Name:    "client-id",
+		Usage:   "Client identifier for resume tracking (auto-generated if not set)",
+		EnvVars: []string{"GOSMEE_CLIENT_ID"},
+	},
 }
 
 var serverFlags = []cli.Flag{
@@ -200,8 +209,8 @@ var serverFlags = []cli.Flag{
 	},
 	&cli.IntFlag{
 		Name:    "nats-port",
-		Usage:   "NATS embedded server port (0 = disabled, uses in-memory EventBroker)",
-		Value:   0,
+		Usage:   "NATS embedded server port",
+		Value:   4222,
 		EnvVars: []string{"GOSMEE_NATS_PORT"},
 	},
 	&cli.IntFlag{
@@ -215,23 +224,11 @@ var serverFlags = []cli.Flag{
 		Usage:   "NATS cluster routes (nats://host:6222). Required for HA, same hosts as raft-peers",
 		EnvVars: []string{"GOSMEE_NATS_ROUTES"},
 	},
-	&cli.DurationFlag{
-		Name:    "nats-buffer-ttl",
-		Usage:   "How long to keep webhook data in ring buffer for late subscribers",
-		Value:   1 * time.Hour,
-		EnvVars: []string{"GOSMEE_NATS_BUFFER_TTL"},
-	},
-	&cli.IntFlag{
+&cli.IntFlag{
 		Name:    "nats-buffer-size",
 		Usage:   "Max number of webhook entries to keep in ring buffer",
 		Value:   10000,
 		EnvVars: []string{"GOSMEE_NATS_BUFFER_SIZE"},
-	},
-	&cli.IntFlag{
-		Name:    "default-message-ttl",
-		Usage:   "Default message TTL in seconds for channels (0 = use nats-buffer-ttl)",
-		Value:   0,
-		EnvVars: []string{"GOSMEE_DEFAULT_MESSAGE_TTL"},
 	},
 	&cli.BoolFlag{
 		Name:  "dev-admin",

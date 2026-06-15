@@ -12,8 +12,8 @@
         <n-form-item label="Default Message TTL (seconds)">
           <n-input-number v-model:value="form.defaults.message_ttl_seconds" :min="0" placeholder="0 = use NATS buffer TTL" />
         </n-form-item>
-        <n-form-item label="Trust Proxy">
-          <n-switch v-model:value="form.server.trust_proxy" />
+        <n-form-item label="Behind Reverse Proxy">
+          <n-switch v-model:value="form.server.behind_reverse_proxy" />
         </n-form-item>
         <n-form-item label="CORS Origin">
           <n-input v-model:value="form.server.cors_origin" placeholder="*" />
@@ -45,7 +45,7 @@ const bodySizeUnits = bodySizeUnitOptions
 const form = reactive({
   server: {
     max_body_size: 26214400,
-    trust_proxy: false,
+    behind_reverse_proxy: false,
     cors_origin: '*',
     footer: '',
   },
@@ -60,7 +60,7 @@ onMounted(async () => {
     const bs = bytesToBodySizeUnit(config.value.server.max_body_size)
     form.server.max_body_size = Math.round(bs.value)
     bodySizeUnit.value = bs.unit
-    form.server.trust_proxy = config.value.server.trust_proxy
+    form.server.behind_reverse_proxy = config.value.server.behind_reverse_proxy
     form.server.cors_origin = config.value.server.cors_origin
     form.server.footer = config.value.server.footer
     form.defaults.message_ttl_seconds = config.value.defaults.message_ttl_seconds || 0
@@ -77,7 +77,7 @@ async function handleSave() {
   try {
     await api.updateGlobalConfig({
       server: { ...form.server, max_body_size: maxBodyBytes, session_secret: '' },
-      defaults: { webhook_secret: '', allowed_ips: [], replay_token: '', message_ttl_seconds: form.defaults.message_ttl_seconds },
+      defaults: { webhook_secret: '', allowed_ips: [], message_ttl_seconds: form.defaults.message_ttl_seconds },
     })
     message.success('Saved')
   } catch (e: any) {

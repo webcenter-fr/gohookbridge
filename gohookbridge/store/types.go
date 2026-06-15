@@ -9,13 +9,11 @@ import (
 
 type Channel struct {
 	ID                string   `json:"id" validate:"required,min=1,max=64,channelid"`
-	Name              string   `json:"name"`
 	Description       string   `json:"description,omitempty" validate:"max=500"`
 	WebhookSecret     string   `json:"webhook_secret,omitempty"`
 	AllowedIPs        []string `json:"allowed_ips,omitempty"`
 	MaxBodySize       int      `json:"max_body_size,omitempty"`
 	MessageTTLSeconds int      `json:"message_ttl_seconds,omitempty"`
-	ReplayToken       string   `json:"replay_token,omitempty"`
 	EncryptionMode    string   `json:"encryption_mode,omitempty"`
 	EncryptionKey     string   `json:"encryption_key,omitempty"`
 	EncryptionPubKeys []string `json:"encryption_public_keys,omitempty"`
@@ -42,7 +40,7 @@ type GlobalConfig struct {
 
 type ServerConfig struct {
 	MaxBodySize   int    `json:"max_body_size"`
-	TrustProxy    bool   `json:"trust_proxy"`
+	BehindReverseProxy    bool   `json:"behind_reverse_proxy"`
 	CORSOrigin    string `json:"cors_origin"`
 	Footer        string `json:"footer"`
 	SessionSecret string `json:"session_secret"`
@@ -55,7 +53,7 @@ type GlobalConfigResponse struct {
 
 type ServerConfigResponse struct {
 	MaxBodySize   int    `json:"max_body_size"`
-	TrustProxy    bool   `json:"trust_proxy"`
+	BehindReverseProxy    bool   `json:"behind_reverse_proxy"`
 	CORSOrigin    string `json:"cors_origin"`
 	Footer        string `json:"footer"`
 	SessionSecret string `json:"session_secret"`
@@ -64,7 +62,6 @@ type ServerConfigResponse struct {
 type DefaultChannelConfig struct {
 	WebhookSecret     string   `json:"webhook_secret"`
 	AllowedIPs        []string `json:"allowed_ips"`
-	ReplayToken       string   `json:"replay_token"`
 	MessageTTLSeconds int      `json:"message_ttl_seconds"`
 }
 
@@ -112,6 +109,12 @@ type OIDCProvider struct {
 	Scopes       []string `json:"scopes"`
 }
 
+type ClientCursor struct {
+	Channel         string `json:"channel"`
+	ClientID        string `json:"client_id"`
+	LastTimestampMs int64  `json:"last_timestamp_ms"`
+}
+
 type UserBinding struct {
 	UserID   string   `json:"user_id" validate:"required"`
 	Roles    []string `json:"roles"`
@@ -122,7 +125,7 @@ func defaultGlobalConfig() *GlobalConfig {
 	return &GlobalConfig{
 		Server: ServerConfig{
 			MaxBodySize: 26214400,
-			TrustProxy:  false,
+			BehindReverseProxy:  false,
 			CORSOrigin:  "*",
 		},
 		Defaults: DefaultChannelConfig{},
@@ -140,9 +143,6 @@ func resolveChannelConfig(p *Channel, global *GlobalConfig) *Channel {
 	}
 	if len(resolved.AllowedIPs) == 0 {
 		resolved.AllowedIPs = global.Defaults.AllowedIPs
-	}
-	if resolved.ReplayToken == "" {
-		resolved.ReplayToken = global.Defaults.ReplayToken
 	}
 	if resolved.MessageTTLSeconds == 0 && global.Defaults.MessageTTLSeconds > 0 {
 		resolved.MessageTTLSeconds = global.Defaults.MessageTTLSeconds

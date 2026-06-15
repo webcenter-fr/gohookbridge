@@ -74,6 +74,24 @@ func title(source string) string {
 	return cases.Title(language.Und, cases.NoLower).String(source)
 }
 
+func getOrCreateClientID() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	dir := filepath.Join(home, ".gohookbridge")
+	_ = os.MkdirAll(dir, 0700)
+
+	idFile := filepath.Join(dir, "client-id")
+	if data, err := os.ReadFile(idFile); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+
+	id := generateUUID()
+	_ = os.WriteFile(idFile, []byte(id), 0600)
+	return id
+}
+
 func (c goSmee) parse(now time.Time, data []byte) (payloadMsg, error) {
 	dt := now
 	pm := payloadMsg{
@@ -303,6 +321,8 @@ type replayDataOpts struct {
 	execOnEvents                []string
 	execEnvVars                 []string
 	encryptionKeyFile           string
+	resume                      bool
+	clientID                    string
 }
 
 func replayData(ropts *replayDataOpts, logger *slog.Logger, pm payloadMsg) error {
@@ -622,7 +642,7 @@ func isOlderVersion(v1, v2 []int) bool {
 	return len(v1) < len(v2)
 }
 
-func prepareSubscription(smeeURL, encryptionKeyFile string) (channel string, sseURL string, privateKey *[32]byte, err error) {
+func prepareSubscription(smeeURL, encryptionKeyFile string, resume bool, clientID string) (channel string, sseURL string, privateKey *[32]byte, err error) {
 	channel = filepath.Base(smeeURL)
 	baseURL := strings.TrimSuffix(smeeURL, "/"+channel)
 
@@ -634,6 +654,21 @@ func prepareSubscription(smeeURL, encryptionKeyFile string) (channel string, sse
 	}
 
 	sseURL = fmt.Sprintf("%s/events/%s", baseURL, channel)
+
+	if resume {
+		if clientID == "" {
+			clientID = getOrCreateClientID()
+		}
+		parsedURL, err := url.Parse(sseURL)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("parse sse url: %w", err)
+		}
+		query := parsedURL.Query()
+		query.Set("client_id", clientID)
+		parsedURL.RawQuery = query.Encode()
+		sseURL = parsedURL.String()
+	}
+
 	if encryptionKeyFile == "" {
 		return channel, sseURL, nil, nil
 	}
@@ -664,7 +699,7 @@ func (c goSmee) clientSetup() error {
 		c.logger.WarnContext(context.Background(), fmt.Sprintf("%sCould not get server version: %s", emoji("⚠", "yellow+b", c.replayDataOpts.decorate), err.Error()))
 	}
 
-	channel, sseURL, privateKey, err := prepareSubscription(c.replayDataOpts.smeeURL, c.replayDataOpts.encryptionKeyFile)
+	channel, sseURL, privateKey, err := prepareSubscription(c.replayDataOpts.smeeURL, c.replayDataOpts.encryptionKeyFile, c.replayDataOpts.resume, c.replayDataOpts.clientID)
 	if err != nil {
 		return err
 	}

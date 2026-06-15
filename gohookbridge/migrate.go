@@ -30,7 +30,7 @@ func migrateConfig(c *cli.Context) error {
 	}
 
 	if v := os.Getenv("GOSMEE_TRUST_PROXY"); v != "" {
-		global.Server.TrustProxy = v == "true" || v == "1"
+		global.Server.BehindReverseProxy = v == "true" || v == "1"
 		hasConfig = true
 	}
 
@@ -51,11 +51,6 @@ func migrateConfig(c *cli.Context) error {
 
 	if v := os.Getenv("GOSMEE_ALLOWED_IPS"); v != "" {
 		global.Defaults.AllowedIPs = strings.Split(v, ",")
-		hasConfig = true
-	}
-
-	if v := os.Getenv("GOSMEE_REPLAY_TOKEN"); v != "" {
-		global.Defaults.ReplayToken = v
 		hasConfig = true
 	}
 

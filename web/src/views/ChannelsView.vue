@@ -2,7 +2,10 @@
   <n-space vertical>
     <n-space justify="space-between" align="center">
       <n-h3 style="margin: 0;">Channels</n-h3>
-      <n-button type="primary" @click="showCreate = true">New Channel</n-button>
+      <n-space>
+        <n-button v-if="checkedRowKeys.length > 0" type="error" @click="showDeleteModal = true">Delete Selected ({{ checkedRowKeys.length }})</n-button>
+        <n-button type="primary" @click="showCreate = true">New Channel</n-button>
+      </n-space>
     </n-space>
 
     <n-input
@@ -19,6 +22,8 @@
       :single-line="false"
       :virtual-scroll="filteredChannels.length > 50"
       :max-height="600"
+      :row-key="(row: Channel) => row.id"
+      v-model:checked-row-keys="checkedRowKeys"
     />
 
     <n-modal v-model:show="showCreate" title="New Channel" preset="card" style="width: 400px;">
@@ -35,15 +40,29 @@
         </n-space>
       </n-form>
     </n-modal>
+
+    <n-modal v-model:show="showDeleteModal" title="Delete Channels" preset="card" style="width: 450px;">
+      <template v-if="checkedRowKeys.length > 0">
+        <n-text type="warning">You are about to delete the following channels. This action cannot be undone.</n-text>
+        <n-list>
+          <n-list-item v-for="id in checkedRowKeys" :key="id">{{ id }}</n-list-item>
+        </n-list>
+        <n-space justify="end" style="margin-top: 16px;">
+          <n-button @click="showDeleteModal = false">Cancel</n-button>
+          <n-button type="error" :loading="deleting" @click="handleDeleteSelected">Delete</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </n-space>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, h, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { NSpace, NH3, NButton, NDataTable, NModal, NForm, NFormItem, NInput, NTag, type FormInst } from 'naive-ui'
+import { NSpace, NH3, NButton, NDataTable, NModal, NForm, NFormItem, NInput, NTag, NList, NListItem, NText, type FormInst } from 'naive-ui'
 import { useChannelsStore } from '../stores/channels'
 import type { Channel } from '../api/client'
+import { api } from '../api/client'
 import { useMessage } from 'naive-ui'
 
 const channelsStore = useChannelsStore()
@@ -56,13 +75,15 @@ const formRef = ref<FormInst | null>(null)
 const formData = reactive({ id: '', description: '' })
 
 const searchQuery = ref('')
+const checkedRowKeys = ref<string[]>([])
+const showDeleteModal = ref(false)
+const deleting = ref(false)
 
 const filteredChannels = computed(() => {
   const q = searchQuery.value.toLowerCase()
   if (!q) return channelsStore.channels
   return channelsStore.channels.filter(ch =>
-    ch.id.toLowerCase().includes(q) ||
-    (ch.name && ch.name.toLowerCase().includes(q))
+    ch.id.toLowerCase().includes(q)
   )
 })
 
@@ -78,8 +99,8 @@ const rules = {
 }
 
 const columns = [
+  { type: 'selection' as const },
   { title: 'ID', key: 'id' as const },
-  { title: 'Name', key: 'name' as const },
   {
     title: 'Webhook Secret',
     key: 'webhook_secret' as const,
@@ -130,6 +151,28 @@ async function handleCreate(e: Event) {
     message.error(e.message)
   } finally {
     creating.value = false
+  }
+}
+
+async function handleDeleteSelected() {
+  deleting.value = true
+  const ids = [...checkedRowKeys.value]
+  const results = await Promise.allSettled(ids.map(id => api.deleteChannel(id)))
+  await channelsStore.fetchChannels()
+  deleting.value = false
+  showDeleteModal.value = false
+  const failed: string[] = []
+  const ok = results.filter((r, i) => {
+    if (r.status === 'fulfilled') return true
+    failed.push(ids[i])
+    return false
+  }).length
+  if (failed.length === 0) {
+    checkedRowKeys.value = []
+    message.success(`Deleted ${ok} channel(s)`)
+  } else {
+    checkedRowKeys.value = failed
+    message.warning(`Deleted ${ok}, failed ${failed.length} channel(s)`)
   }
 }
 </script>

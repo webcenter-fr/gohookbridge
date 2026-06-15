@@ -100,7 +100,7 @@ non-publicly accessible endpoint, forward those requests to your local service.`
 					{
 						Name:  "migrate-config",
 						Usage: "Migrate deprecated environment variables to a bootstrap.yaml config",
-						Description: `Reads deprecated environment variables (GOSMEE_WEBHOOK_SIGNATURE, GOSMEE_ALLOWED_IPS, GOSMEE_REPLAY_TOKEN, etc.) and outputs a bootstrap.yaml configuration to stdout.`,
+						Description: `Reads deprecated environment variables (GOSMEE_WEBHOOK_SIGNATURE, GOSMEE_ALLOWED_IPS, etc.) and outputs a bootstrap.yaml configuration to stdout.`,
 						Action: func(_ *cli.Context) error {
 							return migrateConfig(nil)
 						},
@@ -205,6 +205,8 @@ non-publicly accessible endpoint, forward those requests to your local service.`
 							execOnEvents:      c.StringSlice("exec-on-events"),
 							execEnvVars:       c.StringSlice("exec-env-vars"),
 							encryptionKeyFile: c.String("encryption-key-file"),
+							resume:            c.Bool("resume"),
+							clientID:          c.String("client-id"),
 						},
 						logger:  logger,
 						channel: c.String("channel"),

@@ -16,7 +16,7 @@ internet → [gohookbridge server] → [/login] → [API /admin]
 
 - Webhook authenticity (signature validation, IP allowlisting)
 - Payload confidentiality on the relay stream (end-to-end encryption)
-- Server availability (payload size and channel name limits)
+- Server availability (payload size and channel ID length limits)
 - **API and admin access via RBAC/ACL (session authentication + permission model)**
 - **Raft-cluster-stored configuration (no live flag/env-var re-reading)**
 
@@ -34,7 +34,7 @@ internet → [gohookbridge server] → [/login] → [API /admin]
 | Forged or tampered webhooks from untrusted senders | Signature validation, IP allowlisting |
 | Eavesdropping on the SSE relay stream | End-to-end encryption |
 | Unauthorized replay injection | Per-project or global replay token via Raft config |
-| Payload-based resource exhaustion (DoS) | Per-project or global max_body_size, channel name length limit |
+| Payload-based resource exhaustion (DoS) | Per-project or global max_body_size, channel ID length limit |
 | Command injection via exec scripts | `--exec` hardening, signature validation, IP allowlisting |
 | Unauthorized access to protected channels | Encrypted channels with public-key authentication |
 | Unauthorized admin/API access | RBAC ACL + session authentication (HMAC-signed cookies) |
@@ -71,45 +71,45 @@ IP allowlisting and signature validation are complementary controls. Use both wh
 
 If you know which IP ranges your webhooks will come from, restrict them with `allowed_ips` configured per-project or globally via `bootstrap.yaml` or Admin UI. Requests from other IPs receive a 403 and are logged. The restriction applies only to POST requests — the web UI remains open.
 
-The examples below use `--trust-proxy` because they assume gohookbridge sits behind a reverse proxy. **Only enable `--trust-proxy` when gohookbridge is reachable exclusively through a trusted proxy that overwrites the forwarded headers** (see the warning under [Trusting Proxy Headers Safely](#trusting-proxy-headers-safely) below). If gohookbridge is directly reachable, drop `--trust-proxy` from these commands so the allowlist is enforced against the real connection address.
+Set `behind_reverse_proxy: true` in global config (via `bootstrap.yaml` or Admin UI) when gohookbridge sits behind a reverse proxy. **Only enable `behind_reverse_proxy` when gohookbridge is reachable exclusively through a trusted proxy that overwrites the forwarded headers** (see the warning under [Behind a Reverse Proxy Safely](#behind-a-reverse-proxy-safely) below). If gohookbridge is directly reachable, leave `behind_reverse_proxy` off so the allowlist is enforced against the real connection address.
 
-```shell
-# Accept webhooks from GitHub's ranges only
-gohookbridge server --trust-proxy \
-  --allowed-ips 192.30.252.0/22 \
-  --allowed-ips 185.199.108.0/22 \
-  --allowed-ips 140.82.112.0/20
+> **Legacy CLI note:** The examples below use the deprecated `--trust-proxy` flag and `--allowed-ips` flag for historical context. Configuration is now managed via `bootstrap.yaml` or Admin UI. Use `behind_reverse_proxy: true` in global config instead of `--trust-proxy`, and set `allowed_ips` per-channel or in global defaults instead of `--allowed-ips`.
 
-# GitLab.com
-gohookbridge server --trust-proxy \
-  --allowed-ips 35.231.145.151 \
-  --allowed-ips 34.74.90.64 \
-  --allowed-ips 34.74.226.93
-
-# Bitbucket Cloud
-gohookbridge server --trust-proxy \
-  --allowed-ips 34.199.54.113 \
-  --allowed-ips 34.232.119.183 \
-  --allowed-ips 34.236.25.177 \
-  --allowed-ips 35.171.175.212
+```yaml
+# bootstrap.yaml — IP restriction example (behind a reverse proxy)
+global:
+  server:
+    behind_reverse_proxy: true
+  defaults:
+    allowed_ips:
+      - 192.30.252.0/22    # GitHub
+      - 185.199.108.0/22
+      - 140.82.112.0/20
+      # - 35.231.145.151   # GitLab.com
+      # - 34.74.90.64
+      # - 34.74.226.93
+      # - 34.199.54.113    # Bitbucket Cloud
+      # - 34.232.119.183
+      # - 34.236.25.177
+      # - 35.171.175.212
 ```
 
-Use `--trust-proxy` when gohookbridge sits behind a reverse proxy so that `X-Forwarded-For` / `X-Real-IP` headers are used for the client IP. Both IPv4 and IPv6 addresses and CIDR ranges are supported. You can also set allowed IPs via the `GOSMEE_ALLOWED_IPS` environment variable (comma-separated) and enable proxy trust via `GOSMEE_TRUST_PROXY`.
+Set `behind_reverse_proxy: true` in global config when gohookbridge sits behind a reverse proxy so that `X-Forwarded-For` / `X-Real-IP` headers are used for the client IP. Both IPv4 and IPv6 addresses and CIDR ranges are supported. Allowed IPs can be set via `bootstrap.yaml` or Admin UI in the `allowed_ips` field per-channel or in global defaults.
 
 Official IP range docs: [GitHub](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-githubs-ip-addresses) · [GitLab.com](https://docs.gitlab.com/ee/user/gitlab_com/index.html#ipv4-addresses) · [Bitbucket Cloud](https://support.atlassian.com/bitbucket-cloud/docs/what-are-the-bitbucket-cloud-ip-addresses-i-should-use-to-configure-my-corporate-firewall/)
 
-### Trusting Proxy Headers Safely
+### Behind a Reverse Proxy Safely
 
-When `trust_proxy: true` is set in global config (via `bootstrap.yaml` or Admin UI), gohookbridge derives the client IP from the `X-Forwarded-For` (first value) and `X-Real-IP` request headers instead of the network connection's source address. These headers are trivially set by any HTTP client.
+When `behind_reverse_proxy: true` is set in global config (via `bootstrap.yaml` or Admin UI), gohookbridge derives the client IP from the `X-Forwarded-For` (first value) and `X-Real-IP` request headers instead of the network connection's source address. These headers are trivially set by any HTTP client.
 
-> **Warning:** `--trust-proxy` makes `--allowed-ips` only as trustworthy as whatever sets those headers. If gohookbridge is reachable directly (not solely through your proxy), an attacker can send `X-Forwarded-For: <an-allowed-ip>` and bypass the allowlist entirely. The same spoofing also forges the client IP shown in logs.
+> **Warning:** `behind_reverse_proxy` makes `allowed_ips` only as trustworthy as whatever sets those headers. If gohookbridge is reachable directly (not solely through your proxy), an attacker can send `X-Forwarded-For: <an-allowed-ip>` and bypass the allowlist entirely. The same spoofing also forges the client IP shown in logs.
 
-Only enable `--trust-proxy` when **both** of these hold:
+Only enable `behind_reverse_proxy` when **both** of these hold:
 
-- **gohookbridge is not directly reachable.** Bind it to `localhost` (the default) or an internal interface, or firewall the listening port so the reverse proxy is the only path to it. Do not expose the gohookbridge port to the public internet while `--trust-proxy` is on.
+- **gohookbridge is not directly reachable.** Bind it to `localhost` (the default) or an internal interface, or firewall the listening port so the reverse proxy is the only path to it. Do not expose the gohookbridge port to the public internet while `behind_reverse_proxy` is on.
 - **The proxy overwrites the forwarded headers.** Configure your proxy to *replace* `X-Forwarded-For` / `X-Real-IP` with the real connection address rather than appending to or passing through client-supplied values. A proxy that appends (so a client-controlled value ends up first) is unsafe, because gohookbridge trusts the first `X-Forwarded-For` entry.
 
-If you cannot guarantee both conditions, leave `--trust-proxy` off. Without it, gohookbridge uses the connection's source address, which cannot be spoofed by the client — though behind a proxy that means every request appears to come from the proxy, so `--allowed-ips` should then contain the proxy's address (or you should enforce source IPs at the proxy/firewall instead). Pair IP allowlisting with `--webhook-signature` so a spoofed or proxy-originated request still fails cryptographic validation.
+If you cannot guarantee both conditions, leave `behind_reverse_proxy` off. Without it, gohookbridge uses the connection's source address, which cannot be spoofed by the client — though behind a proxy that means every request appears to come from the proxy, so `allowed_ips` should then contain the proxy's address (or you should enforce source IPs at the proxy/firewall instead). Pair IP allowlisting with webhook signature validation so a spoofed or proxy-originated request still fails cryptographic validation.
 
 ### Validating Webhook Signatures
 
@@ -134,7 +134,7 @@ Secrets can also be set via `GOSMEE_WEBHOOK_SIGNATURE` (comma-separated).
 
 The `/replay/{channel}` endpoint re-sends a captured event to all SSE subscribers on that channel. This is useful for debugging and incident replay, but it is also a write path into your relay stream.
 
-Without authentication, anyone who can reach the server can POST to `/replay/{channel}` and inject payloads into any channel they can name.
+Without authentication, anyone who can reach the server can POST to `/replay/{channel}` and inject payloads into any known channel.
 
 Set `replay_token` per-project or globally via `bootstrap.yaml` (or Admin UI) to require bearer-token authentication.
 
@@ -255,7 +255,7 @@ gohookbridge client --sse-buffer-size 5242880 <SMEE_URL> <TARGET_URL>  # 5 MB
 
 Raising these limits increases memory consumption proportionally. A server with a very high `--max-body-size` is also a more attractive DoS target. If you run gohookbridge in Kubernetes, update the memory `requests` and `limits` in your deployment manifests when you change these values, or Pods may be OOMKilled under load.
 
-### Channel Name Length Limit
+### Channel ID Length Limit
 
 Channel names are capped at 64 characters across all endpoints. This guards against resource exhaustion from pathologically long names — no configuration is needed.
 
@@ -337,7 +337,7 @@ global:
     session_secret: "your-32-byte-hex-secret"
     cors_origin: "https://dashboard.example.com"
     max_body_size: 26214400
-    trust_proxy: true
+    behind_reverse_proxy: true
   defaults:
     webhook_signatures: ["global-webhook-secret"]
     allowed_ips: ["192.30.252.0/22"]

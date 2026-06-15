@@ -30,7 +30,6 @@ type BootstrapUser struct {
 
 type BootstrapChannel struct {
 	ID                string   `yaml:"id" json:"id"`
-	Name              string   `yaml:"name" json:"name"`
 	Description       string   `yaml:"description,omitempty" json:"description,omitempty"`
 	WebhookSecret     string   `yaml:"webhook_secret,omitempty" json:"webhook_secret,omitempty"`
 	WebhookSignatures []string `yaml:"webhook_signatures,omitempty" json:"webhook_signatures,omitempty"`
@@ -80,7 +79,6 @@ func (rs *RaftStore) ApplyBootstrap(cfg *BootstrapConfig) error {
 	for _, p := range cfg.Channels {
 		ch := &Channel{
 			ID:                p.ID,
-			Name:              p.Name,
 			Description:       p.Description,
 			WebhookSecret:     p.WebhookSecret,
 			WebhookSignatures: p.WebhookSignatures,

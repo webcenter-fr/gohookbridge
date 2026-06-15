@@ -8,6 +8,7 @@
             :events="eventsStore.events"
             :connected="eventsStore.connected"
             :connecting="eventsStore.connecting"
+            :message-ttl="channel?.message_ttl_seconds"
             @replay="handleReplayEvent"
           />
           <n-space>
@@ -23,9 +24,6 @@
         <n-form v-if="channel" label-placement="top" style="max-width: 600px;">
           <n-form-item label="Channel ID">
             <n-input :value="channel.id" disabled />
-          </n-form-item>
-          <n-form-item label="Name">
-            <n-input v-model:value="form.name" />
           </n-form-item>
           <n-form-item label="Description">
             <n-input v-model:value="form.description" type="textarea" :maxlength="500" />
@@ -48,9 +46,6 @@
           <n-form-item label="Message TTL (seconds)">
             <n-input-number v-model:value="form.message_ttl_seconds" :min="0" placeholder="0 = use global default" />
           </n-form-item>
-          <n-form-item label="Replay Token">
-            <n-input v-model:value="form.replay_token" placeholder="replay-token" />
-          </n-form-item>
           <n-form-item label="Encryption Mode">
             <n-select v-model:value="form.encryption_mode" :options="encryptionModeOptions" />
           </n-form-item>
@@ -66,6 +61,7 @@
           </n-form-item>
           <n-space>
             <n-button type="primary" @click="handleSave">Save</n-button>
+            <n-button type="error" secondary @click="showDeleteModal = true">Delete Channel</n-button>
           </n-space>
         </n-form>
       </n-tab-pane>
@@ -151,12 +147,25 @@
         </n-space>
       </n-drawer-content>
     </n-drawer>
+
+    <n-modal v-model:show="showDeleteModal" title="Delete Channel" preset="card" style="width: 400px;">
+      <n-space vertical>
+        <n-text type="warning">Are you sure you want to delete channel '{{ channelId }}'? This action cannot be undone.</n-text>
+        <n-form-item label="Type the channel ID to confirm">
+          <n-input v-model:value="deleteConfirmInput" :placeholder="channelId" />
+        </n-form-item>
+        <n-space justify="end">
+          <n-button @click="showDeleteModal = false">Cancel</n-button>
+          <n-button type="error" :disabled="deleteConfirmInput !== channelId" :loading="deleting" @click="handleDelete">Delete</n-button>
+        </n-space>
+      </n-space>
+    </n-modal>
   </n-spin>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { NSpace, NSpin, NTabs, NTabPane, NForm, NFormItem, NInput, NInputNumber, NButton, NDynamicInput, NSelect, NCode, NList, NListItem, NText, NEllipsis, NEmpty, NH4, NCard, NAlert, NDrawer, NDrawerContent, type SelectOption } from 'naive-ui'
 import { api } from '../api/client'
 import type { Channel } from '../api/client'
@@ -166,6 +175,7 @@ import { useMessage } from 'naive-ui'
 import { bodySizeToBytes, bytesToBodySizeUnit, bodySizeUnitOptions, type BodySizeUnit } from '../utils/units'
 
 const route = useRoute()
+const router = useRouter()
 const channelId = route.params.id as string
 const eventsStore = useEventsStore()
 const message = useMessage()
@@ -175,13 +185,11 @@ const channel = ref<Channel | null>(null)
 const tab = ref('data')
 
 const form = reactive({
-  name: '',
   description: '',
   webhook_secret: '',
   allowed_ips: [''] as string[],
   max_body_size: 26214400,
   message_ttl_seconds: 0,
-  replay_token: '',
   encryption_mode: '',
   encryption_key: '',
   encryption_public_keys: [''] as string[],
@@ -202,6 +210,9 @@ const ghRepo = ref('')
 const ghEvent = ref('push')
 const rawPayload = ref('')
 const showSendDrawer = ref(false)
+const showDeleteModal = ref(false)
+const deleteConfirmInput = ref('')
+const deleting = ref(false)
 
 const githubEventOptions: SelectOption[] = [
   { label: 'push', value: 'push' },
@@ -319,13 +330,11 @@ async function copyText(text: string) {
 onMounted(async () => {
   try {
     channel.value = await api.getChannel(channelId)
-    form.name = channel.value.name || ''
     form.description = channel.value.description || ''
     form.webhook_secret = channel.value.webhook_secret || ''
     form.allowed_ips = (channel.value.allowed_ips?.length ? channel.value.allowed_ips : [''])
     form.max_body_size = channel.value.max_body_size || 26214400
     form.message_ttl_seconds = channel.value.message_ttl_seconds || 0
-    form.replay_token = channel.value.replay_token || ''
     form.encryption_mode = channel.value.encryption_mode || ''
     form.encryption_key = channel.value.encryption_key || ''
     form.encryption_public_keys = (channel.value.encryption_public_keys?.length ? channel.value.encryption_public_keys : [''])
@@ -351,13 +360,11 @@ async function handleSave() {
   const maxBodyBytes = bodySizeToBytes(form.max_body_size, bodySizeUnit.value)
   try {
     await api.updateChannel(channelId, {
-      name: form.name,
       description: form.description || undefined,
       webhook_secret: form.webhook_secret || undefined,
       allowed_ips: clean(form.allowed_ips),
       max_body_size: maxBodyBytes,
       message_ttl_seconds: form.message_ttl_seconds || 0,
-      replay_token: form.replay_token || undefined,
       encryption_mode: form.encryption_mode || undefined,
       encryption_key: form.encryption_key || undefined,
       encryption_public_keys: form.encryption_mode === 'provider_side' ? clean(form.encryption_public_keys) : [],
@@ -397,6 +404,21 @@ async function handleReplayEvent(eventId: string) {
     message.success(`Event ${eventId.slice(0, 8)}... replayed`)
   } catch (e: any) {
     message.error(e.message || 'Failed to replay event')
+  }
+}
+
+async function handleDelete() {
+  deleting.value = true
+  try {
+    await api.deleteChannel(channelId)
+    message.success('Channel deleted')
+    router.push('/channels')
+  } catch (e: any) {
+    message.error(e.message || 'Failed to delete channel')
+  } finally {
+    deleting.value = false
+    showDeleteModal.value = false
+    deleteConfirmInput.value = ''
   }
 }
 </script>

@@ -32,7 +32,7 @@ func setupAPI(t *testing.T) (*RaftStore, *chi.Mux) {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	})
-	RegisterAPIHandlers(r, rs)
+	RegisterAPIHandlers(r, rs, nil)
 	return rs, r
 }
 
@@ -159,6 +159,30 @@ func TestCreateChannel_Duplicate(t *testing.T) {
 	assert.Equal(t, w2.Code, http.StatusConflict)
 }
 
+func TestDeleteChannel_Success(t *testing.T) {
+	_, router := setupAPI(t)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("POST", "/channels", map[string]string{"id": "del-test"}))
+	assert.Equal(t, w.Code, http.StatusCreated)
+
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("DELETE", "/channels/del-test", nil))
+	assert.Equal(t, w.Code, http.StatusNoContent)
+
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("GET", "/channels/del-test", nil))
+	assert.Equal(t, w.Code, http.StatusNotFound)
+}
+
+func TestDeleteChannel_Nonexistent(t *testing.T) {
+	_, router := setupAPI(t)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("DELETE", "/channels/nonexistent", nil))
+	assert.Equal(t, w.Code, http.StatusNoContent)
+}
+
 func TestUpdateChannel_Valid(t *testing.T) {
 	rs, router := setupAPI(t)
 
@@ -166,11 +190,10 @@ func TestUpdateChannel_Valid(t *testing.T) {
 	assert.NilError(t, rs.CreateChannel(ch))
 
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, httptest.NewRequest("PUT", "/channels/update-test", bytes.NewReader([]byte(`{"name":"updated","description":"new desc"}`))))
+	router.ServeHTTP(w, httptest.NewRequest("PUT", "/channels/update-test", bytes.NewReader([]byte(`{"description":"new desc"}`))))
 	assert.Equal(t, w.Code, http.StatusOK)
 
 	got, err := rs.GetChannel("update-test")
 	assert.NilError(t, err)
-	assert.Equal(t, got.Name, "updated")
 	assert.Equal(t, got.Description, "new desc")
 }

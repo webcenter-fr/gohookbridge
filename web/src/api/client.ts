@@ -12,13 +12,11 @@ export interface AuthMethods {
 
 export interface Channel {
   id: string
-  name: string
   description?: string
   webhook_secret?: string
   allowed_ips?: string[]
   max_body_size?: number
   message_ttl_seconds?: number
-  replay_token?: string
   encryption_mode?: string
   encryption_key?: string
   encryption_public_keys?: string[]
@@ -27,7 +25,7 @@ export interface Channel {
 export interface GlobalConfig {
   server: {
     max_body_size: number
-    trust_proxy: boolean
+    behind_reverse_proxy: boolean
     cors_origin: string
     footer: string
     session_secret: string
@@ -35,7 +33,6 @@ export interface GlobalConfig {
   defaults: {
     webhook_secret: string
     allowed_ips: string[]
-    replay_token: string
     message_ttl_seconds: number
   }
 }

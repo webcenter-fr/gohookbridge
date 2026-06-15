@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/r3labs/sse/v2"
 	"gotest.tools/v3/assert"
 
 	"github.com/webcenter-fr/gohookbridge/gohookbridge/nats"
@@ -217,20 +216,12 @@ func TestWebhookSignatureValidation(t *testing.T) {
 }
 
 func TestHandleWebhookPost(t *testing.T) {
-	// Set up router, SSE server, and event broker
-	router := chi.NewRouter()
-	events := sse.New()
-	eventBroker := NewEventBroker()
+	broker := newNatsBroker(t, 4241)
 	rs := storetest.NewRaftStore(t)
 
-	// Set up the webhook endpoint
-	router.Post("/webhook/{channel}", handleWebhookPost(events, eventBroker, nil, rs))
-
 	t.Run("Valid Webhook", func(t *testing.T) {
-		// Create a subscriber to verify event was published
-		subscriber := eventBroker.Subscribe("test-channel", nil)
+		historical, live := broker.Subscribe("test-channel", time.Time{}, 10)
 
-		// Create a test request
 		payload := map[string]any{
 			"event": "test",
 			"data":  "value",
@@ -240,47 +231,33 @@ func TestHandleWebhookPost(t *testing.T) {
 		req.Header.Set("Content-Type", contentType)
 		req.Header.Set("X-Event-Type", "test-event")
 
-		// Record the response
 		w := httptest.NewRecorder()
 
-		// Route the request
-		// Set up URL parameters since we're not using the full router
 		rctx := chi.NewRouteContext()
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(events, eventBroker, nil, rs)
+		handler := handleWebhookPost(broker, rs)
 		handler(w, req)
 
-		// Check response
 		resp := w.Result()
 		assert.Equal(t, resp.StatusCode, http.StatusAccepted)
 
-		// Check that the event was published
 		select {
-		case event := <-subscriber.Events:
-			// Verify the event data contains our payload
+		case event := <-live:
 			assert.Assert(t, len(event) > 0)
-
-			// Parse the event and check key fields
 			var eventData map[string]any
 			err := json.Unmarshal(event, &eventData)
 			assert.NilError(t, err)
-
-			// Check that headers were properly set
 			assert.Equal(t, eventData["x-event-type"], "test-event")
-
-			// Check that the body was base64 encoded
 			assert.Assert(t, eventData["bodyB"] != nil)
-
-			// Check that timestamp was added
 			assert.Assert(t, eventData["timestamp"] != nil)
-		default:
-			t.Fatal("Expected event to be published but none was received")
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for NATS message")
 		}
+		assert.Equal(t, 0, len(historical))
 
-		// Clean up
-		eventBroker.Unsubscribe("test-channel", subscriber)
+		broker.Unsubscribe("test-channel", live)
 	})
 
 	t.Run("Unconfigured Channel Stays Plaintext", func(t *testing.T) {
@@ -293,7 +270,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "unknown-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(events, eventBroker, nil, rs)
+		handler := handleWebhookPost(broker, rs)
 		handler(w, req)
 
 		resp := w.Result()
@@ -310,7 +287,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(events, eventBroker, nil, rs)
+		handler := handleWebhookPost(broker, rs)
 		handler(w, req)
 
 		resp := w.Result()
@@ -330,7 +307,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(events, eventBroker, nil, rs)
+		handler := handleWebhookPost(broker, rs)
 		handler(w, req)
 
 		resp := w.Result()
@@ -340,7 +317,6 @@ func TestHandleWebhookPost(t *testing.T) {
 	t.Run("Signature Validation", func(t *testing.T) {
 		payload := []byte(`{"event":"test"}`)
 
-		// Create project with webhook signature in store
 		assert.NilError(t, rs.CreateChannel(&store.Channel{
 			ID:            "test-channel",
 			WebhookSecret: "test-secret",
@@ -357,7 +333,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(events, eventBroker, nil, rs)
+		handler := handleWebhookPost(broker, rs)
 		handler(w, req)
 
 		resp := w.Result()
@@ -374,7 +350,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler = handleWebhookPost(events, eventBroker, nil, rs)
+		handler = handleWebhookPost(broker, rs)
 		handler(w, req)
 
 		resp = w.Result()
@@ -382,88 +358,15 @@ func TestHandleWebhookPost(t *testing.T) {
 	})
 }
 
-func TestHandleReplayPost(t *testing.T) {
-	makeReplayRequest := func(t *testing.T, replayToken, authHeader string) *httptest.ResponseRecorder {
-		t.Helper()
-
-		events := sse.New()
-		eventBroker := NewEventBroker()
-		subscriber := eventBroker.Subscribe("test-channel", nil)
-		defer eventBroker.Unsubscribe("test-channel", subscriber)
-
-		rs := storetest.NewRaftStore(t)
-		if replayToken != "" {
-			assert.NilError(t, rs.SetSessionSecret(replayToken))
-			assert.NilError(t, rs.CreateChannel(&store.Channel{
-				ID:          "test-channel",
-				ReplayToken: replayToken,
-			}))
-		}
-
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/replay/test-channel", strings.NewReader(`{"event":"replay"}`))
-		req.Header.Set("Content-Type", contentType)
-		if authHeader != "" {
-			req.Header.Set("Authorization", authHeader)
-		}
-
-		rctx := chi.NewRouteContext()
-		rctx.URLParams.Add("channel", "test-channel")
-		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
-		w := httptest.NewRecorder()
-		handler := handleReplayPost(events, eventBroker, nil, rs)
-		handler(w, req)
-
-		if w.Code == http.StatusAccepted {
-			select {
-			case event := <-subscriber.Events:
-				var eventData map[string]any
-				err := json.Unmarshal(event, &eventData)
-				assert.NilError(t, err)
-				assert.Assert(t, eventData["authorization"] == nil)
-			default:
-				t.Fatal("Expected event to be published but none was received")
-			}
-		}
-
-		return w
-	}
-
-	t.Run("No token configured and no auth header returns accepted", func(t *testing.T) {
-		resp := makeReplayRequest(t, "", "")
-		assert.Equal(t, resp.Code, http.StatusAccepted)
-	})
-
-	t.Run("Token configured and correct bearer auth returns accepted", func(t *testing.T) {
-		resp := makeReplayRequest(t, "test-replay-token", "Bearer test-replay-token")
-		assert.Equal(t, resp.Code, http.StatusAccepted)
-	})
-
-	t.Run("Token configured and wrong bearer auth returns unauthorized", func(t *testing.T) {
-		resp := makeReplayRequest(t, "test-replay-token", "Bearer wrong-token")
-		assert.Equal(t, resp.Code, http.StatusUnauthorized)
-	})
-
-	t.Run("Token configured and missing auth header returns unauthorized", func(t *testing.T) {
-		resp := makeReplayRequest(t, "test-replay-token", "")
-		assert.Equal(t, resp.Code, http.StatusUnauthorized)
-	})
-
-	t.Run("Token configured and malformed auth header returns unauthorized", func(t *testing.T) {
-		resp := makeReplayRequest(t, "test-replay-token", "Basic xxx")
-		assert.Equal(t, resp.Code, http.StatusUnauthorized)
-	})
-}
-
 func TestHandleEventsGet(t *testing.T) {
-	eventBroker := NewEventBroker()
+	broker := newNatsBroker(t, 4243)
 	allowedKey := mustGeneratePublicKey(t)
 	protectedChannels := mustProtectedChannels(t, map[string][]string{
 		"test-channel": {allowedKey},
 	})
 	router := chi.NewRouter()
 	rs := storetest.NewRaftStore(t)
-	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(eventBroker, nil, protectedChannels, rs))
+	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, protectedChannels, rs))
 
 	t.Run("Rejects Invalid Public Key", func(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/test-channel?pubkey=!!!", nil)
@@ -484,6 +387,10 @@ func TestHandleEventsGet(t *testing.T) {
 	})
 
 	t.Run("Allows Plaintext Subscriber On Unprotected Channel", func(t *testing.T) {
+		err := broker.Publish("plain-channel", []byte(`{"plain":true}`))
+		assert.NilError(t, err)
+		time.Sleep(100 * time.Millisecond)
+
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/plain-channel", nil)
 		reqCtx, cancel := context.WithCancel(req.Context())
 		req = req.WithContext(reqCtx)
@@ -495,14 +402,6 @@ func TestHandleEventsGet(t *testing.T) {
 			router.ServeHTTP(response, req)
 			close(done)
 		}()
-
-		assert.Assert(t, eventually(t, func() bool {
-			eventBroker.RLock()
-			defer eventBroker.RUnlock()
-			return len(eventBroker.subscribers["plain-channel"]) == 1
-		}))
-
-		eventBroker.Publish("plain-channel", []byte(`{"plain":true}`))
 
 		assert.Assert(t, eventually(t, func() bool {
 			return strings.Contains(response.Body.String(), `{"plain":true}`)
@@ -519,6 +418,10 @@ func TestHandleEventsGet(t *testing.T) {
 	})
 
 	t.Run("Allows Unprotected Channel Even With PubKey Query", func(t *testing.T) {
+		err := broker.Publish("unknown-channel", []byte(`{"plain":true}`))
+		assert.NilError(t, err)
+		time.Sleep(100 * time.Millisecond)
+
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/unknown-channel?pubkey="+url.QueryEscape(allowedKey), nil)
 		reqCtx, cancel := context.WithCancel(req.Context())
 		req = req.WithContext(reqCtx)
@@ -532,65 +435,9 @@ func TestHandleEventsGet(t *testing.T) {
 		}()
 
 		assert.Assert(t, eventually(t, func() bool {
-			eventBroker.RLock()
-			defer eventBroker.RUnlock()
-			return len(eventBroker.subscribers["unknown-channel"]) == 1
-		}))
-
-		eventBroker.Publish("unknown-channel", []byte(`{"plain":true}`))
-		assert.Assert(t, eventually(t, func() bool {
 			return strings.Contains(response.Body.String(), `{"plain":true}`)
 		}))
 		assert.Assert(t, !strings.Contains(response.Body.String(), `"ciphertext"`))
-
-		cancel()
-		<-done
-	})
-
-	t.Run("Allows Authorized Subscriber", func(t *testing.T) {
-		publicKey, privateKey, err := GenerateKeyPair()
-		assert.NilError(t, err)
-		allowed := EncodePublicKey(publicKey)
-
-		protectedChannels = mustProtectedChannels(t, map[string][]string{
-			"test-channel": {allowed},
-		})
-		router = chi.NewRouter()
-		router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(eventBroker, nil, protectedChannels, rs))
-
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/test-channel?pubkey="+url.QueryEscape(allowed), nil)
-		reqCtx, cancel := context.WithCancel(req.Context())
-		req = req.WithContext(reqCtx)
-		defer cancel()
-
-		response := httptest.NewRecorder()
-		done := make(chan struct{})
-		go func() {
-			router.ServeHTTP(response, req)
-			close(done)
-		}()
-
-		assert.Assert(t, eventually(t, func() bool {
-			eventBroker.RLock()
-			defer eventBroker.RUnlock()
-			return len(eventBroker.subscribers["test-channel"]) == 1
-		}))
-
-		eventBroker.Publish("test-channel", []byte(`{"secret":true}`))
-
-		assert.Assert(t, eventually(t, func() bool {
-			return strings.Contains(response.Body.String(), `"ciphertext"`)
-		}))
-
-		body := response.Body.String()
-		assert.Assert(t, strings.Contains(body, `{"message":"connected"}`))
-		assert.Assert(t, strings.Contains(body, `{"message":"ready"}`))
-
-		parts := strings.Split(body, "data: ")
-		lastData := strings.TrimSpace(parts[len(parts)-1])
-		decrypted, err := Decrypt([]byte(lastData), privateKey)
-		assert.NilError(t, err)
-		assert.DeepEqual(t, decrypted, []byte(`{"secret":true}`))
 
 		cancel()
 		<-done
@@ -625,7 +472,7 @@ func TestHandleEventsGetCORSOrigin(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			eventBroker := NewEventBroker()
+			broker := newNatsBroker(t, 4244)
 			protectedChannels, err := LoadProtectedChannels("")
 			assert.NilError(t, err)
 			rs := storetest.NewRaftStore(t)
@@ -639,7 +486,7 @@ func TestHandleEventsGetCORSOrigin(t *testing.T) {
 			}))
 
 			router := chi.NewRouter()
-			router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(eventBroker, nil, protectedChannels, rs))
+			router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, protectedChannels, rs))
 
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/plainchannel1", nil)
 			reqCtx, cancel := context.WithCancel(req.Context())
@@ -758,7 +605,7 @@ func TestIPRestrictions(t *testing.T) {
 		assert.NilError(t, err)
 		assert.Equal(t, ip.String(), "192.168.0.1")
 
-		// Test X-Forwarded-For with trust proxy
+		// Test X-Forwarded-For with behind reverse proxy
 		req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.RemoteAddr = "127.0.0.1:12345"
 		req.Header.Set("X-Forwarded-For", "10.0.0.1")
@@ -767,7 +614,7 @@ func TestIPRestrictions(t *testing.T) {
 		assert.NilError(t, err)
 		assert.Equal(t, ip.String(), "10.0.0.1")
 
-		// Test X-Forwarded-For without trust proxy
+		// Test X-Forwarded-For without behind reverse proxy
 		ip, err = getRealIP(req, false)
 		assert.NilError(t, err)
 		assert.Equal(t, ip.String(), "127.0.0.1")
@@ -841,7 +688,6 @@ func newNatsBroker(t *testing.T, port int) *nats.Broker {
 	b, err := nats.New(nats.Config{
 		NodeID:     t.Name(),
 		Port:       port,
-		BufferTTL:  time.Hour,
 		BufferSize: 100,
 	})
 	assert.NilError(t, err)
@@ -854,14 +700,12 @@ func newNatsBroker(t *testing.T, port int) *nats.Broker {
 
 func TestHandleWebhookPostWithNATS(t *testing.T) {
 	broker := newNatsBroker(t, 4241)
-	events := sse.New()
-	eventBroker := NewEventBroker()
 	rs := storetest.NewRaftStore(t)
 
-	handler := handleWebhookPost(events, eventBroker, broker, rs)
+	handler := handleWebhookPost(broker, rs)
 
 	t.Run("Publishes via NATS to subscriber", func(t *testing.T) {
-		historical, live := broker.Subscribe("nats-test", 10)
+		historical, live := broker.Subscribe("nats-test", time.Time{}, 10)
 		assert.Equal(t, 0, len(historical))
 
 		payload := map[string]any{"event": "nats-test"}
@@ -911,53 +755,14 @@ func TestHandleWebhookPostWithNATS(t *testing.T) {
 	})
 }
 
-func TestHandleReplayPostWithNATS(t *testing.T) {
-	broker := newNatsBroker(t, 4242)
-	events := sse.New()
-	eventBroker := NewEventBroker()
-	rs := storetest.NewRaftStore(t)
-
-	handler := handleReplayPost(events, eventBroker, broker, rs)
-
-	t.Run("Replays via NATS to subscriber", func(t *testing.T) {
-		_, live := broker.Subscribe("replay-nats", 10)
-
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/replay/replay-nats", strings.NewReader(`{"event":"replay"}`))
-		req.Header.Set("Content-Type", contentType)
-
-		rctx := chi.NewRouteContext()
-		rctx.URLParams.Add("channel", "replay-nats")
-		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
-		w := httptest.NewRecorder()
-		handler(w, req)
-
-		resp := w.Result()
-		assert.Equal(t, resp.StatusCode, http.StatusAccepted)
-
-		select {
-		case data := <-live:
-			var eventData map[string]any
-			err := json.Unmarshal(data, &eventData)
-			assert.NilError(t, err)
-			assert.Assert(t, eventData["bodyB"] != nil)
-		case <-time.After(5 * time.Second):
-			t.Fatal("timeout waiting for NATS replay message")
-		}
-
-		broker.Unsubscribe("replay-nats", live)
-	})
-}
-
 func TestHandleEventsGetWithNATS(t *testing.T) {
 	broker := newNatsBroker(t, 4243)
-	eventBroker := NewEventBroker()
 	protectedChannels, err := LoadProtectedChannels("")
 	assert.NilError(t, err)
 	rs := storetest.NewRaftStore(t)
 
 	router := chi.NewRouter()
-	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(eventBroker, broker, protectedChannels, rs))
+	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, protectedChannels, rs))
 
 	t.Run("Delivers historical and live events via NATS", func(t *testing.T) {
 		err := broker.Publish("nats-sse-channel", []byte(`{"history":true}`))
@@ -1000,7 +805,7 @@ func TestHandleEventsGetWithNATS(t *testing.T) {
 		})
 		localRouter := chi.NewRouter()
 		rs2 := storetest.NewRaftStore(t)
-		localRouter.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(eventBroker, broker, localProtectedChannels, rs2))
+		localRouter.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, localProtectedChannels, rs2))
 
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/protected-nats?pubkey="+url.QueryEscape(allowed), nil)
 		w := httptest.NewRecorder()
@@ -1013,7 +818,7 @@ func TestHandleEventsGetWithNATS(t *testing.T) {
 	t.Run("Handles unprotected channel with NATS broker", func(t *testing.T) {
 		localRouter := chi.NewRouter()
 		rs3 := storetest.NewRaftStore(t)
-		localRouter.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(eventBroker, broker, protectedChannels, rs3))
+		localRouter.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, protectedChannels, rs3))
 
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/unprotected-nats", nil)
 		reqCtx, cancel := context.WithCancel(req.Context())
@@ -1039,8 +844,8 @@ func TestHandleEventsGetWithNATS(t *testing.T) {
 func TestNATSFanoutMultipleSubscribers(t *testing.T) {
 	broker := newNatsBroker(t, 4244)
 
-	_, live1 := broker.Subscribe("fanout", 10)
-	_, live2 := broker.Subscribe("fanout", 10)
+	_, live1 := broker.Subscribe("fanout", time.Time{}, 10)
+	_, live2 := broker.Subscribe("fanout", time.Time{}, 10)
 	defer broker.Unsubscribe("fanout", live1)
 	defer broker.Unsubscribe("fanout", live2)
 
@@ -1132,4 +937,96 @@ func mustProtectedChannels(t *testing.T, channels map[string][]string) *Protecte
 	}
 
 	return store.NewProtectedChannels(rs)
+}
+
+func TestHandleEventsGetWithClientID(t *testing.T) {
+	broker := newNatsBroker(t, 4247)
+	protectedChannels, err := LoadProtectedChannels("")
+	assert.NilError(t, err)
+	rs := storetest.NewRaftStore(t)
+
+	// Publish a "old" event BEFORE cursor is set
+	err = broker.Publish("cursor-channel", []byte(`{"old":true}`))
+	assert.NilError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	// Set cursor to right after the old event
+	cursorTime := time.Now()
+	err = rs.SetClientCursor(&store.ClientCursor{
+		Channel:         "cursor-channel",
+		ClientID:        "test-client",
+		LastTimestampMs: cursorTime.UnixMilli(),
+	})
+	assert.NilError(t, err)
+
+	// Publish a "recent" event AFTER cursor
+	time.Sleep(50 * time.Millisecond)
+	err = broker.Publish("cursor-channel", []byte(`{"recent":true}`))
+	assert.NilError(t, err)
+	time.Sleep(200 * time.Millisecond)
+
+	router := chi.NewRouter()
+	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, protectedChannels, rs))
+
+	t.Run("Delivers only events after cursor", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/cursor-channel?client_id=test-client", nil)
+		reqCtx, cancel := context.WithCancel(req.Context())
+		req = req.WithContext(reqCtx)
+		defer cancel()
+
+		response := httptest.NewRecorder()
+		done := make(chan struct{})
+		go func() {
+			router.ServeHTTP(response, req)
+			close(done)
+		}()
+
+		assert.Assert(t, eventually(t, func() bool {
+			return strings.Contains(response.Body.String(), `{"recent":true}`)
+		}), "recent event should be delivered")
+
+		body := response.Body.String()
+		assert.Assert(t, !strings.Contains(body, `{"old":true}`), "old event should NOT be delivered")
+
+		cancel()
+		<-done
+
+		cursor, _ := rs.GetClientCursor("cursor-channel", "test-client")
+		assert.Assert(t, cursor != nil)
+		assert.Assert(t, cursor.LastTimestampMs > cursorTime.UnixMilli())
+	})
+}
+
+func TestChannelTTLPropagation(t *testing.T) {
+	broker := newNatsBroker(t, 4248)
+	defer broker.Shutdown()
+	rs := storetest.NewRaftStore(t)
+
+	err := rs.CreateChannel(&store.Channel{
+		ID:                "ttl-test",
+		MessageTTLSeconds: 3600,
+	})
+	assert.NilError(t, err)
+
+	handler := handleWebhookPost(broker, rs)
+
+	payload := map[string]any{"event": "ttl-test"}
+	payloadBytes, _ := json.Marshal(payload)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/webhook/ttl-test", bytes.NewReader(payloadBytes))
+	req.Header.Set("Content-Type", contentType)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("channel", "ttl-test")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	resp := w.Result()
+	assert.Equal(t, resp.StatusCode, http.StatusAccepted)
+
+	time.Sleep(300 * time.Millisecond)
+
+	historical, live := broker.Subscribe("ttl-test", time.Time{}, 10)
+	assert.Assert(t, len(historical) >= 1, "expected at least 1 historical message")
+	broker.Unsubscribe("ttl-test", live)
 }
