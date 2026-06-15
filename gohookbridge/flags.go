@@ -227,4 +227,18 @@ var serverFlags = []cli.Flag{
 		Value:   10000,
 		EnvVars: []string{"GOSMEE_NATS_BUFFER_SIZE"},
 	},
+	&cli.IntFlag{
+		Name:    "default-message-ttl",
+		Usage:   "Default message TTL in seconds for channels (0 = use nats-buffer-ttl)",
+		Value:   0,
+		EnvVars: []string{"GOSMEE_DEFAULT_MESSAGE_TTL"},
+	},
+	&cli.BoolFlag{
+		Name:  "dev-admin",
+		Usage: "Auto-create an admin user on first boot when no users exist (development only). Password is written to raft-data/admin-password.txt.",
+	},
+	&cli.StringFlag{
+		Name:  "dev-admin-password",
+		Usage: "Password for the dev admin user. If empty, a random password is generated.",
+	},
 }

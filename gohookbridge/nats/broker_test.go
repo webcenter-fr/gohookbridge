@@ -61,6 +61,26 @@ func TestRingBufferGetLimit(t *testing.T) {
 	assert.Equal(t, 3, len(historical))
 }
 
+func TestRingBufferPerChannelTTL(t *testing.T) {
+	rb := NewRingBuffer(100, time.Hour)
+
+	rb.SetChannelTTL("short", 50*time.Millisecond)
+	rb.SetChannelTTL("long", time.Hour)
+
+	rb.Append("short", []byte("short-lived"))
+	rb.Append("long", []byte("long-lived"))
+
+	time.Sleep(100 * time.Millisecond)
+	rb.evictExpired()
+
+	historicalShort := rb.Get("short", time.Time{}, 0)
+	assert.Equal(t, 0, len(historicalShort), "short TTL channel should be evicted")
+
+	historicalLong := rb.Get("long", time.Time{}, 0)
+	assert.Equal(t, 1, len(historicalLong), "long TTL channel should still exist")
+	assert.Equal(t, "long-lived", string(historicalLong[0]))
+}
+
 func TestRingBufferEmptyGet(t *testing.T) {
 	rb := NewRingBuffer(10, time.Hour)
 

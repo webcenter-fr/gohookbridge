@@ -177,7 +177,7 @@ func TestWebhookSignatureValidation(t *testing.T) {
 	})
 
 	t.Run("Validate Multiple Providers", func(t *testing.T) {
-		secrets := []string{"secret1", "secret2"}
+		secrets := "secret1"
 		payload := []byte(`{"event":"test"}`)
 
 		// GitHub header
@@ -188,7 +188,7 @@ func TestWebhookSignatureValidation(t *testing.T) {
 
 		// Bitbucket header
 		r = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/webhook", nil)
-		r.Header.Set("X-Hub-Signature", createBitbucketSignature("secret2", payload))
+		r.Header.Set("X-Hub-Signature", createBitbucketSignature("secret1", payload))
 		valid = validateWebhookSignature(secrets, payload, r)
 		assert.Assert(t, valid, "Valid Bitbucket signature should be accepted")
 
@@ -200,12 +200,12 @@ func TestWebhookSignatureValidation(t *testing.T) {
 
 		// Gitea signature
 		r = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/webhook", nil)
-		r.Header.Set("X-Gitea-Signature", "sha256="+createGiteaSignature("secret2", payload))
+		r.Header.Set("X-Gitea-Signature", "sha256="+createGiteaSignature("secret1", payload))
 		valid = validateWebhookSignature(secrets, payload, r)
 		assert.Assert(t, valid, "Valid Gitea signature should be accepted")
 
 		// No secrets provided
-		valid = validateWebhookSignature([]string{}, payload, r)
+		valid = validateWebhookSignature("", payload, r)
 		assert.Assert(t, valid, "No secrets should always return true")
 
 		// Invalid signatures
@@ -341,9 +341,9 @@ func TestHandleWebhookPost(t *testing.T) {
 		payload := []byte(`{"event":"test"}`)
 
 		// Create project with webhook signature in store
-		assert.NilError(t, rs.CreateProject(&store.Project{
-			ID:                "test-channel",
-			WebhookSignatures: []string{"test-secret"},
+		assert.NilError(t, rs.CreateChannel(&store.Channel{
+			ID:            "test-channel",
+			WebhookSecret: "test-secret",
 		}))
 
 		// Valid signature
@@ -394,7 +394,7 @@ func TestHandleReplayPost(t *testing.T) {
 		rs := storetest.NewRaftStore(t)
 		if replayToken != "" {
 			assert.NilError(t, rs.SetSessionSecret(replayToken))
-			assert.NilError(t, rs.CreateProject(&store.Project{
+			assert.NilError(t, rs.CreateChannel(&store.Channel{
 				ID:          "test-channel",
 				ReplayToken: replayToken,
 			}))
@@ -635,7 +635,7 @@ func TestHandleEventsGetCORSOrigin(t *testing.T) {
 					MaxBodySize: 26214400,
 					CORSOrigin:  tc.corsOrigin,
 				},
-				Defaults: store.DefaultProjectConfig{},
+				Defaults: store.DefaultChannelConfig{},
 			}))
 
 			router := chi.NewRouter()
@@ -782,7 +782,7 @@ func TestIPRestrictions(t *testing.T) {
 
 	t.Run("IP Restrict Middleware", func(t *testing.T) {
 		rs := storetest.NewRaftStore(t)
-		assert.NilError(t, rs.CreateProject(&store.Project{
+		assert.NilError(t, rs.CreateChannel(&store.Channel{
 			ID:         "test",
 			AllowedIPs: []string{"127.0.0.1"},
 		}))
@@ -1114,19 +1114,19 @@ func mustProtectedChannels(t *testing.T, channels map[string][]string) *Protecte
 			MaxBodySize: 26214400,
 			CORSOrigin:  "*",
 		},
-		Defaults: store.DefaultProjectConfig{},
+		Defaults: store.DefaultChannelConfig{},
 	}
 	if err := rs.UpdateGlobalConfig(globalCfg); err != nil {
 		t.Fatal(err)
 	}
 
 	for channel, allowedKeys := range channels {
-		p := &store.Project{
+		p := &store.Channel{
 			ID:                channel,
-			EncryptionEnabled: true,
+			EncryptionMode:    "provider_side",
 			EncryptionPubKeys: allowedKeys,
 		}
-		if err := rs.CreateProject(p); err != nil {
+		if err := rs.CreateChannel(p); err != nil {
 			t.Fatal(err)
 		}
 	}

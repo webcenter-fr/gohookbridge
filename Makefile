@@ -13,16 +13,12 @@ all: test lint web-build build
 
 FORCE:
 
-.PHONY: vendor
-vendor:
-	@echo Generating vendor directory
-	@go mod tidy && go mod vendor
 
 $(OUTPUT_DIR)/$(NAME): main.go FORCE
-	go build -mod=vendor $(FLAGS)  -o $@ ./$<
+	go build $(FLAGS)  -o $@ ./$<
 
 $(OUTPUT_DIR)/$(NAME)-aarch64-linux: main.go FORCE
-	env GOARCH=arm64 GOOS=linux	go build -mod=vendor $(FLAGS)   -o $@ ./$<
+	env GOARCH=arm64 GOOS=linux	go build $(FLAGS)   -o $@ ./$<
 
 .PHONY: web-build
 web-build:
@@ -49,7 +45,7 @@ lint: lint-go lint-md
 lint-go:
 	@echo "linting."
 	golangci-lint version
-	golangci-lint run ./... --modules-download-mode=vendor
+	golangci-lint run ./...
 
 .PHONY: lint-md
 lint-md: ${MD_FILES} ## runs markdownlint and vale on all markdown files
@@ -62,7 +58,7 @@ dev-server:
 	reflex -r '.*\.(tmpl|go)' -s go run main.go -- server --footer "Contact: <a href=\"https://twitter.com/me\">Me</a> - use it at your own risk"
 
 fmt:
-	@go fmt `go list ./... | grep -v /vendor/`
+	@go fmt `go list ./...`
 
 fumpt:
 	@gofumpt -e -w -extra ./

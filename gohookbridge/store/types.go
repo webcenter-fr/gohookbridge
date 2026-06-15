@@ -1,21 +1,43 @@
 package store
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"regexp"
 
-type Project struct {
-	ID                string   `json:"id"`
+	"github.com/go-playground/validator/v10"
+)
+
+type Channel struct {
+	ID                string   `json:"id" validate:"required,min=1,max=64,channelid"`
 	Name              string   `json:"name"`
-	WebhookSignatures []string `json:"webhook_signatures,omitempty"`
+	Description       string   `json:"description,omitempty" validate:"max=500"`
+	WebhookSecret     string   `json:"webhook_secret,omitempty"`
 	AllowedIPs        []string `json:"allowed_ips,omitempty"`
 	MaxBodySize       int      `json:"max_body_size,omitempty"`
+	MessageTTLSeconds int      `json:"message_ttl_seconds,omitempty"`
 	ReplayToken       string   `json:"replay_token,omitempty"`
-	EncryptionEnabled bool     `json:"encryption_enabled,omitempty"`
+	EncryptionMode    string   `json:"encryption_mode,omitempty"`
+	EncryptionKey     string   `json:"encryption_key,omitempty"`
 	EncryptionPubKeys []string `json:"encryption_public_keys,omitempty"`
+
+	// Deprecated: use WebhookSecret instead
+	WebhookSignatures []string `json:"webhook_signatures,omitempty"`
+	// Deprecated: use EncryptionMode instead
+	EncryptionEnabled bool `json:"encryption_enabled,omitempty"`
+}
+
+var validate *validator.Validate
+
+func init() {
+	validate = validator.New()
+	validate.RegisterValidation("channelid", func(fl validator.FieldLevel) bool {
+		return regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`).MatchString(fl.Field().String())
+	})
 }
 
 type GlobalConfig struct {
 	Server   ServerConfig          `json:"server"`
-	Defaults DefaultProjectConfig  `json:"defaults"`
+	Defaults DefaultChannelConfig  `json:"defaults"`
 }
 
 type ServerConfig struct {
@@ -28,7 +50,7 @@ type ServerConfig struct {
 
 type GlobalConfigResponse struct {
 	Server   ServerConfigResponse `json:"server"`
-	Defaults DefaultProjectConfig `json:"defaults"`
+	Defaults DefaultChannelConfig `json:"defaults"`
 }
 
 type ServerConfigResponse struct {
@@ -39,19 +61,20 @@ type ServerConfigResponse struct {
 	SessionSecret string `json:"session_secret"`
 }
 
-type DefaultProjectConfig struct {
-	WebhookSignatures []string `json:"webhook_signatures"`
+type DefaultChannelConfig struct {
+	WebhookSecret     string   `json:"webhook_secret"`
 	AllowedIPs        []string `json:"allowed_ips"`
 	ReplayToken       string   `json:"replay_token"`
+	MessageTTLSeconds int      `json:"message_ttl_seconds"`
 }
 
 type User struct {
-	ID           string   `json:"id"`
-	Username     string   `json:"username"`
+	ID           string   `json:"id" validate:"required,min=1,max=128"`
+	Username     string   `json:"username" validate:"required,min=1,max=128"`
 	PasswordHash string   `json:"password_hash,omitempty"`
 	OIDCSubjects []string `json:"oidc_subjects,omitempty"`
 	Roles        []string `json:"roles"`
-	Projects     []string `json:"projects"`
+	Channels     []string `json:"channels"`
 }
 
 type Role struct {
@@ -69,15 +92,15 @@ const (
 	PermUsersWrite   Permission = "users:write"
 	PermRBACRead     Permission = "rbac:read"
 	PermRBACWrite    Permission = "rbac:write"
-	PermProjectRead  Permission = "project:read"
-	PermProjectWrite Permission = "project:write"
-	PermProjectView  Permission = "project:view"
+	PermChannelRead  Permission = "channel:read"
+	PermChannelWrite Permission = "channel:write"
+	PermChannelView  Permission = "channel:view"
 )
 
 var DefaultRoles = []Role{
 	{Name: "admin", Permissions: []string{"*"}},
-	{Name: "project_admin", Permissions: []string{"project:write", "project:read"}},
-	{Name: "project_viewer", Permissions: []string{"project:read"}},
+	{Name: "channel_admin", Permissions: []string{"channel:write", "channel:read"}},
+	{Name: "channel_viewer", Permissions: []string{"channel:read"}},
 }
 
 type OIDCProvider struct {
@@ -90,9 +113,9 @@ type OIDCProvider struct {
 }
 
 type UserBinding struct {
-	UserID   string   `json:"user_id"`
+	UserID   string   `json:"user_id" validate:"required"`
 	Roles    []string `json:"roles"`
-	Projects []string `json:"projects"`
+	Channels []string `json:"channels"`
 }
 
 func defaultGlobalConfig() *GlobalConfig {
@@ -102,17 +125,18 @@ func defaultGlobalConfig() *GlobalConfig {
 			TrustProxy:  false,
 			CORSOrigin:  "*",
 		},
-		Defaults: DefaultProjectConfig{},
+		Defaults: DefaultChannelConfig{},
 	}
 }
 
-func resolveProjectConfig(p *Project, global *GlobalConfig) *Project {
+func resolveChannelConfig(p *Channel, global *GlobalConfig) *Channel {
 	resolved := *p
+	migrateChannel(&resolved)
 	if resolved.MaxBodySize == 0 {
 		resolved.MaxBodySize = global.Server.MaxBodySize
 	}
-	if len(resolved.WebhookSignatures) == 0 {
-		resolved.WebhookSignatures = global.Defaults.WebhookSignatures
+	if resolved.WebhookSecret == "" {
+		resolved.WebhookSecret = global.Defaults.WebhookSecret
 	}
 	if len(resolved.AllowedIPs) == 0 {
 		resolved.AllowedIPs = global.Defaults.AllowedIPs
@@ -120,7 +144,19 @@ func resolveProjectConfig(p *Project, global *GlobalConfig) *Project {
 	if resolved.ReplayToken == "" {
 		resolved.ReplayToken = global.Defaults.ReplayToken
 	}
+	if resolved.MessageTTLSeconds == 0 && global.Defaults.MessageTTLSeconds > 0 {
+		resolved.MessageTTLSeconds = global.Defaults.MessageTTLSeconds
+	}
 	return &resolved
+}
+
+func migrateChannel(p *Channel) {
+	if p.WebhookSecret == "" && len(p.WebhookSignatures) > 0 {
+		p.WebhookSecret = p.WebhookSignatures[0]
+	}
+	if p.EncryptionMode == "" && p.EncryptionEnabled {
+		p.EncryptionMode = "provider_side"
+	}
 }
 
 func marshalJSON(v any) (string, error) {

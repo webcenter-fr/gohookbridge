@@ -6,6 +6,7 @@ export interface SSHEvent {
   data: any
   timestamp: string
   raw: string
+  event_id?: string
 }
 
 export const useEventsStore = defineStore('events', () => {

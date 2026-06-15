@@ -8,12 +8,14 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
+    allowedHosts: true,
+    port: 8080,
     proxy: {
-      '/api': 'http://localhost:3333',
-      '/events': 'http://localhost:3333',
-      '/auth': 'http://localhost:3333',
-      '/login': 'http://localhost:3333',
-      '/logout': 'http://localhost:3333',
+      '/api': 'http://localhost:8081',
+      '/events': 'http://localhost:8081',
+      '/auth': 'http://localhost:8081',
+      '/login': 'http://localhost:8081',
+      '/logout': 'http://localhost:8081',
     },
   },
 })

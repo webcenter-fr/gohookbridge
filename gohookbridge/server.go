@@ -32,16 +32,15 @@ const (
 	timeFormat        = "2006-01-02T15.04.01.000"
 	contentType       = "application/json"
 	versionHeaderName = "X-Gosmee-Version"
-	minChannelLength  = 12
 	maxChannelLength  = 64
-	channelIDPattern  = "[a-zA-Z0-9_-]{12,64}"
+	channelIDPattern  = "[a-zA-Z0-9_-]{1,64}"
 	channelPath       = "/{channel:" + channelIDPattern + "}"
 	eventsPath        = "/events/{channel:" + channelIDPattern + "}"
 	replayPath        = "/replay/{channel:" + channelIDPattern + "}"
 )
 
 var (
-	defaultServerPort    = 3333
+	defaultServerPort    = 8081
 	defaultServerAddress = "localhost"
 )
 
@@ -179,46 +178,29 @@ func validateGiteaSignature(secret string, payload []byte, signatureHeader strin
 	return hmac.Equal([]byte(signature), []byte(expectedMAC))
 }
 
-func validateWebhookSignature(secrets []string, payload []byte, r *http.Request) bool {
-	if len(secrets) == 0 {
+func validateWebhookSignature(secret string, payload []byte, r *http.Request) bool {
+	if secret == "" {
 		return true
 	}
 
 	if gitlabToken := r.Header.Get("X-Gitlab-Token"); gitlabToken != "" {
-		for _, secret := range secrets {
-			if subtle.ConstantTimeCompare([]byte(gitlabToken), []byte(secret)) == 1 {
-				return true
-			}
+		if subtle.ConstantTimeCompare([]byte(gitlabToken), []byte(secret)) == 1 {
+			return true
 		}
 		return false
 	}
 
 	if githubSignature := r.Header.Get("X-Hub-Signature-256"); githubSignature != "" {
 		fmt.Fprintf(os.Stdout, "Received request %s %s\n", r.Method, r.URL.Path)
-		for _, secret := range secrets {
-			if validateGitHubWebhookSignature(secret, payload, githubSignature) {
-				return true
-			}
-		}
-		return false
+		return validateGitHubWebhookSignature(secret, payload, githubSignature)
 	}
 
 	if bitbucketSignature := r.Header.Get("X-Hub-Signature"); bitbucketSignature != "" {
-		for _, secret := range secrets {
-			if validateBitbucketHMAC(secret, payload, bitbucketSignature) {
-				return true
-			}
-		}
-		return false
+		return validateBitbucketHMAC(secret, payload, bitbucketSignature)
 	}
 
 	if giteaSignature := r.Header.Get("X-Gitea-Signature"); giteaSignature != "" {
-		for _, secret := range secrets {
-			if validateGiteaSignature(secret, payload, giteaSignature) {
-				return true
-			}
-		}
-		return false
+		return validateGiteaSignature(secret, payload, giteaSignature)
 	}
 
 	return false
@@ -234,7 +216,7 @@ func handleWebhookPost(events *sse.Server, eventBroker *EventBroker, broker *nat
 		channel := chi.URLParam(r, "channel")
 		defer r.Body.Close()
 
-		maxBodySize, _ := rs.ResolveProjectMaxBodySize(channel)
+		maxBodySize, _ := rs.ResolveChannelMaxBodySize(channel)
 		r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodySize))
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -246,9 +228,9 @@ func handleWebhookPost(events *sse.Server, eventBroker *EventBroker, broker *nat
 			return
 		}
 
-		webhookSecrets, _ := rs.ResolveProjectSignatures(channel)
-		if len(webhookSecrets) > 0 {
-			if !validateWebhookSignature(webhookSecrets, body, r) {
+		webhookSecret, _ := rs.ResolveChannelWebhookSecret(channel)
+		if webhookSecret != "" {
+			if !validateWebhookSignature(webhookSecret, body, r) {
 				http.Error(w, "invalid signature", http.StatusUnauthorized)
 				return
 			}
@@ -259,6 +241,22 @@ func handleWebhookPost(events *sse.Server, eventBroker *EventBroker, broker *nat
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+
+		encryptionMode, encryptionKey, _, _ := rs.ResolveChannelEncryption(channel)
+
+		var payloadBytes []byte
+		if encryptionMode == "server_side" && encryptionKey != "" {
+			encrypted, err := AESEncrypt(body, encryptionKey)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: server-side encryption failed for channel %s: %v\n", channel, err)
+				http.Error(w, "encryption failed", http.StatusInternalServerError)
+				return
+			}
+			payloadBytes = encrypted
+		} else {
+			payloadBytes = body
+		}
+
 		var headersBuilder strings.Builder
 		payload := make(map[string]any)
 		for k, v := range r.Header {
@@ -266,32 +264,25 @@ func handleWebhookPost(events *sse.Server, eventBroker *EventBroker, broker *nat
 			payload[strings.ToLower(k)] = v[0]
 		}
 		payload["timestamp"] = fmt.Sprintf("%d", now.UnixMilli())
-		payload["bodyB"] = base64.StdEncoding.EncodeToString(body)
+		payload["bodyB"] = base64.StdEncoding.EncodeToString(payloadBytes)
+		eventID := generateUUID()
+		payload["event_id"] = eventID
 		reencoded, err := json.Marshal(payload)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		if broker != nil {
-			if err := broker.Publish(channel, reencoded); err != nil {
-				fmt.Fprintf(os.Stderr, "WARNING: nats publish error: %v\n", err)
-			}
-		} else {
-			events.CreateStream(channel)
-			events.Publish(channel, &sse.Event{Data: reencoded})
-
-			eventBroker.Publish(channel, reencoded)
-		}
+		publishEvent(events, eventBroker, broker, channel, reencoded)
 
 		w.Header().Set(versionHeaderName, strings.TrimSpace(string(Version)))
-
 		w.WriteHeader(http.StatusAccepted)
 		resp := map[string]any{
-			"status":  http.StatusAccepted,
-			"channel": channel,
-			"message": "ok",
-			"version": strings.TrimSpace(string(Version)),
+			"status":   http.StatusAccepted,
+			"channel":  channel,
+			"message":  "ok",
+			"version":  strings.TrimSpace(string(Version)),
+			"event_id": eventID,
 		}
 		_ = json.NewEncoder(w).Encode(resp)
 		fmt.Fprintf(os.Stdout, "%s Published %s%s on channel %s\n",
@@ -326,7 +317,7 @@ func handleReplayPost(events *sse.Server, eventBroker *EventBroker, broker *nats
 		}
 
 		now := time.Now().UTC()
-		maxBodySize, _ := rs.ResolveProjectMaxBodySize(channel)
+		maxBodySize, _ := rs.ResolveChannelMaxBodySize(channel)
 		r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodySize))
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -355,18 +346,68 @@ func handleReplayPost(events *sse.Server, eventBroker *EventBroker, broker *nats
 			return
 		}
 
-		if broker != nil {
-			if err := broker.Publish(channel, reencoded); err != nil {
-				fmt.Fprintf(os.Stderr, "WARNING: nats publish error: %v\n", err)
-			}
-		} else {
-			events.CreateStream(channel)
-			events.Publish(channel, &sse.Event{Data: reencoded})
-			eventBroker.Publish(channel, reencoded)
-		}
+		publishEvent(events, eventBroker, broker, channel, reencoded)
 
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte("replayed"))
+	}
+}
+
+func handleTestPayloadSend(events *sse.Server, eventBroker *EventBroker, broker *nats.Broker, rs *store.RaftStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		channel := chi.URLParam(r, "channel")
+		if channel == "" {
+			http.Error(w, "Channel name missing in URL", http.StatusBadRequest)
+			return
+		}
+		if len(channel) > maxChannelLength {
+			http.Error(w, "Channel name exceeds maximum length", http.StatusBadRequest)
+			return
+		}
+
+		now := time.Now().UTC()
+		defer r.Body.Close()
+
+		maxBodySize, _ := rs.ResolveChannelMaxBodySize(channel)
+		r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodySize))
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			if strings.Contains(err.Error(), "http: request body too large") {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if !json.Valid(body) {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		payload := make(map[string]any)
+		payload["timestamp"] = fmt.Sprintf("%d", now.UnixMilli())
+		payload["bodyB"] = base64.StdEncoding.EncodeToString(body)
+		payload["content-type"] = contentType
+		payload["x-test-payload"] = "true"
+
+		reencoded, err := json.Marshal(payload)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		publishEvent(events, eventBroker, broker, channel, reencoded)
+
+		w.WriteHeader(http.StatusAccepted)
+		resp := map[string]any{
+			"status":  http.StatusAccepted,
+			"channel": channel,
+			"message": "test payload sent",
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+		fmt.Fprintf(os.Stdout, "%s Test payload sent on channel %s\n",
+			now.Format(timeFormat), channel)
 	}
 }
 
@@ -458,7 +499,7 @@ func ipRestrictMiddleware(rs *store.RaftStore) func(http.Handler) http.Handler {
 			}
 
 			channel := chi.URLParam(r, "channel")
-			allowedIPs, _ := rs.ResolveProjectAllowedIPs(channel)
+			allowedIPs, _ := rs.ResolveChannelAllowedIPs(channel)
 			if len(allowedIPs) == 0 {
 				next.ServeHTTP(w, r)
 				return
@@ -602,6 +643,135 @@ func sseLoop(w http.ResponseWriter, flusher http.Flusher, events <-chan []byte, 
 	}
 }
 
+func generateUUID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+func handleEventReplay(eventBroker *EventBroker, broker *nats.Broker, rs *store.RaftStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		channel := chi.URLParam(r, "channel")
+		eventID := chi.URLParam(r, "eventId")
+		if channel == "" || eventID == "" {
+			http.Error(w, "channel and eventId required", http.StatusBadRequest)
+			return
+		}
+
+		replayToken := r.Header.Get("X-Replay-Token")
+		if replayToken == "" {
+			authorizationHeader := r.Header.Get("Authorization")
+			if strings.HasPrefix(authorizationHeader, "Bearer ") {
+				replayToken = strings.TrimPrefix(authorizationHeader, "Bearer ")
+			}
+		}
+		if !rs.ValidateReplayToken(channel, replayToken) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		ch, err := rs.ResolveChannelConfig(channel)
+		if err != nil {
+			http.Error(w, "channel not found", http.StatusNotFound)
+			return
+		}
+		if ch.EncryptionMode == "server_side" && ch.EncryptionKey != "" {
+			http.Error(w, "cannot replay events for server-side encrypted channels via API", http.StatusBadRequest)
+			return
+		}
+
+		payload := map[string]any{
+			"timestamp": fmt.Sprintf("%d", time.Now().UTC().UnixMilli()),
+			"event_id":  eventID,
+			"bodyB":     base64.StdEncoding.EncodeToString([]byte(`{"replayed":true,"original_event_id":"`+eventID+`"}`)),
+			"x-replay":  "true",
+		}
+		reencoded, _ := json.Marshal(payload)
+		publishEvent(nil, eventBroker, broker, channel, reencoded)
+
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{"status": "replayed", "event_id": eventID})
+	}
+}
+
+func handleGenerateEncryptionKey(rs *store.RaftStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		channel := chi.URLParam(r, "channel")
+		ch, err := rs.GetChannel(channel)
+		if err != nil {
+			http.Error(w, "channel not found", http.StatusNotFound)
+			return
+		}
+
+		var req struct {
+			Mode string `json:"mode"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		if req.Mode == "" {
+			req.Mode = "server_side"
+		}
+
+		switch req.Mode {
+		case "server_side":
+			key, err := GenerateAESKey()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			ch.EncryptionMode = "server_side"
+			ch.EncryptionKey = key
+			if err := rs.UpdateChannel(ch); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSONResponse(w, http.StatusOK, map[string]string{
+				"encryption_key":  key,
+				"encryption_mode": "server_side",
+			})
+		case "provider_side":
+			pub, priv, err := GenerateKeyPair()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			ch.EncryptionMode = "provider_side"
+			ch.EncryptionKey = base64.StdEncoding.EncodeToString(priv[:])
+			pubKey := EncodePublicKey(pub)
+			ch.EncryptionPubKeys = append(ch.EncryptionPubKeys, pubKey)
+			if err := rs.UpdateChannel(ch); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSONResponse(w, http.StatusOK, map[string]any{
+				"encryption_mode":       "provider_side",
+				"encryption_public_key": pubKey,
+			})
+		default:
+			http.Error(w, "unsupported encryption mode: "+req.Mode, http.StatusBadRequest)
+		}
+	}
+}
+
+func writeJSONResponse(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func publishEvent(events *sse.Server, eventBroker *EventBroker, broker *nats.Broker, channel string, reencoded []byte) {
+	if broker != nil {
+		if err := broker.Publish(channel, reencoded); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: nats publish error: %v\n", err)
+		}
+	} else {
+		events.CreateStream(channel)
+		events.Publish(channel, &sse.Event{Data: reencoded})
+		eventBroker.Publish(channel, reencoded)
+	}
+}
+
 func serve(c *cli.Context) error {
 	deprecatedEnvVars := map[string]string{
 		"GOSMEE_WEBHOOK_SIGNATURE":       "--webhook-signature",
@@ -659,6 +829,13 @@ func serve(c *cli.Context) error {
 	if broker != nil {
 		defer broker.Shutdown()
 	}
+
+	if c.Bool("dev-admin") {
+		if err := initDevAdmin(rs, c.String("dev-admin-password"), c.String("raft-dir")); err != nil {
+			return fmt.Errorf("dev admin: %w", err)
+		}
+	}
+
 	autoCert := c.Bool("auto-cert")
 	certFile := c.String("tls-cert")
 	certKey := c.String("tls-key")
@@ -727,11 +904,6 @@ func serve(c *cli.Context) error {
 		mainRouter.Get("/auth/oidc/"+provider.ID+"/callback", oidcHandler.CallbackHandler())
 	}
 
-	// Public API auth endpoints (no auth middleware)
-	mainRouter.Get("/api/auth/methods", apiAuthMethodsHandler(rs))
-	mainRouter.Post("/api/auth/login", apiLoginHandler(rs))
-	mainRouter.Post("/api/auth/logout", apiLogoutHandler())
-
 	// SPA handler — all unmatched GET routes serve the SPA
 	mainRouter.NotFound(spaHandler().ServeHTTP)
 
@@ -739,10 +911,20 @@ func serve(c *cli.Context) error {
 	restrictedRouter.Post(channelPath, handleWebhookPost(events, eventBroker, broker, rs))
 	restrictedRouter.Post(replayPath, handleReplayPost(events, eventBroker, broker, rs))
 
+	// Public auth API routes — mounted before main /api to avoid middleware intercept
+	publicApiRouter := chi.NewRouter()
+	publicApiRouter.Get("/methods", apiAuthMethodsHandler(rs))
+	publicApiRouter.Post("/login", apiLoginHandler(rs))
+	publicApiRouter.Post("/logout", apiLogoutHandler())
+	mainRouter.Mount("/api/auth", publicApiRouter)
+
 	// API routes — dynamic auth handles setup mode and authentication
 	apiRouter := chi.NewRouter()
 	apiRouter.Use(RequireAuthDynamic(rs))
 	store.RegisterAPIHandlers(apiRouter, rs)
+	apiRouter.Post("/send/{channel:"+channelIDPattern+"}", handleTestPayloadSend(events, eventBroker, broker, rs))
+	apiRouter.Post("/channels/{channel:"+channelIDPattern+"}/events/{eventId}/replay", handleEventReplay(eventBroker, broker, rs))
+	apiRouter.Post("/channels/{channel:"+channelIDPattern+"}/generate-encryption-key", handleGenerateEncryptionKey(rs))
 	mainRouter.Mount("/api", apiRouter)
 
 	finalRouter := chi.NewRouter()
@@ -763,4 +945,22 @@ func serve(c *cli.Context) error {
 		return http.Serve(autocert.NewListener(publicURL), finalRouter)
 	}
 	return http.ListenAndServe(portAddr, finalRouter)
+}
+
+func initDevAdmin(rs *store.RaftStore, password, raftDir string) error {
+	if !rs.IsSetupMode() {
+		return nil
+	}
+	if password == "" {
+		password = generateRandomHex(16)
+	}
+	if err := rs.CreateDevAdmin(password); err != nil {
+		return fmt.Errorf("create dev admin: %w", err)
+	}
+	passwordFile := raftDir + "/admin-password.txt"
+	if err := os.WriteFile(passwordFile, []byte(password+"\n"), 0600); err != nil {
+		return fmt.Errorf("write password file: %w", err)
+	}
+	fmt.Fprintf(os.Stdout, "Dev admin account created. Username: admin. Password saved to %s\n", passwordFile)
+	return nil
 }

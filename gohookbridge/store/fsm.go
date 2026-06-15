@@ -21,13 +21,13 @@ type fsmBootstrapUser struct {
 	Username string   `json:"username"`
 	Password string   `json:"password"`
 	Roles    []string `json:"roles"`
-	Projects []string `json:"projects"`
+	Channels []string `json:"channels"`
 }
 
 type fsmBootstrapPayload struct {
 	Global   *GlobalConfig      `json:"global,omitempty"`
 	Users    []fsmBootstrapUser `json:"users,omitempty"`
-	Projects []*Project         `json:"projects,omitempty"`
+	Channels []*Channel         `json:"channels,omitempty"`
 }
 
 type FSM struct {
@@ -57,8 +57,8 @@ func (f *FSM) Apply(log *raft.Log) interface{} {
 		return f.applySet(cmd.Key, []byte(cmd.Value))
 	case "delete":
 		return f.applyDelete(cmd.Key)
-	case "create-project":
-		return f.applyCreateProject(cmd.Key, []byte(cmd.Value))
+	case "create-channel":
+		return f.applyCreateChannel(cmd.Key, []byte(cmd.Value))
 	case "bootstrap":
 		return f.applyBootstrap([]byte(cmd.Value))
 	default:
@@ -106,7 +106,7 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 	})
 }
 
-func (f *FSM) applyCreateProject(key string, value []byte) error {
+func (f *FSM) applyCreateChannel(key string, value []byte) error {
 	return f.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(fsmDataBucketName))
 		if b == nil {
@@ -114,7 +114,7 @@ func (f *FSM) applyCreateProject(key string, value []byte) error {
 		}
 		existing := b.Get([]byte(key))
 		if existing != nil {
-			return fmt.Errorf("project %q already exists", strings.TrimPrefix(strings.TrimSuffix(key, "/"), "/projects/"))
+			return fmt.Errorf("channel %q already exists", strings.TrimPrefix(strings.TrimSuffix(key, "/"), "/channels/"))
 		}
 		return b.Put([]byte(key), value)
 	})
@@ -175,7 +175,7 @@ func (f *FSM) applyBootstrap(value []byte) error {
 				Username:     u.Username,
 				PasswordHash: string(hash),
 				Roles:        u.Roles,
-				Projects:     u.Projects,
+				Channels:     u.Channels,
 			}
 			userVal, err := json.Marshal(user)
 			if err != nil {
@@ -189,15 +189,15 @@ func (f *FSM) applyBootstrap(value []byte) error {
 			}
 		}
 
-		for _, p := range payload.Projects {
+		for _, p := range payload.Channels {
 			if p.ID == "" {
-				return fmt.Errorf("project ID required")
+				return fmt.Errorf("channel ID required")
 			}
 			pVal, err := json.Marshal(p)
 			if err != nil {
 				return err
 			}
-			if err := writeString("/projects/"+p.ID+"/", string(pVal)); err != nil {
+			if err := writeString("/channels/"+p.ID+"/", string(pVal)); err != nil {
 				return err
 			}
 		}

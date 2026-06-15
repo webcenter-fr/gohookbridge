@@ -1,0 +1,402 @@
+<template>
+  <n-spin :show="loading">
+    <n-tabs type="line" :value="tab" @update:value="t => tab = t">
+      <n-tab-pane name="data" tab="Data">
+        <n-space vertical>
+          <event-feed
+            :channel="channelId"
+            :events="eventsStore.events"
+            :connected="eventsStore.connected"
+            :connecting="eventsStore.connecting"
+            @replay="handleReplayEvent"
+          />
+          <n-space>
+            <n-button @click="eventsStore.connect(channelId)" :disabled="eventsStore.connected">Connect</n-button>
+            <n-button @click="eventsStore.disconnect()" :disabled="!eventsStore.connected">Disconnect</n-button>
+            <n-button @click="showSendDrawer = true" secondary type="info">Send Payload</n-button>
+            <n-button @click="eventsStore.clear()" quaternary>Clear</n-button>
+          </n-space>
+        </n-space>
+      </n-tab-pane>
+
+      <n-tab-pane name="settings" tab="Settings">
+        <n-form v-if="channel" label-placement="top" style="max-width: 600px;">
+          <n-form-item label="Channel ID">
+            <n-input :value="channel.id" disabled />
+          </n-form-item>
+          <n-form-item label="Name">
+            <n-input v-model:value="form.name" />
+          </n-form-item>
+          <n-form-item label="Description">
+            <n-input v-model:value="form.description" type="textarea" :maxlength="500" />
+          </n-form-item>
+          <n-form-item label="Webhook Secret">
+            <n-space style="width: 100%;">
+              <n-input v-model:value="form.webhook_secret" type="password" show-password-on="click" placeholder="webhook secret" />
+              <n-button @click="handleGenerateSecret" secondary>Generate</n-button>
+            </n-space>
+          </n-form-item>
+          <n-form-item label="Allowed IPs">
+            <n-dynamic-input v-model:value="form.allowed_ips" placeholder="10.0.0.0/8" />
+          </n-form-item>
+          <n-form-item label="Max Body Size">
+            <n-space>
+              <n-input-number v-model:value="form.max_body_size" :min="0" style="width: 180px;" />
+              <n-select v-model:value="bodySizeUnit" :options="bodySizeUnits" style="width: 100px;" />
+            </n-space>
+          </n-form-item>
+          <n-form-item label="Message TTL (seconds)">
+            <n-input-number v-model:value="form.message_ttl_seconds" :min="0" placeholder="0 = use global default" />
+          </n-form-item>
+          <n-form-item label="Replay Token">
+            <n-input v-model:value="form.replay_token" placeholder="replay-token" />
+          </n-form-item>
+          <n-form-item label="Encryption Mode">
+            <n-select v-model:value="form.encryption_mode" :options="encryptionModeOptions" />
+          </n-form-item>
+          <n-form-item v-if="form.encryption_mode === 'server_side'" label="Encryption Key">
+            <n-space style="width: 100%;">
+              <n-input v-model:value="form.encryption_key" type="password" show-password-on="click" placeholder="AES-256 key (base64)" />
+              <n-button @click="handleGenerateEncryptionKey('server_side')" secondary>Generate Key</n-button>
+            </n-space>
+          </n-form-item>
+          <n-form-item v-if="form.encryption_mode === 'provider_side'" label="Authorized Client Public Keys">
+            <n-dynamic-input v-model:value="form.encryption_public_keys" placeholder="public-key" />
+            <n-button style="margin-top: 8px;" @click="handleGenerateEncryptionKey('provider_side')" secondary block>Generate Keypair</n-button>
+          </n-form-item>
+          <n-space>
+            <n-button type="primary" @click="handleSave">Save</n-button>
+          </n-space>
+        </n-form>
+      </n-tab-pane>
+
+      <n-tab-pane name="clients" tab="Clients">
+        <n-space vertical style="max-width: 700px;">
+          <n-h4>CLI Command Generator</n-h4>
+          <template v-if="!form.encryption_mode || form.encryption_mode === 'none'">
+            <n-code :code="clientCommandNoEnc" language="bash" />
+            <n-space justify="end" style="margin-top: 4px;">
+              <n-button size="tiny" @click="copyText(clientCommandNoEnc)">Copy</n-button>
+            </n-space>
+          </template>
+          <template v-else-if="form.encryption_mode === 'server_side'">
+            <n-code :code="clientCommandNoEnc" language="bash" />
+            <n-space justify="end" style="margin-top: 4px;">
+              <n-button size="tiny" @click="copyText(clientCommandNoEnc)">Copy</n-button>
+            </n-space>
+            <n-text depth="3" style="margin-top: 8px;">Server-side encryption: the server handles decryption for admin UI. Standard client command works.</n-text>
+          </template>
+          <template v-else-if="form.encryption_mode === 'provider_side'">
+            <n-text depth="3">Step 1: Generate a client keypair</n-text>
+            <n-code :code="keygenCommand" language="bash" />
+            <n-space justify="end" style="margin-top: 4px;">
+              <n-button size="tiny" @click="copyText(keygenCommand)">Copy</n-button>
+            </n-space>
+            <n-text depth="3" style="margin-top: 12px;">Step 2: Run the client with the encryption key file</n-text>
+            <n-code :code="clientCommandEnc" language="bash" style="margin-top: 8px;" />
+            <n-space justify="end" style="margin-top: 4px;">
+              <n-button size="tiny" @click="copyText(clientCommandEnc)">Copy</n-button>
+            </n-space>
+            <n-text depth="3" style="margin-top: 12px;">Step 3: Add the public key below as an authorized key for this channel</n-text>
+          </template>
+
+          <n-h4 style="margin-top: 24px;">Authorized Client Keys</n-h4>
+          <n-list v-if="form.encryption_public_keys && form.encryption_public_keys.length > 0">
+            <n-list-item v-for="(key, i) in form.encryption_public_keys" :key="i">
+              <n-ellipsis style="max-width: 600px;">
+                <n-text depth="3">{{ key }}</n-text>
+              </n-ellipsis>
+            </n-list-item>
+          </n-list>
+          <n-empty v-else-if="channel" description="No authorized public keys" />
+        </n-space>
+      </n-tab-pane>
+    </n-tabs>
+
+    <n-drawer v-model:show="showSendDrawer" :width="420" placement="right">
+      <n-drawer-content title="Send Payload" closable>
+        <n-space vertical>
+          <n-alert v-if="!eventsStore.connected" type="warning" title="Not Connected" :bordered="false">
+            SSE connection is not active. Connect to send test payloads.
+          </n-alert>
+
+          <n-card title="GitHub-style Payload" size="small">
+            <n-space vertical>
+              <n-form-item label="Repository">
+                <n-input v-model:value="ghRepo" placeholder="owner/repo" />
+              </n-form-item>
+              <n-form-item label="Event Type">
+                <n-select v-model:value="ghEvent" :options="githubEventOptions" />
+              </n-form-item>
+              <n-button @click="handleGenerateAndSend" :disabled="!eventsStore.connected || !ghRepo" block>
+                Generate &amp; Send
+              </n-button>
+            </n-space>
+          </n-card>
+
+          <n-card title="Raw JSON Payload" size="small">
+            <n-space vertical>
+              <n-input
+                v-model:value="rawPayload"
+                type="textarea"
+                rows="8"
+                placeholder='{"example": "payload"}'
+                :disabled="!eventsStore.connected"
+              />
+              <n-button @click="handleSendRaw" :disabled="!eventsStore.connected || !rawPayload.trim()" block>
+                Send
+              </n-button>
+            </n-space>
+          </n-card>
+        </n-space>
+      </n-drawer-content>
+    </n-drawer>
+  </n-spin>
+</template>
+
+<script setup lang="ts">
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { useRoute } from 'vue-router'
+import { NSpace, NSpin, NTabs, NTabPane, NForm, NFormItem, NInput, NInputNumber, NButton, NDynamicInput, NSelect, NCode, NList, NListItem, NText, NEllipsis, NEmpty, NH4, NCard, NAlert, NDrawer, NDrawerContent, type SelectOption } from 'naive-ui'
+import { api } from '../api/client'
+import type { Channel } from '../api/client'
+import { useEventsStore } from '../stores/events'
+import EventFeed from '../components/EventFeed.vue'
+import { useMessage } from 'naive-ui'
+import { bodySizeToBytes, bytesToBodySizeUnit, bodySizeUnitOptions, type BodySizeUnit } from '../utils/units'
+
+const route = useRoute()
+const channelId = route.params.id as string
+const eventsStore = useEventsStore()
+const message = useMessage()
+
+const loading = ref(true)
+const channel = ref<Channel | null>(null)
+const tab = ref('data')
+
+const form = reactive({
+  name: '',
+  description: '',
+  webhook_secret: '',
+  allowed_ips: [''] as string[],
+  max_body_size: 26214400,
+  message_ttl_seconds: 0,
+  replay_token: '',
+  encryption_mode: '',
+  encryption_key: '',
+  encryption_public_keys: [''] as string[],
+})
+
+const bodySizeUnit = ref<BodySizeUnit>('bytes')
+const bodySizeUnits = bodySizeUnitOptions
+
+const encryptionModeOptions: SelectOption[] = [
+  { label: 'None', value: '' },
+  { label: 'Server-side (AES-256-GCM)', value: 'server_side' },
+  { label: 'Provider-side (NaCl box)', value: 'provider_side' },
+]
+
+const origin = typeof window !== 'undefined' ? window.location.origin : ''
+
+const ghRepo = ref('')
+const ghEvent = ref('push')
+const rawPayload = ref('')
+const showSendDrawer = ref(false)
+
+const githubEventOptions: SelectOption[] = [
+  { label: 'push', value: 'push' },
+  { label: 'pull_request', value: 'pull_request' },
+  { label: 'issues', value: 'issues' },
+  { label: 'release', value: 'release' },
+  { label: 'ping', value: 'ping' },
+  { label: 'create', value: 'create' },
+  { label: 'delete', value: 'delete' },
+  { label: 'deployment', value: 'deployment' },
+  { label: 'deployment_status', value: 'deployment_status' },
+  { label: 'fork', value: 'fork' },
+  { label: 'gollum', value: 'gollum' },
+  { label: 'issue_comment', value: 'issue_comment' },
+  { label: 'label', value: 'label' },
+  { label: 'member', value: 'member' },
+  { label: 'milestone', value: 'milestone' },
+  { label: 'page_build', value: 'page_build' },
+  { label: 'public', value: 'public' },
+  { label: 'pull_request_review', value: 'pull_request_review' },
+  { label: 'pull_request_review_comment', value: 'pull_request_review_comment' },
+  { label: 'push (tag)', value: 'tag_push' },
+  { label: 'registry_package', value: 'registry_package' },
+  { label: 'star', value: 'star' },
+  { label: 'status', value: 'status' },
+  { label: 'watch', value: 'watch' },
+  { label: 'workflow_dispatch', value: 'workflow_dispatch' },
+  { label: 'workflow_run', value: 'workflow_run' },
+]
+
+function buildGitHubPayload(repo: string, event: string): Record<string, any> {
+  const parts = repo.split('/')
+  const owner = parts[0] || 'test-owner'
+  const name = parts[1] || 'test-repo'
+  const now = new Date().toISOString()
+  return {
+    repository: {
+      name,
+      full_name: repo,
+      owner: { login: owner, name: owner },
+      html_url: `https://github.com/${repo}`,
+      default_branch: 'main',
+    },
+    sender: { login: owner, id: 1 },
+    ref: event === 'tag_push' ? 'refs/tags/v1.0.0' : 'refs/heads/main',
+    commits: event === 'push' ? [{ id: 'abc123', message: 'test commit', timestamp: now, author: { name: owner }, committer: { name: owner } }] : undefined,
+    action: ['pull_request', 'issues', 'issue_comment', 'pull_request_review', 'pull_request_review_comment'].includes(event) ? 'opened' : undefined,
+    pull_request: event === 'pull_request' ? { number: 1, title: 'Test PR', state: 'open', body: 'Test body' } : undefined,
+    issue: event === 'issues' ? { number: 1, title: 'Test Issue', state: 'open', body: 'Test body' } : undefined,
+    release: event === 'release' ? { tag_name: 'v1.0.0', name: 'v1.0.0', body: 'Release notes', prerelease: false } : undefined,
+    deployment: event === 'deployment' ? { sha: 'abc123', ref: 'main', environment: 'production' } : undefined,
+    deployment_status: event === 'deployment_status' ? { state: 'success', environment: 'production' } : undefined,
+    comment: ['issue_comment', 'pull_request_review_comment'].includes(event) ? { body: 'Test comment', user: { login: owner } } : undefined,
+    review: event === 'pull_request_review' ? { state: 'approved', body: 'LGTM' } : undefined,
+    forkee: event === 'fork' ? { name: 'forked-repo', owner: { login: 'forker' } } : undefined,
+    label: event === 'label' ? { name: 'bug', color: 'd73a4a' } : undefined,
+    member: event === 'member' ? { login: 'new-member' } : undefined,
+    milestone: event === 'milestone' ? { title: 'v1.0', state: 'open' } : undefined,
+    pages: event === 'page_build' ? [{ page_name: 'index', title: 'Home' }] : undefined,
+    public: event === 'public' ? true : undefined,
+    created: event === 'create' ? true : undefined,
+    deleted: event === 'delete' ? true : undefined,
+    zen: event === 'ping' ? 'Speak like a human' : undefined,
+    hook_id: event === 'ping' ? 12345678 : undefined,
+    workflow: event === 'workflow_dispatch' ? 'test-workflow.yml' : undefined,
+    workflow_run: event === 'workflow_run' ? { workflow: 'CI', conclusion: 'success' } : undefined,
+  }
+}
+
+async function handleGenerateAndSend() {
+  if (!ghRepo.value) return
+  const payload = buildGitHubPayload(ghRepo.value, ghEvent.value)
+  try {
+    await api.sendTestPayload(channelId, payload)
+    message.success(`Sent ${ghEvent.value} event`)
+  } catch (e: any) {
+    message.error(e.message || 'Failed to send test payload')
+  }
+}
+
+async function handleSendRaw() {
+  if (!rawPayload.value.trim()) return
+  try {
+    const parsed = JSON.parse(rawPayload.value)
+    await api.sendTestPayload(channelId, parsed)
+    message.success('Raw payload sent')
+  } catch (e: any) {
+    if (e instanceof SyntaxError) {
+      message.error('Invalid JSON')
+    } else {
+      message.error(e.message || 'Failed to send test payload')
+    }
+  }
+}
+
+const clientCommandNoEnc = computed(() =>
+  `gohookbridge client ${origin}/${channelId} http://localhost:8080`
+)
+
+const keygenCommand = `gohookbridge keygen --key-file ./gohookbridge-key.json`
+
+const clientCommandEnc = computed(() =>
+  `gohookbridge client --encryption-key-file ./gohookbridge-key.json ${origin}/${channelId} http://localhost:8080`
+)
+
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    message.success('Copied to clipboard')
+  } catch {
+    message.error('Failed to copy')
+  }
+}
+
+onMounted(async () => {
+  try {
+    channel.value = await api.getChannel(channelId)
+    form.name = channel.value.name || ''
+    form.description = channel.value.description || ''
+    form.webhook_secret = channel.value.webhook_secret || ''
+    form.allowed_ips = (channel.value.allowed_ips?.length ? channel.value.allowed_ips : [''])
+    form.max_body_size = channel.value.max_body_size || 26214400
+    form.message_ttl_seconds = channel.value.message_ttl_seconds || 0
+    form.replay_token = channel.value.replay_token || ''
+    form.encryption_mode = channel.value.encryption_mode || ''
+    form.encryption_key = channel.value.encryption_key || ''
+    form.encryption_public_keys = (channel.value.encryption_public_keys?.length ? channel.value.encryption_public_keys : [''])
+
+    const bs = bytesToBodySizeUnit(form.max_body_size)
+    form.max_body_size = Math.round(bs.value)
+    bodySizeUnit.value = bs.unit
+
+    eventsStore.connect(channelId)
+  } catch (e: any) {
+    message.error(e.message || 'Failed to load channel')
+  } finally {
+    loading.value = false
+  }
+})
+
+onUnmounted(() => {
+  eventsStore.disconnect()
+})
+
+async function handleSave() {
+  const clean = (arr: string[]) => arr.filter(s => s.trim() !== '')
+  const maxBodyBytes = bodySizeToBytes(form.max_body_size, bodySizeUnit.value)
+  try {
+    await api.updateChannel(channelId, {
+      name: form.name,
+      description: form.description || undefined,
+      webhook_secret: form.webhook_secret || undefined,
+      allowed_ips: clean(form.allowed_ips),
+      max_body_size: maxBodyBytes,
+      message_ttl_seconds: form.message_ttl_seconds || 0,
+      replay_token: form.replay_token || undefined,
+      encryption_mode: form.encryption_mode || undefined,
+      encryption_key: form.encryption_key || undefined,
+      encryption_public_keys: form.encryption_mode === 'provider_side' ? clean(form.encryption_public_keys) : [],
+    })
+    message.success('Saved')
+  } catch (e: any) {
+    message.error(e.message || 'Failed to save')
+  }
+}
+
+async function handleGenerateSecret() {
+  try {
+    const result = await api.generateWebhookSecret(channelId)
+    form.webhook_secret = result.webhook_secret
+    message.success('Secret generated')
+  } catch (e: any) {
+    message.error(e.message || 'Failed to generate secret')
+  }
+}
+
+async function handleGenerateEncryptionKey(mode: string) {
+  try {
+    const result = await api.generateEncryptionKey(channelId, mode)
+    if (result.encryption_key) {
+      form.encryption_key = result.encryption_key
+    }
+    form.encryption_mode = result.encryption_mode || mode
+    message.success(`${mode} key generated`)
+  } catch (e: any) {
+    message.error(e.message || 'Failed to generate key')
+  }
+}
+
+async function handleReplayEvent(eventId: string) {
+  try {
+    await api.replayEvent(channelId, eventId)
+    message.success(`Event ${eventId.slice(0, 8)}... replayed`)
+  } catch (e: any) {
+    message.error(e.message || 'Failed to replay event')
+  }
+}
+</script>

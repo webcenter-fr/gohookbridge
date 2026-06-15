@@ -38,7 +38,6 @@
 ├── main.go                     # Program entrypoint
 ├── Makefile                    # Build, test, lint targets
 ├── Dockerfile                  # Multi-stage container build
-├── vendor/                     # Go vendored dependencies
 ├── misc/                       # Deployment manifests, systemd units
 └── hack/                       # Release helper scripts
 ```
@@ -58,7 +57,7 @@
 ```shell
 git clone https://github.com/webcenter-fr/gohookbridge
 cd gohookbridge
-make vendor     # populate vendor/ with Go dependencies
+go mod tidy
 ```
 
 ### Running the backend (hot reload)
@@ -77,9 +76,15 @@ This starts the server on `http://localhost:3333` with the admin UI disabled (no
 
 To run without hot reload for one-off debugging:
 
-```shell
-go run main.go server --address 0.0.0.0 --port 3333
+go run main.go server --address 0.0.0.0 --port 8081
 ```
+
+To auto-create an admin user on first boot (no bootstrap config needed), add the `--dev-admin` flag:
+
+go run main.go server --address 0.0.0.0 --port 8081 --dev-admin
+```
+
+On first start with no users, this creates an `admin` user and writes the password to `raft-data/admin-password.txt`. Use `--dev-admin-password` to set a specific password instead of a random one.
 
 ### Running the UI (hot reload)
 
@@ -122,12 +127,9 @@ To test webhook forwarding end-to-end:
 # Terminal 1: start a local echo server
 python3 -m http.server 8080
 
-# Terminal 2: start the gohookbridge server
-./bin/gohookbridge server --address 0.0.0.0 --port 3333
+./bin/gohookbridge server --address 0.0.0.0 --port 8081
 
-# Terminal 3: create a channel and connect the client
-CHANNEL=$(curl -s http://localhost:3333/new)
-./bin/gohookbridge client "$CHANNEL" http://localhost:8080
+./bin/gohookbridge client "$CHANNEL" http://localhost:8081
 
 # Terminal 4: send a test webhook
 curl -X POST "$CHANNEL" \

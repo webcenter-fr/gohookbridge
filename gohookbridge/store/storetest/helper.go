@@ -46,7 +46,7 @@ func DefaultGlobalConfig() *store.GlobalConfig {
 			MaxBodySize: 26214400,
 			CORSOrigin:  "*",
 		},
-		Defaults: store.DefaultProjectConfig{},
+		Defaults: store.DefaultChannelConfig{},
 	}
 }
 
@@ -61,12 +61,12 @@ func SetupProtectedChannels(t *testing.T, channels map[string][]string) *store.P
 	rs := NewRaftStore(t)
 	SetupCORSOrigin(rs, "*")
 	for channel, allowedKeys := range channels {
-		p := &store.Project{
+		p := &store.Channel{
 			ID:                channel,
-			EncryptionEnabled: true,
+			EncryptionMode:    "provider_side",
 			EncryptionPubKeys: allowedKeys,
 		}
-		if err := rs.CreateProject(p); err != nil {
+		if err := rs.CreateChannel(p); err != nil {
 			t.Fatal(err)
 		}
 	}

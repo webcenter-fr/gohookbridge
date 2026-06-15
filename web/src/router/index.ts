@@ -22,9 +22,14 @@ const router = createRouter({
           component: () => import('../views/DashboardView.vue'),
         },
         {
-          path: ':channel',
-          name: 'channel',
-          component: () => import('../views/ChannelView.vue'),
+          path: 'channels',
+          name: 'channels',
+          component: () => import('../views/ChannelsView.vue'),
+        },
+        {
+          path: 'channels/:id',
+          name: 'channel-detail',
+          component: () => import('../views/ChannelDetailView.vue'),
         },
         {
           path: 'admin/global',
@@ -49,6 +54,10 @@ const router = createRouter({
           name: 'admin-oidc',
           component: () => import('../views/AdminOIDCView.vue'),
           meta: { requiresAdmin: true },
+        },
+        {
+          path: ':channel',
+          redirect: to => ({ name: 'channel-detail', params: { id: to.params.channel as string } }),
         },
       ],
     },

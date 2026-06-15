@@ -246,9 +246,6 @@ require (
 )
 ```
 
-### 7. `vendor/` — Vendor new dependency
-
-Run `go mod tidy && go mod vendor`.
 
 ## Behavior matrix
 
@@ -260,7 +257,7 @@ Run `go mod tidy && go mod vendor`.
 
 ## Implementation order
 
-1. Add NATS dependencies, vendor
+1. Add NATS dependencies
 2. Create `gosmee/nats/buffer.go` + tests
 3. Create `gosmee/nats/broker.go` + tests
 4. Add NATS flags to `gosmee/flags.go`

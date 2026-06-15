@@ -1,7 +1,7 @@
 export interface UserInfo {
   username: string
   roles: string[]
-  projects: string[]
+  channels: string[]
   permissions: string[]
 }
 
@@ -10,14 +10,17 @@ export interface AuthMethods {
   oidc_providers: { id: string; name: string }[]
 }
 
-export interface Project {
+export interface Channel {
   id: string
   name: string
-  webhook_signatures?: string[]
+  description?: string
+  webhook_secret?: string
   allowed_ips?: string[]
   max_body_size?: number
+  message_ttl_seconds?: number
   replay_token?: string
-  encryption_enabled?: boolean
+  encryption_mode?: string
+  encryption_key?: string
   encryption_public_keys?: string[]
 }
 
@@ -30,9 +33,10 @@ export interface GlobalConfig {
     session_secret: string
   }
   defaults: {
-    webhook_signatures: string[]
+    webhook_secret: string
     allowed_ips: string[]
     replay_token: string
+    message_ttl_seconds: number
   }
 }
 
@@ -40,7 +44,7 @@ export interface User {
   id: string
   username: string
   roles: string[]
-  projects: string[]
+  channels: string[]
 }
 
 export interface Role {
@@ -51,7 +55,7 @@ export interface Role {
 export interface Binding {
   user_id: string
   roles: string[]
-  projects: string[]
+  channels: string[]
 }
 
 export interface OIDCProvider {
@@ -89,7 +93,7 @@ class ApiClient {
   }
 
   async login(username: string, password: string): Promise<void> {
-    const res = await fetch('/api/auth/login', {
+    const res = await fetch(`${this.base}/auth/login`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -102,27 +106,27 @@ class ApiClient {
   }
 
   async logout(): Promise<void> {
-    await fetch('/logout', { method: 'POST', credentials: 'same-origin' })
+    await fetch(`${this.base}/auth/logout`, { method: 'POST', credentials: 'same-origin' })
   }
 
-  async listProjects(): Promise<Project[]> {
-    return this.request<Project[]>('/projects')
+  async listChannels(): Promise<Channel[]> {
+    return this.request<Channel[]>('/channels')
   }
 
-  async getProject(id: string): Promise<Project> {
-    return this.request<Project>(`/projects/${id}`)
+  async getChannel(id: string): Promise<Channel> {
+    return this.request<Channel>(`/channels/${id}`)
   }
 
-  async createProject(project: Partial<Project>): Promise<Project> {
-    return this.request<Project>('/projects', { method: 'POST', body: JSON.stringify(project) })
+  async createChannel(channel: Partial<Channel>): Promise<Channel> {
+    return this.request<Channel>('/channels', { method: 'POST', body: JSON.stringify(channel) })
   }
 
-  async updateProject(id: string, project: Partial<Project>): Promise<Project> {
-    return this.request<Project>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(project) })
+  async updateChannel(id: string, channel: Partial<Channel>): Promise<Channel> {
+    return this.request<Channel>(`/channels/${id}`, { method: 'PUT', body: JSON.stringify(channel) })
   }
 
-  async deleteProject(id: string): Promise<void> {
-    return this.request<void>(`/projects/${id}`, { method: 'DELETE' })
+  async deleteChannel(id: string): Promise<void> {
+    return this.request<void>(`/channels/${id}`, { method: 'DELETE' })
   }
 
   async getGlobalConfig(): Promise<GlobalConfig> {
@@ -141,7 +145,7 @@ class ApiClient {
     return this.request<User>(`/users/${id}`)
   }
 
-  async createUser(user: { username: string; password: string; roles?: string[]; projects?: string[] }): Promise<User> {
+  async createUser(user: { username: string; password: string; roles?: string[]; channels?: string[] }): Promise<User> {
     return this.request<User>('/users', { method: 'POST', body: JSON.stringify(user) })
   }
 
@@ -168,6 +172,22 @@ class ApiClient {
   async listOIDCProviders(): Promise<OIDCProvider[]> {
     const methods = await this.getAuthMethods()
     return methods.oidc_providers.map(p => ({ ...p, client_id: '', client_secret: '', issuer_url: '', scopes: [] }))
+  }
+
+  async sendTestPayload(channelId: string, payload: Record<string, any>): Promise<void> {
+    await this.request<void>(`/send/${channelId}`, { method: 'POST', body: JSON.stringify(payload) })
+  }
+
+  async generateWebhookSecret(channelId: string): Promise<{ webhook_secret: string }> {
+    return this.request<{ webhook_secret: string }>(`/channels/${channelId}/generate-secret`, { method: 'POST' })
+  }
+
+  async generateEncryptionKey(channelId: string, mode: string): Promise<Record<string, any>> {
+    return this.request<Record<string, any>>(`/channels/${channelId}/generate-encryption-key`, { method: 'POST', body: JSON.stringify({ mode }) })
+  }
+
+  async replayEvent(channelId: string, eventId: string): Promise<void> {
+    await this.request<void>(`/channels/${channelId}/events/${eventId}/replay`, { method: 'POST' })
   }
 }
 

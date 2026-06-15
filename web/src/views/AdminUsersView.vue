@@ -23,8 +23,8 @@
         <n-form-item label="Roles">
           <n-select v-model:value="form.roles" multiple :options="roleOptions" />
         </n-form-item>
-        <n-form-item label="Projects">
-          <n-input v-model:value="form.projectsStr" placeholder="* or comma-separated" />
+        <n-form-item label="Channels">
+          <n-input v-model:value="form.channelsStr" placeholder="* or comma-separated" />
         </n-form-item>
         <n-space justify="end">
           <n-button @click="showModal = false">Cancel</n-button>
@@ -37,7 +37,7 @@
 
 <script setup lang="ts">
 import { ref, h, onMounted, reactive, computed } from 'vue'
-import { NSpace, NH3, NButton, NDataTable, NModal, NForm, NFormItem, NInput, NSelect, NTag } from 'naive-ui'
+import { NSpace, NH3, NButton, NDataTable, NModal, NForm, NFormItem, NInput, NSelect } from 'naive-ui'
 import { api, type User } from '../api/client'
 import { useMessage, useDialog } from 'naive-ui'
 
@@ -56,7 +56,7 @@ const form = reactive({
   username: '',
   password: '',
   roles: [] as string[],
-  projectsStr: '',
+  channelsStr: '',
 })
 
 const columns = [
@@ -106,7 +106,7 @@ function openCreate() {
   form.username = ''
   form.password = ''
   form.roles = []
-  form.projectsStr = ''
+  form.channelsStr = ''
   showModal.value = true
 }
 
@@ -115,19 +115,19 @@ function openEdit(user: User) {
   form.username = user.username
   form.password = ''
   form.roles = user.roles || []
-  form.projectsStr = (user.projects || []).join(', ')
+  form.channelsStr = (user.channels || []).join(', ')
   showModal.value = true
 }
 
 async function handleSave() {
-  const projects = form.projectsStr.split(',').map(s => s.trim()).filter(Boolean)
+  const channels = form.channelsStr.split(',').map(s => s.trim()).filter(Boolean)
   try {
     if (editingId.value) {
-      const payload: any = { username: form.username, roles: form.roles, projects }
+      const payload: any = { username: form.username, roles: form.roles, channels }
       if (form.password) payload.password = form.password
       await api.updateUser(editingId.value, payload)
     } else {
-      await api.createUser({ username: form.username, password: form.password, roles: form.roles, projects })
+      await api.createUser({ username: form.username, password: form.password, roles: form.roles, channels })
     }
     message.success('Saved')
     showModal.value = false

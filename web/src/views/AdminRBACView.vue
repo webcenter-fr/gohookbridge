@@ -17,8 +17,8 @@
         <n-form-item label="Roles">
           <n-select v-model:value="form.roles" multiple :options="roleOptions" />
         </n-form-item>
-        <n-form-item label="Projects">
-          <n-input v-model:value="form.projectsStr" placeholder="* or comma-separated" />
+        <n-form-item label="Channels">
+          <n-input v-model:value="form.channelsStr" placeholder="* or comma-separated" />
         </n-form-item>
         <n-space justify="end">
           <n-button @click="showModal = false">Cancel</n-button>
@@ -48,7 +48,7 @@ const roleOptions = computed(() => roles.value.map(r => ({ label: r.name, value:
 const form = reactive({
   user_id: '',
   roles: [] as string[],
-  projectsStr: '',
+  channelsStr: '',
 })
 
 const columns = [
@@ -93,14 +93,14 @@ function openEdit(binding: Binding) {
   editingUserId.value = binding.user_id
   form.user_id = binding.user_id
   form.roles = binding.roles || []
-  form.projectsStr = (binding.projects || []).join(', ')
+  form.channelsStr = (binding.channels || []).join(', ')
   showModal.value = true
 }
 
 async function handleSave() {
-  const projects = form.projectsStr.split(',').map(s => s.trim()).filter(Boolean)
+  const channels = form.channelsStr.split(',').map(s => s.trim()).filter(Boolean)
   try {
-    await api.updateBinding(editingUserId.value!, { roles: form.roles, projects })
+    await api.updateBinding(editingUserId.value!, { roles: form.roles, channels })
     message.success('Saved')
     showModal.value = false
     await fetchBindings()

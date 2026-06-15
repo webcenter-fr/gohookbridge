@@ -10,6 +10,7 @@ import (
 
 	"github.com/hashicorp/raft"
 	"go.etcd.io/bbolt"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type RaftStore struct {
@@ -212,33 +213,33 @@ func (rs *RaftStore) Shutdown() error {
 	return rs.db.Close()
 }
 
-func (rs *RaftStore) GetProject(id string) (*Project, error) {
+func (rs *RaftStore) GetChannel(id string) (*Channel, error) {
 	if id == "" {
-		return nil, fmt.Errorf("project ID required")
+		return nil, fmt.Errorf("channel ID required")
 	}
-	val, err := getFSMValue(rs.db, "/projects/"+id+"/")
+	val, err := getFSMValue(rs.db, "/channels/"+id+"/")
 	if err != nil {
 		return nil, err
 	}
 	if val == nil {
-		return nil, fmt.Errorf("project %q not found", id)
+		return nil, fmt.Errorf("channel %q not found", id)
 	}
-	var p Project
-	if err := json.Unmarshal(val, &p); err != nil {
+	var ch Channel
+	if err := json.Unmarshal(val, &ch); err != nil {
 		return nil, err
 	}
-	return &p, nil
+	return &ch, nil
 }
 
-func (rs *RaftStore) ListProjects() ([]*Project, error) {
-	keys, err := listFSMKeys(rs.db, "/projects/")
+func (rs *RaftStore) ListChannels() ([]*Channel, error) {
+	keys, err := listFSMKeys(rs.db, "/channels/")
 	if err != nil {
 		return nil, err
 	}
-	var projects []*Project
+	var channels []*Channel
 	seen := make(map[string]bool)
 	for _, key := range keys {
-		parts := strings.Split(strings.TrimPrefix(key, "/projects/"), "/")
+		parts := strings.Split(strings.TrimPrefix(key, "/channels/"), "/")
 		if len(parts) < 1 || parts[0] == "" {
 			continue
 		}
@@ -247,30 +248,31 @@ func (rs *RaftStore) ListProjects() ([]*Project, error) {
 			continue
 		}
 		seen[id] = true
-		val, err := getFSMValue(rs.db, "/projects/"+id+"/")
+		val, err := getFSMValue(rs.db, "/channels/"+id+"/")
 		if err != nil || val == nil {
 			continue
 		}
-		var p Project
-		if err := json.Unmarshal(val, &p); err != nil {
+		var ch Channel
+		if err := json.Unmarshal(val, &ch); err != nil {
 			continue
 		}
-		projects = append(projects, &p)
+		migrateChannel(&ch)
+		channels = append(channels, &ch)
 	}
-	return projects, nil
+	return channels, nil
 }
 
-func (rs *RaftStore) CreateProject(p *Project) error {
+func (rs *RaftStore) CreateChannel(p *Channel) error {
 	if p.ID == "" {
-		return fmt.Errorf("project ID required")
+		return fmt.Errorf("channel ID required")
 	}
 	val, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
 	cmd := fsmCommand{
-		Op:    "create-project",
-		Key:   "/projects/" + p.ID + "/",
+		Op:    "create-channel",
+		Key:   "/channels/" + p.ID + "/",
 		Value: val,
 	}
 	data, err := json.Marshal(cmd)
@@ -287,19 +289,19 @@ func (rs *RaftStore) CreateProject(p *Project) error {
 	return nil
 }
 
-func (rs *RaftStore) UpdateProject(p *Project) error {
+func (rs *RaftStore) UpdateChannel(p *Channel) error {
 	if p.ID == "" {
-		return fmt.Errorf("project ID required")
+		return fmt.Errorf("channel ID required")
 	}
 	val, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
-	return rs.applyCommand("set", "/projects/"+p.ID+"/", val)
+	return rs.applyCommand("set", "/channels/"+p.ID+"/", val)
 }
 
-func (rs *RaftStore) DeleteProject(id string) error {
-	return rs.applyCommand("delete", "/projects/"+id+"/", nil)
+func (rs *RaftStore) DeleteChannel(id string) error {
+	return rs.applyCommand("delete", "/channels/"+id+"/", nil)
 }
 
 func (rs *RaftStore) GetGlobalConfig() (*GlobalConfig, error) {
@@ -321,7 +323,7 @@ func (rs *RaftStore) GetGlobalConfig() (*GlobalConfig, error) {
 		return nil, err
 	}
 	if val != nil {
-		var dc DefaultProjectConfig
+		var dc DefaultChannelConfig
 		if err := json.Unmarshal(val, &dc); err == nil {
 			cfg.Defaults = dc
 		}
@@ -348,20 +350,21 @@ func (rs *RaftStore) UpdateGlobalConfig(cfg *GlobalConfig) error {
 	return rs.applyCommand("set", "/global/defaults/", dcVal)
 }
 
-func (rs *RaftStore) ResolveProjectConfig(id string) (*Project, error) {
-	p, err := rs.GetProject(id)
+func (rs *RaftStore) ResolveChannelConfig(id string) (*Channel, error) {
+	ch, err := rs.GetChannel(id)
 	if err != nil {
 		global, _ := rs.GetGlobalConfig()
-		return &Project{
+		return &Channel{
 			ID:                id,
 			MaxBodySize:       global.Server.MaxBodySize,
-			WebhookSignatures: global.Defaults.WebhookSignatures,
+			WebhookSecret:     global.Defaults.WebhookSecret,
 			AllowedIPs:        global.Defaults.AllowedIPs,
 			ReplayToken:       global.Defaults.ReplayToken,
+			MessageTTLSeconds: global.Defaults.MessageTTLSeconds,
 		}, nil
 	}
 	global, _ := rs.GetGlobalConfig()
-	return resolveProjectConfig(p, global), nil
+	return resolveChannelConfig(ch, global), nil
 }
 
 func (rs *RaftStore) GetUser(id string) (*User, error) {
@@ -478,8 +481,8 @@ func (rs *RaftStore) DeleteUser(id string) error {
 	return rs.applyCommand("delete", "/users/by-username/"+u.Username+"/", nil)
 }
 
-func (rs *RaftStore) ValidateReplayToken(projectID, token string) bool {
-	p, err := rs.GetProject(projectID)
+func (rs *RaftStore) ValidateReplayToken(channelID, token string) bool {
+	p, err := rs.GetChannel(channelID)
 	if err != nil {
 		global, _ := rs.GetGlobalConfig()
 		if global.Defaults.ReplayToken == "" {
@@ -625,7 +628,7 @@ func (rs *RaftStore) GetUserBinding(userID string) (*UserBinding, error) {
 	return &UserBinding{
 		UserID:   u.ID,
 		Roles:    u.Roles,
-		Projects: u.Projects,
+		Channels: u.Channels,
 	}, nil
 }
 
@@ -635,7 +638,7 @@ func (rs *RaftStore) UpdateUserBinding(binding *UserBinding) error {
 		return err
 	}
 	u.Roles = binding.Roles
-	u.Projects = binding.Projects
+	u.Channels = binding.Channels
 	return rs.UpdateUser(u)
 }
 
@@ -649,7 +652,7 @@ func (rs *RaftStore) ListBindings() ([]UserBinding, error) {
 		bindings = append(bindings, UserBinding{
 			UserID:   u.ID,
 			Roles:    u.Roles,
-			Projects: u.Projects,
+			Channels: u.Channels,
 		})
 	}
 	return bindings, nil
@@ -663,21 +666,40 @@ func (rs *RaftStore) IsSetupMode() bool {
 	return false
 }
 
-func (rs *RaftStore) ResolveProjectSignatures(projectID string) ([]string, error) {
-	p, err := rs.GetProject(projectID)
+func (rs *RaftStore) CreateDevAdmin(password string) error {
+	if !rs.IsSetupMode() {
+		return nil
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		global, _ := rs.GetGlobalConfig()
-		return global.Defaults.WebhookSignatures, nil
+		return fmt.Errorf("hash password: %w", err)
 	}
-	if len(p.WebhookSignatures) > 0 {
-		return p.WebhookSignatures, nil
+	user := &User{
+		ID:           "admin",
+		Username:     "admin",
+		PasswordHash: string(hash),
+		Roles:        []string{"admin"},
+		Channels:     []string{"*"},
 	}
-	global, _ := rs.GetGlobalConfig()
-	return global.Defaults.WebhookSignatures, nil
+	return rs.CreateUser(user)
 }
 
-func (rs *RaftStore) ResolveProjectAllowedIPs(projectID string) ([]string, error) {
-	p, err := rs.GetProject(projectID)
+func (rs *RaftStore) ResolveChannelWebhookSecret(channelID string) (string, error) {
+	p, err := rs.GetChannel(channelID)
+	if err != nil {
+		global, _ := rs.GetGlobalConfig()
+		return global.Defaults.WebhookSecret, nil
+	}
+	migrateChannel(p)
+	if p.WebhookSecret != "" {
+		return p.WebhookSecret, nil
+	}
+	global, _ := rs.GetGlobalConfig()
+	return global.Defaults.WebhookSecret, nil
+}
+
+func (rs *RaftStore) ResolveChannelAllowedIPs(channelID string) ([]string, error) {
+	p, err := rs.GetChannel(channelID)
 	if err != nil {
 		global, _ := rs.GetGlobalConfig()
 		return global.Defaults.AllowedIPs, nil
@@ -689,8 +711,8 @@ func (rs *RaftStore) ResolveProjectAllowedIPs(projectID string) ([]string, error
 	return global.Defaults.AllowedIPs, nil
 }
 
-func (rs *RaftStore) ResolveProjectMaxBodySize(projectID string) (int, error) {
-	p, err := rs.GetProject(projectID)
+func (rs *RaftStore) ResolveChannelMaxBodySize(channelID string) (int, error) {
+	p, err := rs.GetChannel(channelID)
 	if err != nil {
 		global, _ := rs.GetGlobalConfig()
 		return global.Server.MaxBodySize, nil
@@ -702,12 +724,13 @@ func (rs *RaftStore) ResolveProjectMaxBodySize(projectID string) (int, error) {
 	return global.Server.MaxBodySize, nil
 }
 
-func (rs *RaftStore) ResolveProjectEncryption(projectID string) (bool, []string, error) {
-	p, err := rs.GetProject(projectID)
+func (rs *RaftStore) ResolveChannelEncryption(channelID string) (string, string, []string, error) {
+	p, err := rs.GetChannel(channelID)
 	if err != nil {
-		return false, nil, nil
+		return "", "", nil, nil
 	}
-	return p.EncryptionEnabled, p.EncryptionPubKeys, nil
+	migrateChannel(p)
+	return p.EncryptionMode, p.EncryptionKey, p.EncryptionPubKeys, nil
 }
 
 func (rs *RaftStore) SessionSecret() string {

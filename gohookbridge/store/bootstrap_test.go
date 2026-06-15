@@ -20,8 +20,8 @@ users:
   - username: alice
     password: secret123
     roles: [admin]
-    projects: ["*"]
-projects:
+    channels: ["*"]
+channels:
   - id: proj1
     name: Project One
 `
@@ -39,11 +39,11 @@ projects:
 	assert.Equal(t, cfg.Users[0].Username, "alice")
 	assert.Equal(t, cfg.Users[0].Password, "secret123")
 	assert.DeepEqual(t, cfg.Users[0].Roles, []string{"admin"})
-	assert.DeepEqual(t, cfg.Users[0].Projects, []string{"*"})
+	assert.DeepEqual(t, cfg.Users[0].Channels, []string{"*"})
 
-	assert.Equal(t, len(cfg.Projects), 1)
-	assert.Equal(t, cfg.Projects[0].ID, "proj1")
-	assert.Equal(t, cfg.Projects[0].Name, "Project One")
+	assert.Equal(t, len(cfg.Channels), 1)
+	assert.Equal(t, cfg.Channels[0].ID, "proj1")
+	assert.Equal(t, cfg.Channels[0].Name, "Project One")
 }
 
 func TestLoadBootstrap_JSON(t *testing.T) {
@@ -57,9 +57,9 @@ func TestLoadBootstrap_JSON(t *testing.T) {
 			}
 		},
 		"users": [
-			{"username": "bob", "password": "pass", "roles": ["project_viewer"], "projects": ["proj1"]}
+			{"username": "bob", "password": "pass", "roles": ["channel_viewer"], "channels": ["proj1"]}
 		],
-		"projects": [
+		"channels": [
 			{"id": "proj1", "name": "Project One"}
 		]
 	}`
@@ -76,8 +76,8 @@ func TestLoadBootstrap_JSON(t *testing.T) {
 	assert.Equal(t, len(cfg.Users), 1)
 	assert.Equal(t, cfg.Users[0].Username, "bob")
 
-	assert.Equal(t, len(cfg.Projects), 1)
-	assert.Equal(t, cfg.Projects[0].ID, "proj1")
+	assert.Equal(t, len(cfg.Channels), 1)
+	assert.Equal(t, cfg.Channels[0].ID, "proj1")
 }
 
 func TestLoadBootstrap_InvalidYAML(t *testing.T) {
@@ -128,7 +128,7 @@ func TestApplyBootstrap_Users_PasswordHashed(t *testing.T) {
 				Username: "alice",
 				Password: "my-secret-password",
 				Roles:    []string{"admin"},
-				Projects: []string{"*"},
+				Channels: []string{"*"},
 			},
 		},
 	}
@@ -146,14 +146,14 @@ func TestApplyBootstrap_Users_PasswordHashed(t *testing.T) {
 	assert.NilError(t, err)
 
 	assert.DeepEqual(t, user.Roles, []string{"admin"})
-	assert.DeepEqual(t, user.Projects, []string{"*"})
+	assert.DeepEqual(t, user.Channels, []string{"*"})
 }
 
 func TestApplyBootstrap_Projects(t *testing.T) {
 	rs := newTestRaftStore(t)
 
 	cfg := &BootstrapConfig{
-		Projects: []BootstrapProject{
+		Channels: []BootstrapChannel{
 			{ID: "proj-a", Name: "Project A"},
 			{ID: "proj-b", Name: "Project B"},
 		},
@@ -162,15 +162,15 @@ func TestApplyBootstrap_Projects(t *testing.T) {
 	err := rs.ApplyBootstrap(cfg)
 	assert.NilError(t, err)
 
-	projects, err := rs.ListProjects()
+	channels, err := rs.ListChannels()
 	assert.NilError(t, err)
-	assert.Equal(t, len(projects), 2)
+	assert.Equal(t, len(channels), 2)
 
-	gotA, err := rs.GetProject("proj-a")
+	gotA, err := rs.GetChannel("proj-a")
 	assert.NilError(t, err)
 	assert.Equal(t, gotA.Name, "Project A")
 
-	gotB, err := rs.GetProject("proj-b")
+	gotB, err := rs.GetChannel("proj-b")
 	assert.NilError(t, err)
 	assert.Equal(t, gotB.Name, "Project B")
 }
@@ -179,7 +179,7 @@ func TestApplyBootstrap_DoubleApplication(t *testing.T) {
 	rs := newTestRaftStore(t)
 
 	cfg := &BootstrapConfig{
-		Projects: []BootstrapProject{
+		Channels: []BootstrapChannel{
 			{ID: "proj1", Name: "One"},
 		},
 	}

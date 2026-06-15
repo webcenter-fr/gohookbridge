@@ -10,7 +10,7 @@ const UsernameContextKey = "username"
 
 type contextKey string
 
-const contextKeyProjectID contextKey = "project_id"
+const contextKeyChannelID contextKey = "channel_id"
 
 func GetUsernameFromContext(ctx context.Context) string {
 	username, _ := ctx.Value(UsernameContextKey).(string)
@@ -26,12 +26,12 @@ func RequirePermission(rs *RaftStore, perm Permission) func(http.Handler) http.H
 				return
 			}
 
-			projectID := ""
-			if pid, ok := r.Context().Value(contextKeyProjectID).(string); ok {
-				projectID = pid
+			channelID := ""
+			if pid, ok := r.Context().Value(contextKeyChannelID).(string); ok {
+				channelID = pid
 			}
 
-			if !UserHasPermission(rs, username, perm, projectID) {
+			if !UserHasPermission(rs, username, perm, channelID) {
 				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
 			}
@@ -41,10 +41,9 @@ func RequirePermission(rs *RaftStore, perm Permission) func(http.Handler) http.H
 	}
 }
 
-func UserHasPermission(rs *RaftStore, username string, perm Permission, projectID string) bool {
+func UserHasPermission(rs *RaftStore, username string, perm Permission, channelID string) bool {
 	user, err := rs.GetUserByUsername(username)
 	if err != nil {
-		// Try direct lookup by ID
 		user2, err2 := rs.GetUser(username)
 		if err2 != nil {
 			return false
@@ -59,9 +58,8 @@ func UserHasPermission(rs *RaftStore, username string, perm Permission, projectI
 		}
 		for _, p := range role.Permissions {
 			if p == "*" {
-				// Admin - check project scope if projectID provided
-				if projectID != "" {
-					if hasProjectAccess(user.Projects, projectID) {
+				if channelID != "" {
+					if hasChannelAccess(user.Channels, channelID) {
 						return true
 					}
 					continue
@@ -69,9 +67,8 @@ func UserHasPermission(rs *RaftStore, username string, perm Permission, projectI
 				return true
 			}
 			if p == string(perm) {
-				// Check project scope for project-scoped permissions
-				if strings.HasPrefix(string(perm), "project:") && projectID != "" {
-					if hasProjectAccess(user.Projects, projectID) {
+				if strings.HasPrefix(string(perm), "channel:") && channelID != "" {
+					if hasChannelAccess(user.Channels, channelID) {
 						return true
 					}
 					continue
@@ -83,7 +80,7 @@ func UserHasPermission(rs *RaftStore, username string, perm Permission, projectI
 	return false
 }
 
-func UserProjects(rs *RaftStore, username string) ([]string, error) {
+func UserChannels(rs *RaftStore, username string) ([]string, error) {
 	user, err := rs.GetUserByUsername(username)
 	if err != nil {
 		user2, err2 := rs.GetUser(username)
@@ -93,35 +90,33 @@ func UserProjects(rs *RaftStore, username string) ([]string, error) {
 		user = user2
 	}
 
-	// Check if user has wildcard projects
 	for _, roleName := range user.Roles {
 		role, err := rs.GetRole(roleName)
 		if err != nil {
 			continue
 		}
 		for _, p := range role.Permissions {
-			if p == "*" && hasProjectAccess(user.Projects, "*") {
-				// Admin with wildcard - return all projects
-				projects, _ := rs.ListProjects()
-				ids := make([]string, len(projects))
-				for i, pr := range projects {
-					ids[i] = pr.ID
+			if p == "*" {
+				chs, _ := rs.ListChannels()
+				ids := make([]string, len(chs))
+				for i, ch := range chs {
+					ids[i] = ch.ID
 				}
 				return ids, nil
 			}
 		}
 	}
 
-	return user.Projects, nil
+	return user.Channels, nil
 }
 
 func IsAdmin(rs *RaftStore, username string) bool {
 	return UserHasPermission(rs, username, "*", "")
 }
 
-func hasProjectAccess(userProjects []string, projectID string) bool {
-	for _, p := range userProjects {
-		if p == "*" || p == projectID {
+func hasChannelAccess(userChannels []string, channelID string) bool {
+	for _, ch := range userChannels {
+		if ch == "*" || ch == channelID {
 			return true
 		}
 	}

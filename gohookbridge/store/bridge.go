@@ -3,22 +3,23 @@ package store
 import "encoding/base64"
 
 func NewProtectedChannels(rs *RaftStore) *ProtectedChannels {
-	projects, err := rs.ListProjects()
+	chs, err := rs.ListChannels()
 	if err != nil {
 		return &ProtectedChannels{channels: make(map[string]map[string]struct{})}
 	}
 
-	channels := make(map[string]map[string]struct{})
-	for _, p := range projects {
-		if p.EncryptionEnabled && len(p.EncryptionPubKeys) > 0 {
-			allowed := make(map[string]struct{}, len(p.EncryptionPubKeys))
-			for _, k := range p.EncryptionPubKeys {
+	channelMap := make(map[string]map[string]struct{})
+	for _, ch := range chs {
+		migrateChannel(ch)
+		if ch.EncryptionMode == "provider_side" && len(ch.EncryptionPubKeys) > 0 {
+			allowed := make(map[string]struct{}, len(ch.EncryptionPubKeys))
+			for _, k := range ch.EncryptionPubKeys {
 				allowed[k] = struct{}{}
 			}
-			channels[p.ID] = allowed
+			channelMap[ch.ID] = allowed
 		}
 	}
-	return &ProtectedChannels{channels: channels}
+	return &ProtectedChannels{channels: channelMap}
 }
 
 func NewProtectedChannelsDynamic(rs *RaftStore) *ProtectedChannels {
@@ -35,11 +36,12 @@ func (p *ProtectedChannels) Has(channel string) bool {
 		return false
 	}
 	if p.rs != nil {
-		project, err := p.rs.GetProject(channel)
+		ch, err := p.rs.GetChannel(channel)
 		if err != nil {
 			return false
 		}
-		return project.EncryptionEnabled && len(project.EncryptionPubKeys) > 0
+		migrateChannel(ch)
+		return ch.EncryptionMode == "provider_side" && len(ch.EncryptionPubKeys) > 0
 	}
 	_, ok := p.channels[channel]
 	return ok
@@ -50,15 +52,16 @@ func (p *ProtectedChannels) IsAllowed(channel string, publicKey *[32]byte) bool 
 		return false
 	}
 	if p.rs != nil {
-		project, err := p.rs.GetProject(channel)
+		ch, err := p.rs.GetChannel(channel)
 		if err != nil {
 			return false
 		}
-		if !project.EncryptionEnabled {
+		migrateChannel(ch)
+		if ch.EncryptionMode != "provider_side" {
 			return false
 		}
 		encoded := base64.RawURLEncoding.EncodeToString(publicKey[:])
-		for _, k := range project.EncryptionPubKeys {
+		for _, k := range ch.EncryptionPubKeys {
 			if k == encoded {
 				return true
 			}

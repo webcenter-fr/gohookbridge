@@ -14,39 +14,39 @@ func setupUsersWithRoles(t *testing.T) *RaftStore {
 		ID:       "admin1",
 		Username: "admin1",
 		Roles:    []string{"admin"},
-		Projects: []string{"*"},
+		Channels: []string{"*"},
 	})
 	assert.NilError(t, err)
 
 	err = rs.CreateUser(&User{
 		ID:       "projectadmin",
 		Username: "projectadmin",
-		Roles:    []string{"project_admin"},
-		Projects: []string{"proj1", "proj2"},
+		Roles:    []string{"channel_admin"},
+		Channels: []string{"proj1", "proj2"},
 	})
 	assert.NilError(t, err)
 
 	err = rs.CreateUser(&User{
 		ID:       "scopeduser",
 		Username: "scopeduser",
-		Roles:    []string{"project_viewer"},
-		Projects: []string{"proj1"},
+		Roles:    []string{"channel_viewer"},
+		Channels: []string{"proj1"},
 	})
 	assert.NilError(t, err)
 
 	err = rs.CreateUser(&User{
 		ID:       "staruser",
 		Username: "staruser",
-		Roles:    []string{"project_viewer"},
-		Projects: []string{"*"},
+		Roles:    []string{"channel_viewer"},
+		Channels: []string{"*"},
 	})
 	assert.NilError(t, err)
 
 	err = rs.CreateUser(&User{
 		ID:       "viewer1",
 		Username: "viewer1",
-		Roles:    []string{"project_viewer"},
-		Projects: []string{"proj1"},
+		Roles:    []string{"channel_viewer"},
+		Channels: []string{"proj1"},
 	})
 	assert.NilError(t, err)
 
@@ -67,7 +67,7 @@ func TestUserHasPermission_Admin_Wildcard(t *testing.T) {
 
 	assert.Assert(t, UserHasPermission(rs, "admin1", "*", ""))
 	assert.Assert(t, UserHasPermission(rs, "admin1", "global:read", ""))
-	assert.Assert(t, UserHasPermission(rs, "admin1", "project:write", "proj1"))
+	assert.Assert(t, UserHasPermission(rs, "admin1", "channel:write", "proj1"))
 	assert.Assert(t, UserHasPermission(rs, "admin1", "nonexistent:perm", ""))
 }
 
@@ -78,30 +78,30 @@ func TestUserHasPermission_GlobalWrite(t *testing.T) {
 	assert.Assert(t, !UserHasPermission(rs, "projectadmin", "global:write", ""))
 	assert.Assert(t, !UserHasPermission(rs, "projectadmin", "users:read", ""))
 
-	assert.Assert(t, UserHasPermission(rs, "projectadmin", "project:write", "proj1"))
-	assert.Assert(t, UserHasPermission(rs, "projectadmin", "project:read", "proj1"))
+	assert.Assert(t, UserHasPermission(rs, "projectadmin", "channel:write", "proj1"))
+	assert.Assert(t, UserHasPermission(rs, "projectadmin", "channel:read", "proj1"))
 }
 
 func TestUserHasPermission_ProjectScope(t *testing.T) {
 	rs := setupUsersWithRoles(t)
 
-	assert.Assert(t, UserHasPermission(rs, "scopeduser", "project:read", "proj1"))
-	assert.Assert(t, !UserHasPermission(rs, "scopeduser", "project:read", "proj2"))
-	assert.Assert(t, !UserHasPermission(rs, "scopeduser", "project:write", "proj1"))
+	assert.Assert(t, UserHasPermission(rs, "scopeduser", "channel:read", "proj1"))
+	assert.Assert(t, !UserHasPermission(rs, "scopeduser", "channel:read", "proj2"))
+	assert.Assert(t, !UserHasPermission(rs, "scopeduser", "channel:write", "proj1"))
 	assert.Assert(t, !UserHasPermission(rs, "scopeduser", "global:read", ""))
 }
 
 func TestUserHasPermission_StarProjects(t *testing.T) {
 	rs := setupUsersWithRoles(t)
 
-	assert.Assert(t, UserHasPermission(rs, "staruser", "project:read", "any-project"))
-	assert.Assert(t, UserHasPermission(rs, "staruser", "project:read", ""))
+	assert.Assert(t, UserHasPermission(rs, "staruser", "channel:read", "any-project"))
+	assert.Assert(t, UserHasPermission(rs, "staruser", "channel:read", ""))
 }
 
 func TestUserHasPermission_UnknownUser(t *testing.T) {
 	rs := setupUsersWithRoles(t)
 
-	assert.Assert(t, !UserHasPermission(rs, "unknown", "project:read", "proj1"))
+	assert.Assert(t, !UserHasPermission(rs, "unknown", "channel:read", "proj1"))
 	assert.Assert(t, !UserHasPermission(rs, "unknown", "*", ""))
 }
 
@@ -114,8 +114,8 @@ func TestGetUserPermissions(t *testing.T) {
 
 	perms = GetUserPermissions(rs, "projectadmin")
 	assert.Equal(t, len(perms), 2)
-	assert.Assert(t, contains(perms, "project:read"), "expected project:read")
-	assert.Assert(t, contains(perms, "project:write"), "expected project:write")
+	assert.Assert(t, contains(perms, "channel:read"), "expected project:read")
+	assert.Assert(t, contains(perms, "channel:write"), "expected project:write")
 
 	perms = GetUserPermissions(rs, "unknown")
 	assert.Assert(t, perms == nil)

@@ -16,12 +16,16 @@
     </n-spin>
     <n-list v-if="events.length > 0" style="max-height: 500px; overflow-y: auto;">
       <n-list-item v-for="evt in events" :key="evt.id">
-        <template #header>
-          <n-space justify="space-between">
+        <n-space justify="space-between" style="margin-bottom: 4px;">
+          <n-space>
             <n-text depth="3" style="font-size: 12px;">#{{ evt.id }}</n-text>
-            <n-text depth="3" style="font-size: 12px;">{{ evt.timestamp }}</n-text>
+            <n-text v-if="evt.event_id" depth="3" style="font-size: 12px;">{{ evt.event_id.slice(0, 8) }}...</n-text>
           </n-space>
-        </template>
+          <n-space>
+            <n-text depth="3" style="font-size: 12px;">{{ evt.timestamp }}</n-text>
+            <n-button size="tiny" quaternary @click="() => emit('replay', evt.event_id || String(evt.id))">Replay</n-button>
+          </n-space>
+        </n-space>
         <json-viewer :data="evt.data" />
       </n-list-item>
     </n-list>
@@ -30,13 +34,17 @@
 </template>
 
 <script setup lang="ts">
-import { NList, NListItem, NSpace, NTag, NInput, NInputGroup, NInputGroupLabel, NSpin, NEmpty, NH3, NText } from 'naive-ui'
+import { NList, NListItem, NSpace, NTag, NInput, NInputGroup, NInputGroupLabel, NSpin, NEmpty, NH3, NText, NButton } from 'naive-ui'
 import JsonViewer from './JsonViewer.vue'
 
 defineProps<{
   channel: string
-  events: { id: number; data: any; timestamp: string }[]
+  events: { id: number; data: any; timestamp: string; event_id?: string }[]
   connected: boolean
   connecting: boolean
+}>()
+
+const emit = defineEmits<{
+  (e: 'replay', eventId: string): void
 }>()
 </script>

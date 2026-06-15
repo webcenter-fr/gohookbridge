@@ -34,12 +34,18 @@ const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
 
-const activeKey = computed(() => route.name as string || 'dashboard')
+const activeKey = computed(() => {
+  const name = route.name as string
+  if (name === 'channel-detail') return 'channels'
+  return name || 'dashboard'
+})
 
 const menuOptions = computed(() => {
   const items: any[] = [
     { key: 'dashboard', label: 'Dashboard', icon: () => h('span', '📋') },
+    { key: 'channels', label: 'Channels', icon: () => h('span', '📡') },
   ]
+
   if (auth.isAdmin) {
     items.push(
       { type: 'divider' as const, key: 'admin-divider' },

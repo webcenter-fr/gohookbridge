@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-playground/validator/v10"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -19,70 +22,69 @@ type apiHandler struct {
 func RegisterAPIHandlers(r chi.Router, rs *RaftStore) {
 	h := &apiHandler{rs: rs}
 
-	r.Route("/api", func(r chi.Router) {
-		r.Route("/projects", func(r chi.Router) {
-			r.Use(RequirePermission(rs, PermProjectRead))
-			r.Get("/", h.listProjects)
-			r.Post("/", h.createProject)
-			r.Route("/{id}", func(r chi.Router) {
-				r.Use(h.projectCtx)
-				r.Get("/", h.getProject)
-				r.Put("/", h.updateProject)
-				r.Delete("/", h.deleteProject)
-			})
+	r.Route("/channels", func(r chi.Router) {
+		r.Use(RequirePermission(rs, PermChannelRead))
+		r.Get("/", h.listChannels)
+		r.Post("/", h.createChannel)
+		r.Route("/{id}", func(r chi.Router) {
+			r.Use(h.channelCtx)
+			r.Get("/", h.getChannel)
+			r.Put("/", h.updateChannel)
+			r.Delete("/", h.deleteChannel)
+			r.Post("/generate-secret", h.generateSecret)
 		})
-
-		r.Route("/global", func(r chi.Router) {
-			r.Use(RequirePermission(rs, PermGlobalRead))
-			r.Get("/", h.getGlobalConfig)
-			r.Put("/", h.updateGlobalConfig)
-		})
-
-		r.Route("/users", func(r chi.Router) {
-			r.Use(RequirePermission(rs, PermUsersRead))
-			r.Get("/", h.listUsers)
-			r.Post("/", h.createUser)
-			r.Route("/{id}", func(r chi.Router) {
-				r.Get("/", h.getUser)
-				r.Put("/", h.updateUser)
-				r.Delete("/", h.deleteUser)
-			})
-		})
-
-		r.Route("/rbac", func(r chi.Router) {
-			r.Use(RequirePermission(rs, PermRBACRead))
-			r.Get("/roles", h.listRoles)
-			r.Get("/bindings", h.listBindings)
-			r.Put("/bindings/{userID}", h.updateBinding)
-		})
-
-		r.Get("/me", h.getMe)
 	})
+
+	r.Route("/global", func(r chi.Router) {
+		r.Use(RequirePermission(rs, PermGlobalRead))
+		r.Get("/", h.getGlobalConfig)
+		r.Put("/", h.updateGlobalConfig)
+	})
+
+	r.Route("/users", func(r chi.Router) {
+		r.Use(RequirePermission(rs, PermUsersRead))
+		r.Get("/", h.listUsers)
+		r.Post("/", h.createUser)
+		r.Route("/{id}", func(r chi.Router) {
+			r.Get("/", h.getUser)
+			r.Put("/", h.updateUser)
+			r.Delete("/", h.deleteUser)
+		})
+	})
+
+	r.Route("/rbac", func(r chi.Router) {
+		r.Use(RequirePermission(rs, PermRBACRead))
+		r.Get("/roles", h.listRoles)
+		r.Get("/bindings", h.listBindings)
+		r.Put("/bindings/{userID}", h.updateBinding)
+	})
+
+	r.Get("/me", h.getMe)
 }
 
-func (h *apiHandler) projectCtx(next http.Handler) http.Handler {
+func (h *apiHandler) channelCtx(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
-		ctx := context.WithValue(r.Context(), contextKeyProjectID, id)
+		ctx := context.WithValue(r.Context(), contextKeyChannelID, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-func (h *apiHandler) listProjects(w http.ResponseWriter, r *http.Request) {
+func (h *apiHandler) listChannels(w http.ResponseWriter, r *http.Request) {
 	format := r.URL.Query().Get("format")
 
 	username := GetUsernameFromContext(r.Context())
-	allowedProjects, _ := UserProjects(h.rs, username)
+	allowedChannels, _ := UserChannels(h.rs, username)
 
-	projects, err := h.rs.ListProjects()
+	channels, err := h.rs.ListChannels()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	filtered := make([]*Project, 0)
-	for _, p := range projects {
-		if hasProjectAccess(allowedProjects, p.ID) {
+	filtered := make([]*Channel, 0)
+	for _, p := range channels {
+		if hasChannelAccess(allowedChannels, p.ID) {
 			filtered = append(filtered, p)
 		}
 	}
@@ -95,17 +97,17 @@ func (h *apiHandler) listProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, filtered)
 }
 
-func (h *apiHandler) createProject(w http.ResponseWriter, r *http.Request) {
-	var p Project
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+func (h *apiHandler) createChannel(w http.ResponseWriter, r *http.Request) {
+	var ch Channel
+	if err := json.NewDecoder(r.Body).Decode(&ch); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if p.ID == "" {
-		writeError(w, http.StatusBadRequest, "project ID required")
+	if msg := validateStruct(&ch); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	if err := h.rs.CreateProject(&p); err != nil {
+	if err := h.rs.CreateChannel(&ch); err != nil {
 		if strings.Contains(err.Error(), "already exists") {
 			writeError(w, http.StatusConflict, err.Error())
 			return
@@ -113,37 +115,42 @@ func (h *apiHandler) createProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, &p)
+	writeJSON(w, http.StatusCreated, &ch)
 }
 
-func (h *apiHandler) getProject(w http.ResponseWriter, r *http.Request) {
+func (h *apiHandler) getChannel(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	p, err := h.rs.GetProject(id)
+	p, err := h.rs.GetChannel(id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
+		writeError(w, http.StatusNotFound, "channel not found")
 		return
 	}
+	migrateChannel(p)
 	writeJSON(w, http.StatusOK, p)
 }
 
-func (h *apiHandler) updateProject(w http.ResponseWriter, r *http.Request) {
+func (h *apiHandler) updateChannel(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	var p Project
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	var ch Channel
+	if err := json.NewDecoder(r.Body).Decode(&ch); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	p.ID = id
-	if err := h.rs.UpdateProject(&p); err != nil {
+	ch.ID = id
+	if msg := validateStruct(&ch); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	if err := h.rs.UpdateChannel(&ch); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, &p)
+	writeJSON(w, http.StatusOK, &ch)
 }
 
-func (h *apiHandler) deleteProject(w http.ResponseWriter, r *http.Request) {
+func (h *apiHandler) deleteChannel(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := h.rs.DeleteProject(id); err != nil {
+	if err := h.rs.DeleteChannel(id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -203,7 +210,7 @@ func (h *apiHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 			"id":       u.ID,
 			"username": u.Username,
 			"roles":    u.Roles,
-			"projects": u.Projects,
+			"channels": u.Channels,
 		}
 	}
 	writeJSON(w, http.StatusOK, masked)
@@ -211,17 +218,17 @@ func (h *apiHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 
 func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Username string   `json:"username"`
+		Username string   `json:"username" validate:"required,min=1,max=128"`
 		Password string   `json:"password"`
 		Roles    []string `json:"roles"`
-		Projects []string `json:"projects"`
+		Channels []string `json:"channels"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if input.Username == "" {
-		writeError(w, http.StatusBadRequest, "username required")
+	if msg := validateStruct(&input); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 
@@ -236,7 +243,7 @@ func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 		Username:     input.Username,
 		PasswordHash: string(hash),
 		Roles:        input.Roles,
-		Projects:     input.Projects,
+		Channels:     input.Channels,
 	}
 	if err := h.rs.CreateUser(user); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -256,20 +263,24 @@ func (h *apiHandler) getUser(w http.ResponseWriter, r *http.Request) {
 		"id":       u.ID,
 		"username": u.Username,
 		"roles":    u.Roles,
-		"projects": u.Projects,
+		"channels": u.Channels,
 	})
 }
 
 func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var input struct {
-		Username string   `json:"username"`
+		Username string   `json:"username" validate:"max=128"`
 		Password string   `json:"password,omitempty"`
 		Roles    []string `json:"roles"`
-		Projects []string `json:"projects"`
+		Channels []string `json:"channels"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if msg := validateStruct(&input); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 
@@ -292,8 +303,8 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 	if input.Roles != nil {
 		u.Roles = input.Roles
 	}
-	if input.Projects != nil {
-		u.Projects = input.Projects
+	if input.Channels != nil {
+		u.Channels = input.Channels
 	}
 	if err := h.rs.UpdateUser(u); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -337,6 +348,10 @@ func (h *apiHandler) updateBinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	binding.UserID = userID
+	if msg := validateStruct(&binding); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	if err := h.rs.UpdateUserBinding(&binding); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -364,7 +379,7 @@ func (h *apiHandler) getMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	permissions := GetUserPermissions(h.rs, username)
-	projects, _ := UserProjects(h.rs, username)
+	channels, _ := UserChannels(h.rs, username)
 
 	providers, _ := h.rs.OIDCProviders()
 	oidcList := make([]map[string]string, 0, len(providers))
@@ -376,13 +391,37 @@ func (h *apiHandler) getMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"username":    user.Username,
 		"roles":       user.Roles,
-		"projects":    projects,
+		"channels":    channels,
 		"permissions": permissions,
 		"auth_methods": map[string]any{
 			"oidc_providers": oidcList,
 			"local_enabled":  len(users) > 0,
 		},
 	})
+}
+
+func (h *apiHandler) generateSecret(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	ch, err := h.rs.GetChannel(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate secret")
+		return
+	}
+	secret := hex.EncodeToString(b)
+
+	ch.WebhookSecret = secret
+	if err := h.rs.UpdateChannel(ch); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"webhook_secret": secret})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -395,14 +434,29 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func writeCSV(w http.ResponseWriter, projects []*Project) {
+func writeCSV(w http.ResponseWriter, channels []*Channel) {
 	w.Header().Set("Content-Type", "text/csv")
-	w.Header().Set("Content-Disposition", "attachment; filename=projects.csv")
+	w.Header().Set("Content-Disposition", "attachment; filename=channels.csv")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("id,name\n"))
-	for _, p := range projects {
-		fmt.Fprintf(w, "%s,%s\n", p.ID, p.Name)
+	for _, ch := range channels {
+		fmt.Fprintf(w, "%s,%s\n", ch.ID, ch.Name)
 	}
+}
+
+func validateStruct(s interface{}) string {
+	if err := validate.Struct(s); err != nil {
+		ve, ok := err.(validator.ValidationErrors)
+		if !ok {
+			return err.Error()
+		}
+		var msgs []string
+		for _, e := range ve {
+			msgs = append(msgs, fmt.Sprintf("%s: %s", e.Field(), e.Tag()))
+		}
+		return strings.Join(msgs, "; ")
+	}
+	return ""
 }
 
 func (rs *RaftStore) SetupModeMiddleware(next http.Handler) http.Handler {

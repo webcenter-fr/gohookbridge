@@ -12,7 +12,6 @@ This branch adds an embedded NATS messaging layer to gosmee for multi-node HA we
 - **`gosmee/nats/broker.go`** — Embedded NATS server, pub/sub, fanout (new)
 - **`gosmee/nats/buffer.go`** — Ring buffer with TTL + size eviction (new)
 - **`gosmee/nats/broker_test.go`** — Tests for ring buffer and broker (new)
-- **`vendor/`** — Vendored NATS ecosystem deps
 - **`design.md`** — Architecture design doc
 
 ---

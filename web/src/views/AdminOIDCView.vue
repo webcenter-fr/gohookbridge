@@ -43,7 +43,7 @@
 
 <script setup lang="ts">
 import { ref, h, onMounted, reactive } from 'vue'
-import { NSpace, NH3, NButton, NDataTable, NModal, NForm, NFormItem, NInput, NTag } from 'naive-ui'
+import { NSpace, NH3, NButton, NDataTable, NModal, NForm, NFormItem, NInput } from 'naive-ui'
 import { api, type OIDCProvider } from '../api/client'
 import { useMessage, useDialog } from 'naive-ui'
 
@@ -128,14 +128,6 @@ function openEdit(provider: OIDCProvider) {
 
 async function handleSave() {
   try {
-    const payload = {
-      id: form.id,
-      name: form.name,
-      client_id: form.client_id,
-      client_secret: form.client_secret,
-      issuer_url: form.issuer_url,
-      scopes: form.scopesStr.split(' ').filter(Boolean),
-    }
     // OIDC providers are managed via the API - we'd need to call a dedicated endpoint
     // For now show a success message; the actual saving depends on backend endpoint availability
     message.success('OIDC provider saved')

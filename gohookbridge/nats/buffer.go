@@ -13,20 +13,32 @@ type entry struct {
 }
 
 type RingBuffer struct {
-	mu      sync.RWMutex
-	entries []entry
-	maxSize int
-	maxAge  time.Duration
-	head    int
-	tail    int
-	full    bool
+	mu          sync.RWMutex
+	entries     []entry
+	maxSize     int
+	maxAge      time.Duration
+	channelTTLs map[string]time.Duration
+	head        int
+	tail        int
+	full        bool
 }
 
 func NewRingBuffer(maxSize int, maxAge time.Duration) *RingBuffer {
 	return &RingBuffer{
-		entries: make([]entry, maxSize),
-		maxSize: maxSize,
-		maxAge:  maxAge,
+		entries:     make([]entry, maxSize),
+		maxSize:     maxSize,
+		maxAge:      maxAge,
+		channelTTLs: make(map[string]time.Duration),
+	}
+}
+
+func (rb *RingBuffer) SetChannelTTL(channel string, ttl time.Duration) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	if ttl <= 0 {
+		delete(rb.channelTTLs, channel)
+	} else {
+		rb.channelTTLs[channel] = ttl
 	}
 }
 
@@ -118,7 +130,6 @@ func (rb *RingBuffer) evictExpired() {
 		return
 	}
 
-	cutoff := time.Now().Add(-rb.maxAge)
 	var total int
 	if rb.tail < rb.head {
 		total = rb.head - rb.tail
@@ -129,7 +140,18 @@ func (rb *RingBuffer) evictExpired() {
 	evicted := 0
 	for i := 0; i < total; i++ {
 		idx := (rb.tail + i) % rb.maxSize
-		if rb.entries[idx].timestamp.IsZero() || rb.entries[idx].timestamp.After(cutoff) {
+		e := rb.entries[idx]
+		if e.timestamp.IsZero() {
+			break
+		}
+		age := rb.maxAge
+		if chTTL, ok := rb.channelTTLs[e.channel]; ok && chTTL > 0 {
+			if chTTL < age {
+				age = chTTL
+			}
+		}
+		channelCutoff := time.Now().Add(-age)
+		if e.timestamp.After(channelCutoff) {
 			break
 		}
 		evicted++

@@ -13,7 +13,7 @@ type BootstrapConfig struct {
 	Raft     *BootstrapRaft      `yaml:"raft,omitempty" json:"raft,omitempty"`
 	Global   *GlobalConfig       `yaml:"global,omitempty" json:"global,omitempty"`
 	Users    []BootstrapUser     `yaml:"users,omitempty" json:"users,omitempty"`
-	Projects []BootstrapProject  `yaml:"projects,omitempty" json:"projects,omitempty"`
+	Channels []BootstrapChannel  `yaml:"channels,omitempty" json:"channels,omitempty"`
 }
 
 type BootstrapRaft struct {
@@ -25,12 +25,14 @@ type BootstrapUser struct {
 	Username string   `yaml:"username" json:"username"`
 	Password string   `yaml:"password" json:"password"`
 	Roles    []string `yaml:"roles" json:"roles"`
-	Projects []string `yaml:"projects" json:"projects"`
+	Channels []string `yaml:"channels" json:"channels"`
 }
 
-type BootstrapProject struct {
+type BootstrapChannel struct {
 	ID                string   `yaml:"id" json:"id"`
 	Name              string   `yaml:"name" json:"name"`
+	Description       string   `yaml:"description,omitempty" json:"description,omitempty"`
+	WebhookSecret     string   `yaml:"webhook_secret,omitempty" json:"webhook_secret,omitempty"`
 	WebhookSignatures []string `yaml:"webhook_signatures,omitempty" json:"webhook_signatures,omitempty"`
 	AllowedIPs        []string `yaml:"allowed_ips,omitempty" json:"allowed_ips,omitempty"`
 }
@@ -72,16 +74,20 @@ func (rs *RaftStore) ApplyBootstrap(cfg *BootstrapConfig) error {
 			Username: u.Username,
 			Password: u.Password,
 			Roles:    u.Roles,
-			Projects: u.Projects,
+			Channels: u.Channels,
 		})
 	}
-	for _, p := range cfg.Projects {
-		payload.Projects = append(payload.Projects, &Project{
+	for _, p := range cfg.Channels {
+		ch := &Channel{
 			ID:                p.ID,
 			Name:              p.Name,
+			Description:       p.Description,
+			WebhookSecret:     p.WebhookSecret,
 			WebhookSignatures: p.WebhookSignatures,
 			AllowedIPs:        p.AllowedIPs,
-		})
+		}
+		migrateChannel(ch)
+		payload.Channels = append(payload.Channels, ch)
 	}
 
 	val, err := json.Marshal(payload)
@@ -151,7 +157,7 @@ func matchCIDR(cidr, ip string) bool {
 func GetDefaultRoles() map[string][]string {
 	return map[string][]string{
 		"admin":           {"*"},
-		"project_admin":   {"project:write", "project:read"},
-		"project_viewer":  {"project:read"},
+		"channel_admin":   {"channel:write", "channel:read"},
+		"channel_viewer":  {"channel:read"},
 	}
 }

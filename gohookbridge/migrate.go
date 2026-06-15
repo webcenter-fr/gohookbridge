@@ -45,7 +45,7 @@ func migrateConfig(c *cli.Context) error {
 	}
 
 	if v := os.Getenv("GOSMEE_WEBHOOK_SIGNATURE"); v != "" {
-		global.Defaults.WebhookSignatures = strings.Split(v, ",")
+		global.Defaults.WebhookSecret = v
 		hasConfig = true
 	}
 
