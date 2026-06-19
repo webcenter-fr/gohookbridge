@@ -87,9 +87,10 @@ func (h *apiHandler) listChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filtered := make([]*Channel, 0)
+filtered := make([]*Channel, 0)
 	for _, p := range channels {
 		if hasChannelAccess(allowedChannels, p.ID) {
+			sanitizeChannelAPI(p)
 			filtered = append(filtered, p)
 		}
 	}
@@ -135,6 +136,7 @@ func (h *apiHandler) getChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	migrateChannel(p)
+	sanitizeChannelAPI(p)
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -454,6 +456,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func sanitizeChannelAPI(p *Channel) {
+	p.EncryptionPrivateKey = ""
 }
 
 func writeCSV(w http.ResponseWriter, channels []*Channel) {

@@ -14,9 +14,11 @@ type Channel struct {
 	AllowedIPs        []string `json:"allowed_ips,omitempty"`
 	MaxBodySize       int      `json:"max_body_size,omitempty"`
 	MessageTTLSeconds int      `json:"message_ttl_seconds,omitempty"`
-	EncryptionMode    string   `json:"encryption_mode,omitempty"`
-	EncryptionKey     string   `json:"encryption_key,omitempty"`
-	EncryptionPubKeys []string `json:"encryption_public_keys,omitempty"`
+	EncryptionMode        string   `json:"encryption_mode,omitempty"`
+	EncryptionKey         string   `json:"encryption_key,omitempty"`
+	EncryptionPublicKey   string   `json:"encryption_public_key,omitempty"`
+	EncryptionPrivateKey  string   `json:"encryption_private_key,omitempty"`
+	EncryptionPubKeys     []string `json:"encryption_public_keys,omitempty"`
 
 	// Deprecated: use WebhookSecret instead
 	WebhookSignatures []string `json:"webhook_signatures,omitempty"`
@@ -155,8 +157,15 @@ func migrateChannel(p *Channel) {
 		p.WebhookSecret = p.WebhookSignatures[0]
 	}
 	if p.EncryptionMode == "" && p.EncryptionEnabled {
-		p.EncryptionMode = "provider_side"
+		p.EncryptionMode = "e2e"
 	}
+	if p.EncryptionMode == "provider_side" {
+		p.EncryptionMode = "e2e"
+	}
+}
+
+func MigrateChannelForTest(p *Channel) {
+	migrateChannel(p)
 }
 
 func marshalJSON(v any) (string, error) {

@@ -243,8 +243,20 @@ gohookbridge client --encryption-key-file ~/.config/gohookbridge/client-key.json
 Notes:
 
 - This protected-channel flow only works with gohookbridge's own SSE endpoint. `https://smee.io` does not use client keys.
-- For gohookbridge channels that are not listed in `--encrypted-channels-file`, `--encryption-key-file` is not needed and payloads stay plaintext.
-- Payloads are encrypted from the gohookbridge server to authorized clients. The gohookbridge server still sees plaintext when it receives the webhook.
+- Payloads are encrypted end-to-end: the server encrypts webhook bodies with the channel's public key at ingest time and stores only ciphertext. The client decrypts with the private key.
+- For pre-encrypted sending, use `gohookbridge produce` to encrypt and POST a payload directly:
+
+```shell
+gohookbridge produce --pubkey <channel-public-key> https://myserverurl/CHANNEL_ID payload.json
+```
+
+- For transparent encryption of standard webhooks, use `gohookbridge proxy` as a local encrypt proxy:
+
+```shell
+gohookbridge proxy --pubkey <channel-public-key> --listen :9090 --target https://myserverurl/CHANNEL_ID
+```
+
+- The proxy receives plaintext webhooks from standard providers and encrypts them before forwarding to the gohookbridge server.
 - Saved payloads from `--saveDir` are written after decryption on the client side.
 
 For those who prefer [HTTPie](https://httpie.io) over cURL, you can generate HTTPie-based replay scripts:
@@ -427,18 +439,26 @@ http://localhost:3333/NqybHcEi
 
 #### Protected client channels
 
-If you want specific channels to be key-protected, enable `encryption_enabled` on the project via `bootstrap.yaml` or Admin UI, and add authorized client public keys in `encryption_public_keys`. Only channels with encryption enabled require authorized client keys and encrypted SSE delivery. All other gohookbridge channels continue to work in legacy plaintext mode.
+If you want specific channels to be end-to-end encrypted, enable `encryption_mode: e2e` on the channel via `bootstrap.yaml` or Admin UI, and set `encryption_public_key` to the channel's public key. The channel uses a single shared keypair: producers encrypt with the public key, clients decrypt with the private key.
 
-Example project with encryption:
+Example channel with E2E encryption:
 
 ```yaml
 projects:
   - id: customer-a-channel
     name: Customer A
-    encryption_enabled: true
-    encryption_public_keys:
-      - "CLIENT_PUBLIC_KEY_1"
-      - "CLIENT_PUBLIC_KEY_2"
+    encryption_mode: e2e
+    encryption_public_key: "CHANNEL_PUBLIC_KEY_BASE64URL"
+```
+
+For server-side encryption (AES-256-GCM), use `encryption_mode: server_side` with `encryption_key`.
+
+Key points:
+- Channels with `encryption_mode: e2e` are protected and require authentication to subscribe.
+- All events on an E2E channel are encrypted with the single shared channel public key.
+- The private key is distributed to authorized clients via the Admin UI or Kubernetes Secrets.
+- Standard webhook providers can POST plaintext directly — the server encrypts automatically.
+- For true E2E (server never sees plaintext), use `gohookbridge produce` or `gohookbridge proxy`.
 ```
 
 Important:
@@ -632,7 +652,6 @@ Gohookbridge is webhook-specific. For other tunnelling solutions, check <https:/
 - Raft provides a multi-node consensus layer for high availability, but there is no built-in TLS for Raft inter-node communication. Run Raft on private network interfaces and protect the Raft port with firewalls.
 - Recovery from a full cluster failure requires operator intervention (restore from snapshot or re-initialize the Raft cluster).
 - Protected channels with encryption are only available when using gohookbridge's own server (not smee.io).
-- Protected channels with end-to-end encryption are not supported when NATS mode is enabled (see [design.md](./design.md) for details).
 - This tool is primarily intended for development and testing environments. It hasn't undergone thorough security and performance reviews for all production deployment scenarios.
 
 [smee-sidecar](https://github.com/konflux-ci/smee-sidecar) is a service intended for monitoring gohookbridge deployments. It provides active health checks to verify that gohookbridge is serving requests.

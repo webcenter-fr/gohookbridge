@@ -3,9 +3,10 @@ before:
     - /bin/sh -c "printf {{.Version }} > gohookbridge/templates/version"
 
 builds:
-  - env:
+  - id: gohookbridge
+    env:
       - CGO_ENABLED=0
-    main: ./
+    main: ./cmd/gohookbridge
     binary: gohookbridge
     goos:
       - linux
@@ -19,6 +20,39 @@ builds:
     ldflags:
       - -w
       - -s
+
+  - id: gohookbridge-client
+    env:
+      - CGO_ENABLED=0
+    main: ./cmd/gohookbridge-client
+    binary: gohookbridge-client
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -w
+      - -s
+
+  - id: gohookbridge-proxy
+    env:
+      - CGO_ENABLED=0
+    main: ./cmd/gohookbridge-proxy
+    binary: gohookbridge-proxy
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -w
+      - -s
+
 archives:
   - name_template: >-
       {{ .Binary }}_

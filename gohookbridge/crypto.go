@@ -72,6 +72,11 @@ func LoadKeyPair(path string) (*[32]byte, *[32]byte, error) {
 	return loadKeyPair(data)
 }
 
+func LoadPrivateKey(path string) (*[32]byte, error) {
+	_, priv, err := LoadKeyPair(path)
+	return priv, err
+}
+
 func EncodePublicKey(key *[32]byte) string {
 	return base64.RawURLEncoding.EncodeToString(key[:])
 }

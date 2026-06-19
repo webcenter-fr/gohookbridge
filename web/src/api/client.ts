@@ -19,6 +19,8 @@ export interface Channel {
   message_ttl_seconds?: number
   encryption_mode?: string
   encryption_key?: string
+  encryption_public_key?: string
+  encryption_private_key?: string
   encryption_public_keys?: string[]
 }
 
@@ -179,8 +181,20 @@ class ApiClient {
     return this.request<{ webhook_secret: string }>(`/channels/${channelId}/generate-secret`, { method: 'POST' })
   }
 
-  async generateEncryptionKey(channelId: string, mode: string): Promise<Record<string, any>> {
-    return this.request<Record<string, any>>(`/channels/${channelId}/generate-encryption-key`, { method: 'POST', body: JSON.stringify({ mode }) })
+  async generateEncryptionKey(channelId: string, mode: string): Promise<{
+    encryption_mode: string
+    encryption_key?: string
+    encryption_public_key?: string
+    encryption_private_key?: string
+    key_file?: { public_key: string; private_key: string }
+  }> {
+    return this.request(`/channels/${channelId}/generate-encryption-key`, { method: 'POST', body: JSON.stringify({ mode }) }) as unknown as Promise<{
+      encryption_mode: string
+      encryption_key?: string
+      encryption_public_key?: string
+      encryption_private_key?: string
+      key_file?: { public_key: string; private_key: string }
+    }>
   }
 
   async replayEvent(channelId: string, eventId: string): Promise<void> {

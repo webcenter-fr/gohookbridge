@@ -4,7 +4,15 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-var commonFlags = []cli.Flag{
+const (
+	DefaultTimeout       = 5
+	SmeeChannel          = "messages"
+	DefaultLocalDebugURL = "http://localhost:8080"
+	DefaultServerPort    = 8081
+	DefaultServerAddress = "localhost"
+)
+
+var CommonFlags = []cli.Flag{
 	&cli.StringFlag{
 		Name:    "output",
 		Usage:   `Output format, one of "json", "pretty"`,
@@ -26,7 +34,7 @@ var commonFlags = []cli.Flag{
 		Name:    "target-connection-timeout",
 		Usage:   "How long to wait when forwarding the request to the service",
 		EnvVars: []string{"GOSMEE_TARGET_TIMEOUT"},
-		Value:   defaultTimeout,
+		Value:   DefaultTimeout,
 	},
 	&cli.BoolFlag{
 		Name:    "noReplay",
@@ -61,7 +69,7 @@ var commonFlags = []cli.Flag{
 	},
 }
 
-var replayFlags = []cli.Flag{
+var ReplayFlags = []cli.Flag{
 	&cli.StringFlag{
 		Name:     "github-token",
 		Usage:    "GitHub token to use to replay payloads",
@@ -85,7 +93,7 @@ var replayFlags = []cli.Flag{
 	},
 }
 
-var keygenFlags = []cli.Flag{
+var KeygenFlags = []cli.Flag{
 	&cli.StringFlag{
 		Name:     "key-file",
 		Usage:    "Path to write the client keypair JSON file",
@@ -94,7 +102,7 @@ var keygenFlags = []cli.Flag{
 	},
 }
 
-var clientFlags = []cli.Flag{
+var ClientFlags = []cli.Flag{
 	&cli.BoolFlag{
 		Name:    "new-url",
 		Aliases: []string{"u"},
@@ -110,12 +118,12 @@ var clientFlags = []cli.Flag{
 		Name:    "channel",
 		Aliases: []string{"c"},
 		Usage:   "gohookbridge channel to listen, only useful when you are not use smee.io",
-		Value:   smeeChannel,
+		Value:   SmeeChannel,
 	},
 	&cli.StringFlag{
 		Name:  "local-debug-url",
 		Usage: "Local URL when debugging the payloads",
-		Value: defaultLocalDebugURL,
+		Value: DefaultLocalDebugURL,
 	},
 	&cli.IntFlag{
 		Name:    "health-port",
@@ -134,6 +142,11 @@ var clientFlags = []cli.Flag{
 		Usage:   "Path to the client encryption keypair JSON file",
 		EnvVars: []string{"GOSMEE_ENCRYPTION_KEY_FILE"},
 	},
+	&cli.StringFlag{
+		Name:    "encryption-key",
+		Usage:   "AES-256 encryption key (base64) for server-side encrypted channels",
+		EnvVars: []string{"GOSMEE_ENCRYPTION_KEY"},
+	},
 	&cli.BoolFlag{
 		Name:    "resume",
 		Aliases: []string{"r"},
@@ -147,7 +160,43 @@ var clientFlags = []cli.Flag{
 	},
 }
 
-var serverFlags = []cli.Flag{
+var ProduceFlags = []cli.Flag{
+	&cli.StringFlag{
+		Name:    "pubkey",
+		Usage:   "Channel public key (base64url) for E2E encryption",
+		EnvVars: []string{"GOSMEE_ENCRYPTION_PUBLIC_KEY"},
+	},
+	&cli.StringFlag{
+		Name:    "pubkey-file",
+		Usage:   "Path to keypair JSON file (uses public_key field)",
+		EnvVars: []string{"GOSMEE_ENCRYPTION_KEY_FILE"},
+	},
+}
+
+var ProxyFlags = []cli.Flag{
+	&cli.StringFlag{
+		Name:    "pubkey",
+		Usage:   "Channel public key (base64url) for E2E encryption",
+		EnvVars: []string{"GOSMEE_ENCRYPTION_PUBLIC_KEY"},
+	},
+	&cli.StringFlag{
+		Name:    "pubkey-file",
+		Usage:   "Path to keypair JSON file (uses public_key field)",
+		EnvVars: []string{"GOSMEE_ENCRYPTION_KEY_FILE"},
+	},
+	&cli.StringFlag{
+		Name:  "listen",
+		Usage: "Address to listen on for incoming webhooks",
+		Value: ":9090",
+	},
+	&cli.StringFlag{
+		Name:     "target",
+		Usage:    "Target gohookbridge server channel URL",
+		Required: true,
+	},
+}
+
+var ServerFlags = []cli.Flag{
 	&cli.StringFlag{
 		Name:  "public-url",
 		Usage: "Public URL to show to user, useful when you are behind a proxy.",
@@ -155,7 +204,7 @@ var serverFlags = []cli.Flag{
 	&cli.IntFlag{
 		Name:    "port",
 		Aliases: []string{"p"},
-		Value:   defaultServerPort,
+		Value:   DefaultServerPort,
 		Usage:   "Port to listen on",
 	},
 	&cli.BoolFlag{
@@ -166,7 +215,7 @@ var serverFlags = []cli.Flag{
 	&cli.StringFlag{
 		Name:    "address",
 		Aliases: []string{"a"},
-		Value:   defaultServerAddress,
+		Value:   DefaultServerAddress,
 		Usage:   "Address to listen on",
 	},
 	&cli.StringFlag{
@@ -224,7 +273,7 @@ var serverFlags = []cli.Flag{
 		Usage:   "NATS cluster routes (nats://host:6222). Required for HA, same hosts as raft-peers",
 		EnvVars: []string{"GOSMEE_NATS_ROUTES"},
 	},
-&cli.IntFlag{
+	&cli.IntFlag{
 		Name:    "nats-buffer-size",
 		Usage:   "Max number of webhook entries to keep in ring buffer",
 		Value:   10000,

@@ -115,8 +115,8 @@ const columns = [
       if (row.encryption_mode === 'server_side') {
         return h(NTag, { type: 'info', size: 'small' }, () => 'Server-side')
       }
-      if (row.encryption_mode === 'provider_side') {
-        return h(NTag, { type: 'warning', size: 'small' }, () => 'Provider-side')
+      if (row.encryption_mode === 'e2e') {
+        return h(NTag, { type: 'warning', size: 'small' }, () => 'E2E')
       }
       return h(NTag, { type: 'default', size: 'small' }, () => 'None')
     },

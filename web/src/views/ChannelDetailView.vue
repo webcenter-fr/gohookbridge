@@ -9,6 +9,7 @@
             :connected="eventsStore.connected"
             :connecting="eventsStore.connecting"
             :message-ttl="channel?.message_ttl_seconds"
+            :encryption-mode="channel?.encryption_mode"
             @replay="handleReplayEvent"
           />
           <n-space>
@@ -54,10 +55,27 @@
               <n-input v-model:value="form.encryption_key" type="password" show-password-on="click" placeholder="AES-256 key (base64)" />
               <n-button @click="handleGenerateEncryptionKey('server_side')" secondary>Generate Key</n-button>
             </n-space>
+            <n-text depth="3" style="margin-top: 4px;">All subscribers receive AES-encrypted payloads. Clients must use <n-code>--encryption-key</n-code> to decrypt.</n-text>
           </n-form-item>
-          <n-form-item v-if="form.encryption_mode === 'provider_side'" label="Authorized Client Public Keys">
-            <n-dynamic-input v-model:value="form.encryption_public_keys" placeholder="public-key" />
-            <n-button style="margin-top: 8px;" @click="handleGenerateEncryptionKey('provider_side')" secondary block>Generate Keypair</n-button>
+          <n-form-item v-if="form.encryption_mode === 'e2e'" label="Channel Keypair">
+            <n-space vertical style="width: 100%;">
+              <n-button @click="handleGenerateKeypair" secondary :loading="generatingKey">Generate Keypair</n-button>
+              <template v-if="form.encryption_public_key">
+                <n-text depth="3">Public Key:</n-text>
+                <n-input-group>
+                  <n-input :value="form.encryption_public_key" readonly />
+                  <n-button @click="copyText(form.encryption_public_key!)">Copy</n-button>
+                </n-input-group>
+                <n-text depth="3">Private Key:</n-text>
+                <n-input-group>
+                  <n-input :value="form.encryption_private_key" readonly type="password" show-password-on="click" />
+                  <n-button @click="copyText(form.encryption_private_key!)">Copy</n-button>
+                </n-input-group>
+                <n-button @click="downloadKeyFile" secondary>Download Key File</n-button>
+              </template>
+              <n-text v-else depth="3">No keypair generated yet.</n-text>
+              <n-text depth="3" style="margin-top: 4px;">One shared keypair per channel. The public key is used by producers; the private key is distributed to clients.</n-text>
+            </n-space>
           </n-form-item>
           <n-space>
             <n-button type="primary" @click="handleSave">Save</n-button>
@@ -76,35 +94,48 @@
             </n-space>
           </template>
           <template v-else-if="form.encryption_mode === 'server_side'">
-            <n-code :code="clientCommandNoEnc" language="bash" />
-            <n-space justify="end" style="margin-top: 4px;">
-              <n-button size="tiny" @click="copyText(clientCommandNoEnc)">Copy</n-button>
+            <n-text depth="3">Encryption Key (AES-256-GCM):</n-text>
+            <n-space style="width: 100%;" align="center">
+              <n-input :value="form.encryption_key" type="password" show-password-on="click" readonly style="flex: 1;" />
+              <n-button size="small" @click="copyText(form.encryption_key)">Copy</n-button>
             </n-space>
-            <n-text depth="3" style="margin-top: 8px;">Server-side encryption: the server handles decryption for admin UI. Standard client command works.</n-text>
+            <n-text depth="3" style="margin-top: 8px;">Client command:</n-text>
+            <n-code :code="clientCommandAES" language="bash" />
+            <n-space justify="end" style="margin-top: 4px;">
+              <n-button size="tiny" @click="copyText(clientCommandAES)">Copy</n-button>
+            </n-space>
           </template>
-          <template v-else-if="form.encryption_mode === 'provider_side'">
-            <n-text depth="3">Step 1: Generate a client keypair</n-text>
-            <n-code :code="keygenCommand" language="bash" />
-            <n-space justify="end" style="margin-top: 4px;">
-              <n-button size="tiny" @click="copyText(keygenCommand)">Copy</n-button>
+          <template v-else-if="form.encryption_mode === 'e2e'">
+            <n-h5>Producer</n-h5>
+            <n-text depth="3" v-if="form.encryption_public_key">Public Key:</n-text>
+            <n-space v-if="form.encryption_public_key" style="width: 100%;" align="center">
+              <n-input :value="form.encryption_public_key" readonly style="flex: 1;" />
+              <n-button size="small" @click="copyText(form.encryption_public_key!)">Copy</n-button>
             </n-space>
-            <n-text depth="3" style="margin-top: 12px;">Step 2: Run the client with the encryption key file</n-text>
-            <n-code :code="clientCommandEnc" language="bash" style="margin-top: 8px;" />
-            <n-space justify="end" style="margin-top: 4px;">
-              <n-button size="tiny" @click="copyText(clientCommandEnc)">Copy</n-button>
-            </n-space>
-            <n-text depth="3" style="margin-top: 12px;">Step 3: Add the public key below as an authorized key for this channel</n-text>
+            <n-text v-else depth="3">Generate a keypair in the Settings tab first.</n-text>
+            <template v-if="form.encryption_public_key">
+              <n-text depth="3" style="margin-top: 8px;">Produce command (encrypt + send):</n-text>
+              <n-code :code="produceCommand" language="bash" />
+              <n-space justify="end" style="margin-top: 4px;">
+                <n-button size="tiny" @click="copyText(produceCommand)">Copy</n-button>
+              </n-space>
+              <n-text depth="3" style="margin-top: 8px;">Proxy command (local encrypt proxy):</n-text>
+              <n-code :code="proxyCommand" language="bash" />
+              <n-space justify="end" style="margin-top: 4px;">
+                <n-button size="tiny" @click="copyText(proxyCommand)">Copy</n-button>
+              </n-space>
+            </template>
+            <n-h5 style="margin-top: 24px;">Client</n-h5>
+            <n-button v-if="form.encryption_private_key" @click="downloadKeyFile" secondary>Download Key File</n-button>
+            <n-text v-else depth="3">Generate a keypair in the Settings tab first.</n-text>
+            <template v-if="form.encryption_private_key">
+              <n-text depth="3" style="margin-top: 8px;">Client command:</n-text>
+              <n-code :code="clientCommandE2E" language="bash" />
+              <n-space justify="end" style="margin-top: 4px;">
+                <n-button size="tiny" @click="copyText(clientCommandE2E)">Copy</n-button>
+              </n-space>
+            </template>
           </template>
-
-          <n-h4 style="margin-top: 24px;">Authorized Client Keys</n-h4>
-          <n-list v-if="form.encryption_public_keys && form.encryption_public_keys.length > 0">
-            <n-list-item v-for="(key, i) in form.encryption_public_keys" :key="i">
-              <n-ellipsis style="max-width: 600px;">
-                <n-text depth="3">{{ key }}</n-text>
-              </n-ellipsis>
-            </n-list-item>
-          </n-list>
-          <n-empty v-else-if="channel" description="No authorized public keys" />
         </n-space>
       </n-tab-pane>
     </n-tabs>
@@ -166,7 +197,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NSpace, NSpin, NTabs, NTabPane, NForm, NFormItem, NInput, NInputNumber, NButton, NDynamicInput, NSelect, NCode, NList, NListItem, NText, NEllipsis, NEmpty, NH4, NCard, NAlert, NDrawer, NDrawerContent, type SelectOption } from 'naive-ui'
+import { NSpace, NSpin, NTabs, NTabPane, NForm, NFormItem, NInput, NInputNumber, NButton, NDynamicInput, NSelect, NCode, NText, NH4, NH5, NCard, NAlert, NDrawer, NDrawerContent, NInputGroup, type SelectOption } from 'naive-ui'
 import { api } from '../api/client'
 import type { Channel } from '../api/client'
 import { useEventsStore } from '../stores/events'
@@ -192,7 +223,8 @@ const form = reactive({
   message_ttl_seconds: 0,
   encryption_mode: '',
   encryption_key: '',
-  encryption_public_keys: [''] as string[],
+  encryption_public_key: '',
+  encryption_private_key: '',
 })
 
 const bodySizeUnit = ref<BodySizeUnit>('bytes')
@@ -201,7 +233,7 @@ const bodySizeUnits = bodySizeUnitOptions
 const encryptionModeOptions: SelectOption[] = [
   { label: 'None', value: '' },
   { label: 'Server-side (AES-256-GCM)', value: 'server_side' },
-  { label: 'Provider-side (NaCl box)', value: 'provider_side' },
+  { label: 'End-to-end (NaCl box)', value: 'e2e' },
 ]
 
 const origin = typeof window !== 'undefined' ? window.location.origin : ''
@@ -312,11 +344,31 @@ const clientCommandNoEnc = computed(() =>
   `gohookbridge client ${origin}/${channelId} http://localhost:8080`
 )
 
-const keygenCommand = `gohookbridge keygen --key-file ./gohookbridge-key.json`
-
-const clientCommandEnc = computed(() =>
-  `gohookbridge client --encryption-key-file ./gohookbridge-key.json ${origin}/${channelId} http://localhost:8080`
+const clientCommandAES = computed(() =>
+  form.encryption_key
+    ? `gohookbridge client --encryption-key ${form.encryption_key} ${origin}/${channelId} http://localhost:8080`
+    : ''
 )
+
+const keyFileName = computed(() => `gohookbridge-key-${channelId}.json`)
+
+const clientCommandE2E = computed(() =>
+  `gohookbridge client --encryption-key-file ./${keyFileName.value} ${origin}/${channelId} http://localhost:8080`
+)
+
+const produceCommand = computed(() =>
+  form.encryption_public_key
+    ? `gohookbridge produce --pubkey ${form.encryption_public_key} ${origin}/${channelId} payload.json`
+    : ''
+)
+
+const proxyCommand = computed(() =>
+  form.encryption_public_key
+    ? `gohookbridge proxy --pubkey ${form.encryption_public_key} --listen :9090 --target ${origin}/${channelId}`
+    : ''
+)
+
+const generatingKey = ref(false)
 
 async function copyText(text: string) {
   try {
@@ -337,7 +389,8 @@ onMounted(async () => {
     form.message_ttl_seconds = channel.value.message_ttl_seconds || 0
     form.encryption_mode = channel.value.encryption_mode || ''
     form.encryption_key = channel.value.encryption_key || ''
-    form.encryption_public_keys = (channel.value.encryption_public_keys?.length ? channel.value.encryption_public_keys : [''])
+    form.encryption_public_key = channel.value.encryption_public_key || ''
+    form.encryption_private_key = channel.value.encryption_private_key || ''
 
     const bs = bytesToBodySizeUnit(form.max_body_size)
     form.max_body_size = Math.round(bs.value)
@@ -367,7 +420,8 @@ async function handleSave() {
       message_ttl_seconds: form.message_ttl_seconds || 0,
       encryption_mode: form.encryption_mode || undefined,
       encryption_key: form.encryption_key || undefined,
-      encryption_public_keys: form.encryption_mode === 'provider_side' ? clean(form.encryption_public_keys) : [],
+      encryption_public_key: form.encryption_mode === 'e2e' ? form.encryption_public_key || undefined : undefined,
+      encryption_private_key: form.encryption_mode === 'e2e' ? form.encryption_private_key || undefined : undefined,
     })
     message.success('Saved')
   } catch (e: any) {
@@ -396,6 +450,56 @@ async function handleGenerateEncryptionKey(mode: string) {
   } catch (e: any) {
     message.error(e.message || 'Failed to generate key')
   }
+}
+
+async function handleGenerateKeypair() {
+  generatingKey.value = true
+  try {
+    const result = await api.generateEncryptionKey(channelId, 'e2e')
+    form.encryption_mode = result.encryption_mode || 'e2e'
+    if (result.encryption_public_key) {
+      form.encryption_public_key = result.encryption_public_key
+    }
+    if (result.encryption_private_key) {
+      form.encryption_private_key = result.encryption_private_key
+    }
+    if (result.key_file) {
+      downloadBlob(result.key_file)
+    }
+    message.success('Keypair generated')
+  } catch (e: any) {
+    message.error(e.message || 'Failed to generate keypair')
+  } finally {
+    generatingKey.value = false
+  }
+}
+
+function downloadKeyFile() {
+  if (form.encryption_public_key && form.encryption_private_key) {
+    const keyFile = {
+      public_key: rawURLToStd(form.encryption_public_key),
+      private_key: form.encryption_private_key,
+    }
+    downloadBlob(keyFile)
+  }
+}
+
+function rawURLToStd(rawURL: string): string {
+  const raw = rawURL.replace(/-/g, '+').replace(/_/g, '/')
+  const padding = (4 - (raw.length % 4)) % 4
+  const std = raw + '='.repeat(padding)
+  return std
+}
+
+function downloadBlob(keyFile: { public_key: string; private_key: string }) {
+  const blob = new Blob([JSON.stringify(keyFile, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = keyFileName.value
+  a.click()
+  URL.revokeObjectURL(url)
+  message.success('Key file downloaded')
 }
 
 async function handleReplayEvent(eventId: string) {

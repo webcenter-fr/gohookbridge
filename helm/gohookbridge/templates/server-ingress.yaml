@@ -1,0 +1,29 @@
+{{- if and .Values.server.enabled .Values.server.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "gohookbridge.fullname" . }}-server
+  labels:
+    {{- include "gohookbridge.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.server.ingress.className }}
+  ingressClassName: {{ .Values.server.ingress.className }}
+  {{- end }}
+  {{- if .Values.server.ingress.tls }}
+  tls:
+    {{- toYaml .Values.server.ingress.tls | nindent 4 }}
+  {{- end }}
+  rules:
+  {{- range .Values.server.ingress.hosts }}
+  - host: {{ . }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ include "gohookbridge.fullname" $ }}-server
+            port:
+              number: {{ $.Values.server.service.port }}
+  {{- end }}
+{{- end }}

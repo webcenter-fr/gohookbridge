@@ -14,11 +14,23 @@ all: test lint web-build build
 FORCE:
 
 
-$(OUTPUT_DIR)/$(NAME): main.go FORCE
-	go build $(FLAGS)  -o $@ ./$<
+$(OUTPUT_DIR)/$(NAME): FORCE
+	go build $(FLAGS)  -o $@ ./cmd/gohookbridge
 
-$(OUTPUT_DIR)/$(NAME)-aarch64-linux: main.go FORCE
-	env GOARCH=arm64 GOOS=linux	go build $(FLAGS)   -o $@ ./$<
+$(OUTPUT_DIR)/$(NAME)-aarch64-linux: FORCE
+	env GOARCH=arm64 GOOS=linux	go build $(FLAGS)   -o $@ ./cmd/gohookbridge
+
+$(OUTPUT_DIR)/gohookbridge-client: FORCE
+	go build $(FLAGS)  -o $@ ./cmd/gohookbridge-client
+
+$(OUTPUT_DIR)/gohookbridge-client-aarch64-linux: FORCE
+	env GOARCH=arm64 GOOS=linux	go build $(FLAGS)   -o $@ ./cmd/gohookbridge-client
+
+$(OUTPUT_DIR)/gohookbridge-proxy: FORCE
+	go build $(FLAGS)  -o $@ ./cmd/gohookbridge-proxy
+
+$(OUTPUT_DIR)/gohookbridge-proxy-aarch64-linux: FORCE
+	env GOARCH=arm64 GOOS=linux	go build $(FLAGS)   -o $@ ./cmd/gohookbridge-proxy
 
 .PHONY: web-build
 web-build:
@@ -33,12 +45,20 @@ html-coverage: ## generate html coverage
 	@go test $(COVERAGE_FLAGS) -coverprofile=tmp/c.out ./.../ && go tool cover -html=tmp/c.out
 
 clean:
-	@rm -rf $(OUTPUT_DIR)/$(NAME)
+	@rm -rf $(OUTPUT_DIR)/$(NAME) $(OUTPUT_DIR)/gohookbridge-client $(OUTPUT_DIR)/gohookbridge-proxy $(OUTPUT_DIR)/$(NAME)-aarch64-linux
 
 build: web-build clean
 	@echo "building."
 	@mkdir -p $(OUTPUT_DIR)/
-	@go build  $(FLAGS)  -o $(OUTPUT_DIR)/$(NAME) main.go
+	@go build  $(FLAGS)  -o $(OUTPUT_DIR)/$(NAME) ./cmd/gohookbridge
+
+build-client:
+	@go build $(FLAGS) -o $(OUTPUT_DIR)/gohookbridge-client ./cmd/gohookbridge-client
+
+build-proxy:
+	@go build $(FLAGS) -o $(OUTPUT_DIR)/gohookbridge-proxy ./cmd/gohookbridge-proxy
+
+build-all: build build-client build-proxy
 
 lint: lint-go lint-md
 
@@ -55,11 +75,10 @@ lint-md: ${MD_FILES} ## runs markdownlint and vale on all markdown files
 	@vale docs/content --minAlertLevel=error --output=line
 
 dev-server:
-	reflex -r '.*\.(tmpl|go)' -s go run main.go -- server --footer "Contact: <a href=\"https://twitter.com/me\">Me</a> - use it at your own risk"
+	reflex -r '.*\.(tmpl|go)' -s go run ./cmd/gohookbridge -- server --footer "Contact: <a href=\"https://twitter.com/me\">Me</a> - use it at your own risk"
 
 fmt:
 	@go fmt `go list ./...`
 
 fumpt:
 	@gofumpt -e -w -extra ./
-

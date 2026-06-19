@@ -7,6 +7,7 @@ export interface SSHEvent {
   timestamp: string
   raw: string
   event_id?: string
+  encrypted: boolean
 }
 
 export const useEventsStore = defineStore('events', () => {
@@ -16,6 +17,14 @@ export const useEventsStore = defineStore('events', () => {
   const eventSource = shallowRef<EventSource | null>(null)
 
   let eventCounter = 0
+
+  function isAESEncrypted(data: unknown): boolean {
+    if (typeof data === 'object' && data !== null) {
+      const d = data as Record<string, unknown>
+      return d.encrypted === true && d.algorithm === 'AES-256-GCM'
+    }
+    return false
+  }
 
   function connect(channel: string) {
     disconnect()
@@ -39,6 +48,7 @@ export const useEventsStore = defineStore('events', () => {
           data: parsed,
           timestamp: new Date().toISOString(),
           raw: msg.data,
+          encrypted: isAESEncrypted(parsed),
         })
       } catch {
         events.value.push({
@@ -46,6 +56,7 @@ export const useEventsStore = defineStore('events', () => {
           data: msg.data,
           timestamp: new Date().toISOString(),
           raw: msg.data,
+          encrypted: false,
         })
       }
     }

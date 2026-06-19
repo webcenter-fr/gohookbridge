@@ -23,12 +23,20 @@
           <n-space>
             <n-text depth="3" style="font-size: 12px;">#{{ evt.id }}</n-text>
             <n-text v-if="evt.event_id" depth="3" style="font-size: 12px;">{{ evt.event_id.slice(0, 8) }}...</n-text>
+            <n-tag v-if="evt.encrypted && encryptionMode === 'e2e'" type="warning" size="small">E2E Encrypted</n-tag>
+            <n-tag v-else-if="evt.encrypted" type="warning" size="small">Encrypted</n-tag>
           </n-space>
           <n-space>
             <n-text depth="3" style="font-size: 12px;">{{ evt.timestamp }}</n-text>
             <n-button size="tiny" quaternary @click="() => emit('replay', evt.event_id || String(evt.id))">Replay</n-button>
           </n-space>
         </n-space>
+        <n-alert v-if="evt.encrypted && encryptionMode === 'e2e'" type="warning" title="E2E Encrypted" :bordered="false" style="margin-bottom: 4px;">
+          This channel uses end-to-end encryption. Events are encrypted. Use the CLI client with <n-code>--encryption-key-file</n-code> to decrypt.
+        </n-alert>
+        <n-alert v-else-if="evt.encrypted" type="warning" title="Encrypted" :bordered="false" style="margin-bottom: 4px;">
+          This channel uses server-side encryption. Events are encrypted. Use the CLI client with <n-code>--encryption-key</n-code> to decrypt.
+        </n-alert>
         <json-viewer :data="evt.data" />
       </n-list-item>
     </n-list>
@@ -37,15 +45,16 @@
 </template>
 
 <script setup lang="ts">
-import { NList, NListItem, NSpace, NTag, NInput, NInputGroup, NInputGroupLabel, NSpin, NEmpty, NH3, NText, NButton } from 'naive-ui'
+import { NList, NListItem, NSpace, NTag, NInput, NInputGroup, NInputGroupLabel, NSpin, NEmpty, NH3, NText, NButton, NAlert, NCode } from 'naive-ui'
 import JsonViewer from './JsonViewer.vue'
 
 defineProps<{
   channel: string
-  events: { id: number; data: any; timestamp: string; event_id?: string }[]
+  events: { id: number; data: any; timestamp: string; event_id?: string; encrypted?: boolean }[]
   connected: boolean
   connecting: boolean
   messageTTL?: number
+  encryptionMode?: string
 }>()
 
 const emit = defineEmits<{

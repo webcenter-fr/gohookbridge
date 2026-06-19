@@ -17,11 +17,11 @@ func TestGetNewHookURL_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	output, err := getNewHookURL(server.URL)
+	output, err := GetNewHookURL(server.URL)
 	if err != nil {
-		t.Errorf("getNewHookURL() error = %v", err)
+		t.Errorf("GetNewHookURL() error = %v", err)
 	}
 	if output != expectedURL {
-		t.Errorf("getNewHookURL() output = %q, want %q", output, expectedURL)
+		t.Errorf("GetNewHookURL() output = %q, want %q", output, expectedURL)
 	}
 }

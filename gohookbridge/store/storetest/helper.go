@@ -63,7 +63,7 @@ func SetupProtectedChannels(t *testing.T, channels map[string][]string) *store.P
 	for channel, allowedKeys := range channels {
 		p := &store.Channel{
 			ID:                channel,
-			EncryptionMode:    "provider_side",
+			EncryptionMode:    "e2e",
 			EncryptionPubKeys: allowedKeys,
 		}
 		if err := rs.CreateChannel(p); err != nil {

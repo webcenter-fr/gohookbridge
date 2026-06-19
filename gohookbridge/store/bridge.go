@@ -5,18 +5,14 @@ import "encoding/base64"
 func NewProtectedChannels(rs *RaftStore) *ProtectedChannels {
 	chs, err := rs.ListChannels()
 	if err != nil {
-		return &ProtectedChannels{channels: make(map[string]map[string]struct{})}
+		return &ProtectedChannels{channels: make(map[string]struct{})}
 	}
 
-	channelMap := make(map[string]map[string]struct{})
+	channelMap := make(map[string]struct{})
 	for _, ch := range chs {
 		migrateChannel(ch)
-		if ch.EncryptionMode == "provider_side" && len(ch.EncryptionPubKeys) > 0 {
-			allowed := make(map[string]struct{}, len(ch.EncryptionPubKeys))
-			for _, k := range ch.EncryptionPubKeys {
-				allowed[k] = struct{}{}
-			}
-			channelMap[ch.ID] = allowed
+		if ch.EncryptionMode == "e2e" && ch.EncryptionPublicKey != "" {
+			channelMap[ch.ID] = struct{}{}
 		}
 	}
 	return &ProtectedChannels{channels: channelMap}
@@ -28,7 +24,7 @@ func NewProtectedChannelsDynamic(rs *RaftStore) *ProtectedChannels {
 
 type ProtectedChannels struct {
 	rs       *RaftStore
-	channels map[string]map[string]struct{}
+	channels map[string]struct{}
 }
 
 func (p *ProtectedChannels) Has(channel string) bool {
@@ -41,7 +37,7 @@ func (p *ProtectedChannels) Has(channel string) bool {
 			return false
 		}
 		migrateChannel(ch)
-		return ch.EncryptionMode == "provider_side" && len(ch.EncryptionPubKeys) > 0
+		return ch.EncryptionMode == "e2e" && ch.EncryptionPublicKey != ""
 	}
 	_, ok := p.channels[channel]
 	return ok
@@ -57,24 +53,17 @@ func (p *ProtectedChannels) IsAllowed(channel string, publicKey *[32]byte) bool 
 			return false
 		}
 		migrateChannel(ch)
-		if ch.EncryptionMode != "provider_side" {
+		if ch.EncryptionMode != "e2e" {
 			return false
 		}
 		encoded := base64.RawURLEncoding.EncodeToString(publicKey[:])
-		for _, k := range ch.EncryptionPubKeys {
-			if k == encoded {
-				return true
-			}
-		}
-		return false
+		return ch.EncryptionPublicKey == encoded
 	}
-	allowedKeys, ok := p.channels[channel]
+	_, ok := p.channels[channel]
 	if !ok {
 		return false
 	}
-	encoded := base64.RawURLEncoding.EncodeToString(publicKey[:])
-	_, ok = allowedKeys[encoded]
-	return ok
+	return true
 }
 
 func BuildAuthConfig(rs *RaftStore) *AuthConfig {

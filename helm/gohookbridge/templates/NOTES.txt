@@ -1,0 +1,20 @@
+Gohookbridge installed!
+
+{{- if .Values.server.enabled }}
+Server is listening on port {{ .Values.server.port }}.
+{{- if .Values.server.ingress.enabled }}
+Ingress is configured for: {{ join ", " .Values.server.ingress.hosts }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.client.enabled }}
+Client is forwarding {{ .Values.client.channelURL }} to {{ .Values.client.targetURL }}.
+{{- end }}
+
+{{- if .Values.proxy.enabled }}
+Encrypt proxy is listening on port {{ .Values.proxy.listenPort }}, forwarding to {{ .Values.proxy.targetURL }}.
+{{- end }}
+
+{{- if .Values.encryption.createSecret }}
+Encryption keypair secret "{{ include "gohookbridge.encryptionSecretName" . }}" created.
+{{- end }}

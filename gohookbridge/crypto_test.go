@@ -57,3 +57,58 @@ func TestSaveAndLoadKeyPair(t *testing.T) {
 	assert.DeepEqual(t, loadedPublicKey, publicKey)
 	assert.DeepEqual(t, loadedPrivateKey, privateKey)
 }
+
+func TestEncryptDecryptSharedKeypair(t *testing.T) {
+	publicKey, privateKey, err := GenerateKeyPair()
+	assert.NilError(t, err)
+
+	plaintext := []byte(`{"body":"shared keypair test"}`)
+	encrypted, err := Encrypt(plaintext, publicKey)
+	assert.NilError(t, err)
+
+	decrypted, err := Decrypt(encrypted, privateKey)
+	assert.NilError(t, err)
+	assert.DeepEqual(t, decrypted, plaintext)
+}
+
+func TestMultipleProducersSameKeypair(t *testing.T) {
+	publicKey, privateKey, err := GenerateKeyPair()
+	assert.NilError(t, err)
+
+	messages := []string{
+		`{"event":"push","repo":"owner/repo1"}`,
+		`{"event":"pull_request","action":"opened"}`,
+		`{"event":"deployment","env":"production"}`,
+	}
+
+	for _, msg := range messages {
+		encrypted, err := Encrypt([]byte(msg), publicKey)
+		assert.NilError(t, err)
+
+		decrypted, err := Decrypt(encrypted, privateKey)
+		assert.NilError(t, err)
+		assert.Equal(t, string(decrypted), msg)
+	}
+}
+
+func TestEncodePublicKeyRoundTrip(t *testing.T) {
+	publicKey, _, err := GenerateKeyPair()
+	assert.NilError(t, err)
+
+	encoded := EncodePublicKey(publicKey)
+	decoded, err := ParsePublicKey(encoded)
+	assert.NilError(t, err)
+	assert.DeepEqual(t, decoded, publicKey)
+}
+
+func TestLoadPrivateKeyOnly(t *testing.T) {
+	_, privateKey, err := GenerateKeyPair()
+	assert.NilError(t, err)
+
+	keyPath := filepath.Join(t.TempDir(), "client-key.json")
+	assert.NilError(t, SaveKeyPair(keyPath, privateKey, privateKey))
+
+	loaded, err := LoadPrivateKey(keyPath)
+	assert.NilError(t, err)
+	assert.DeepEqual(t, loaded, privateKey)
+}

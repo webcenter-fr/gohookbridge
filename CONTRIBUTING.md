@@ -4,15 +4,37 @@
 
 ```
 .
-├── gohookbridge/               # Go source — all backend logic
-│   ├── app.go                  # CLI app entrypoint (urfave/cli commands)
-│   ├── server.go               # HTTP server, SSE, webhook handlers
-│   ├── client.go               # SSE client that forwards to local service
-│   ├── web.go                  # embeds the Vue.js SPA build output
+├── cmd/                         # Binary entry points
+│   ├── gohookbridge/            # Full binary (server + client + proxy + keygen)
+│   ├── gohookbridge-client/     # Client-only binary (client + replay)
+│   └── gohookbridge-proxy/      # Proxy-only binary (proxy + produce + keygen)
+├── gohookbridge/               # Shared package (LIGHTWEIGHT - no heavy deps)
+│   ├── app.go                  # MakeApp(), GetLogger(), KeygenCommand(), CompletionCommands()
 │   ├── crypto.go               # NaCl box encryption helpers
-│   ├── auth.go                 # Session + RBAC authentication
-│   ├── flags.go                # Shared CLI flag definitions
-│   ├── replay.go               # GitHub API webhook replay
+│   ├── encryption.go           # AES-256-GCM encryption helpers
+│   ├── flags.go                # Shared CLI flag definitions (exported)
+│   ├── uuid.go                 # UUID generation (shared)
+│   ├── server/                 # Server sub-package (heavy deps: Raft, NATS, chi)
+│   │   ├── command.go          # Server CLI command definition
+│   │   ├── server.go           # HTTP server, SSE, webhook handlers
+│   │   ├── auth.go             # Session + RBAC authentication
+│   │   ├── auth_oidc.go        # OIDC authentication
+│   │   ├── migrate.go          # Config migration helper
+│   │   └── templates/          # Server-specific embedded templates
+│   ├── client/                 # Client sub-package
+│   │   ├── command.go          # Client + replay CLI command definitions
+│   │   ├── client.go           # SSE client that forwards to local service
+│   │   ├── replay.go           # GitHub API webhook replay
+│   │   ├── hook_list.go        # Hook/delivery listing
+│   │   ├── interface.go        # GitHub API abstraction (GHOp interface)
+│   │   └── templates/          # Client-specific embedded templates
+│   ├── proxy/                  # Proxy sub-package (lightweight)
+│   │   ├── command.go          # Proxy + produce CLI command definitions
+│   │   ├── proxy.go            # HTTP encrypting proxy
+│   │   └── produce.go          # CLI encrypted webhook producer
+│   ├── web/                    # Web sub-package (embeds SPA)
+│   │   ├── handler.go          # SPAHandler() http.Handler
+│   │   └── static/             # Vite build output (gitignored, embedded at build time)
 │   ├── nats/                   # Embedded NATS broker + ring buffer
 │   ├── store/                  # Raft + BoltDB persistence layer
 │   │   ├── raft.go             # Raft cluster setup
@@ -24,8 +46,7 @@
 │   │   ├── bootstrap.go        # First-boot config bootstrapping
 │   │   ├── types.go            # Shared data types
 │   │   └── storetest/          # Test helpers for store setup
-│   ├── web/static/             # Vite build output (gitignored, embedded at build time)
-│   └── templates/              # Shell completions, replay scripts
+│   └── templates/              # Shell completions, version
 ├── web/                        # Vue.js 3 frontend (SPA admin UI)
 │   ├── src/
 │   │   ├── api/                # HTTP client wrappers
@@ -35,8 +56,8 @@
 │   │   └── views/              # Route-level page components
 │   ├── vite.config.ts          # Vite build + dev proxy config
 │   └── tsconfig.json
-├── main.go                     # Program entrypoint
-├── Makefile                    # Build, test, lint targets
+├── main.go                     # Program entrypoint (full binary)
+├── Makefile                    # Build, test, lint targets (3 binary targets)
 ├── Dockerfile                  # Multi-stage container build
 ├── misc/                       # Deployment manifests, systemd units
 └── hack/                       # Release helper scripts
@@ -76,12 +97,12 @@ This starts the server on `http://localhost:3333` with the admin UI disabled (no
 
 To run without hot reload for one-off debugging:
 
-go run main.go server --address 0.0.0.0 --port 8081
+go run ./cmd/gohookbridge server --address 0.0.0.0 --port 8081
 ```
 
 To auto-create an admin user on first boot (no bootstrap config needed), add the `--dev-admin` flag:
 
-go run main.go server --dev-admin
+go run ./cmd/gohookbridge server --dev-admin
 ```
 
 On first start with no users, this creates an `admin` user and writes the password to `raft-data/admin-password.txt`. Use `--dev-admin-password` to set a specific password instead of a random one.
@@ -117,7 +138,15 @@ make build
 
 This runs in order:
 1. `cd web && npm ci && npm run build` — produces `gohookbridge/web/static/`
-2. `go build -o bin/gohookbridge main.go` — embeds the UI and links the binary
+2. `go build -o bin/gohookbridge ./cmd/gohookbridge` — embeds the UI and links the binary
+
+The repository also produces two smaller, focused binaries:
+
+```shell
+make build-client   # Client-only: client + replay (~12MB stripped)
+make build-proxy    # Proxy-only: proxy + produce + keygen (~9MB stripped)
+make build-all      # All three binaries
+```
 
 ### Testing the client
 
@@ -154,8 +183,11 @@ curl -X POST "$CHANNEL" \
 
 - **`gohookbridge/` root** — CLI setup, HTTP handlers, webhook logic. Kept flat intentionally; extract sub-packages only when the group of types has a clear standalone responsibility.
 - **`gohookbridge/store/`** — Persistence and Raft consensus. The `store.API` interface is the public contract; implementations live in separate files (`bolt.go`, `raft.go`, `fsm.go`).
-- **`gohookbridge/nats/`** — Embedded NATS and the ring buffer. Self-contained; imported only by the server handler.
+- **`gohookbridge/server/`** — Server logic: HTTP server, SSE, webhook handlers, auth. Depends on `store`, `nats`, and `web` sub-packages.
+- **`gohookbridge/client/`** — Client logic: SSE client, GitHub replay, hook listing. Depends on shared `gohookbridge/` for crypto.
+- **`gohookbridge/proxy/`** — Proxy logic: encrypting HTTP proxy and CLI producer. Depends on shared `gohookbridge/` for crypto.
 - **`gohookbridge/web/`** — SPA static asset embedding. No Go code other than the `embed` directive and file server.
+- **`cmd/`** — Binary entry points. Each binary only imports the sub-packages it needs.
 
 ### Adding a new CLI flag
 
@@ -163,7 +195,7 @@ Flags are defined in `gohookbridge/flags.go` and shared between the `server` and
 
 ### Adding a new HTTP route
 
-The server router is assembled in `gohookbridge/server.go`. Add new routes there and implement handlers in the same package or extract them into focused files (e.g., `gohookbridge/auth_oidc.go` for OIDC-related handlers).
+The server router is assembled in `gohookbridge/server/server.go`. Add new routes there and implement handlers in the same package or extract them into focused files (e.g., `gohookbridge/server/auth_oidc.go` for OIDC-related handlers).
 
 ## UI conventions
 

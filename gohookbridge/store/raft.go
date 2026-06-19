@@ -693,13 +693,13 @@ func (rs *RaftStore) ResolveChannelMaxBodySize(channelID string) (int, error) {
 	return global.Server.MaxBodySize, nil
 }
 
-func (rs *RaftStore) ResolveChannelEncryption(channelID string) (string, string, []string, error) {
+func (rs *RaftStore) ResolveChannelEncryption(channelID string) (string, string, string, string, error) {
 	p, err := rs.GetChannel(channelID)
 	if err != nil {
-		return "", "", nil, nil
+		return "", "", "", "", nil
 	}
 	migrateChannel(p)
-	return p.EncryptionMode, p.EncryptionKey, p.EncryptionPubKeys, nil
+	return p.EncryptionMode, p.EncryptionKey, p.EncryptionPublicKey, p.EncryptionPrivateKey, nil
 }
 
 func (rs *RaftStore) SessionSecret() string {

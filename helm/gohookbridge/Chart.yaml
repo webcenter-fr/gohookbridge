@@ -1,0 +1,6 @@
+apiVersion: v2
+name: gohookbridge
+description: A Helm chart for gohookbridge — webhook relay server with E2E encryption
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
