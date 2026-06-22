@@ -27,7 +27,7 @@ type apiHandler struct {
 func RegisterAPIHandlers(r chi.Router, rs *RaftStore, notifier ChannelChangeNotifier) {
 	h := &apiHandler{rs: rs, channelNotifier: notifier}
 
-	r.Route("/channels", func(r chi.Router) {
+		r.Route("/channels", func(r chi.Router) {
 		r.Use(RequirePermission(rs, PermChannelRead))
 		r.Get("/", h.listChannels)
 		r.Post("/", h.createChannel)
@@ -37,6 +37,13 @@ func RegisterAPIHandlers(r chi.Router, rs *RaftStore, notifier ChannelChangeNoti
 			r.Put("/", h.updateChannel)
 			r.Delete("/", h.deleteChannel)
 			r.Post("/generate-secret", h.generateSecret)
+			r.With(RequirePermission(rs, PermChannelWrite)).Post("/access-tokens", h.createAccessToken)
+			r.Get("/access-tokens", h.listAccessTokens)
+			r.With(RequirePermission(rs, PermChannelWrite)).Delete("/access-tokens/{tokenID}", h.deleteAccessToken)
+			r.With(RequirePermission(rs, PermChannelWrite)).Put("/access-mode", h.updateAccessMode)
+			r.Get("/acl", h.listChannelACL)
+			r.With(RequireChannelACLPermission(rs)).Post("/acl", h.addChannelACLEntry)
+			r.With(RequireChannelACLPermission(rs)).Delete("/acl/{entryID}", h.deleteChannelACLEntry)
 		})
 	})
 
@@ -62,6 +69,17 @@ func RegisterAPIHandlers(r chi.Router, rs *RaftStore, notifier ChannelChangeNoti
 		r.Get("/roles", h.listRoles)
 		r.Get("/bindings", h.listBindings)
 		r.Put("/bindings/{userID}", h.updateBinding)
+		r.Get("/mappings", h.listRoleMappings)
+		r.With(RequirePermission(rs, PermRBACWrite)).Post("/mappings", h.createRoleMapping)
+		r.With(RequirePermission(rs, PermRBACWrite)).Delete("/mappings/{id}", h.deleteRoleMapping)
+	})
+
+	r.Route("/oidc", func(r chi.Router) {
+		r.Use(RequirePermission(rs, PermGlobalWrite))
+		r.Get("/providers", h.listOIDCProviders)
+		r.Put("/providers", h.updateAllOIDCProviders)
+		r.Put("/providers/{id}", h.updateOIDCProvider)
+		r.Delete("/providers/{id}", h.deleteOIDCProvider)
 	})
 
 	r.Get("/me", h.getMe)
@@ -109,6 +127,8 @@ func (h *apiHandler) createChannel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	username := GetUsernameFromContext(r.Context())
+	ch.CreatedBy = username
 	if msg := validateStruct(&ch); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
@@ -121,6 +141,12 @@ func (h *apiHandler) createChannel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.rs.CreateChannelRoleMapping(&ChannelRoleMapping{
+		ChannelID: ch.ID,
+		Type:      "user",
+		Subject:   username,
+		Role:      "owner",
+	})
 	if h.channelNotifier != nil {
 		resolved, _ := h.rs.ResolveChannelConfig(ch.ID)
 		h.channelNotifier.OnChannelChanged(ch.ID, resolved.MessageTTLSeconds)
@@ -291,6 +317,15 @@ func (h *apiHandler) getUser(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func hasRole(roles []string, role string) bool {
+	for _, r := range roles {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var input struct {
@@ -311,6 +346,10 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 	u, err := h.rs.GetUser(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if input.Roles != nil && hasRole(u.Roles, "admin") && !hasRole(input.Roles, "admin") {
+		writeError(w, http.StatusBadRequest, "cannot remove admin role")
 		return
 	}
 	if input.Username != "" {
@@ -339,6 +378,28 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 
 func (h *apiHandler) deleteUser(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	u, err := h.rs.GetUser(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if hasRole(u.Roles, "admin") {
+		users, err := h.rs.ListUsers()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list users")
+			return
+		}
+		adminCount := 0
+		for _, usr := range users {
+			if hasRole(usr.Roles, "admin") && usr.ID != id {
+				adminCount++
+			}
+		}
+		if adminCount == 0 {
+			writeError(w, http.StatusBadRequest, "cannot delete the last admin user")
+			return
+		}
+	}
 	if err := h.rs.DeleteUser(id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -374,6 +435,15 @@ func (h *apiHandler) updateBinding(w http.ResponseWriter, r *http.Request) {
 	binding.UserID = userID
 	if msg := validateStruct(&binding); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	u, err := h.rs.GetUser(userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get user")
+		return
+	}
+	if hasRole(u.Roles, "admin") && !hasRole(binding.Roles, "admin") {
+		writeError(w, http.StatusBadRequest, "cannot remove admin role")
 		return
 	}
 	if err := h.rs.UpdateUserBinding(&binding); err != nil {
@@ -448,6 +518,287 @@ func (h *apiHandler) generateSecret(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"webhook_secret": secret})
 }
 
+func (h *apiHandler) createAccessToken(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		Name  string `json:"name"`
+		Scope string `json:"scope"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if body.Name == "" {
+		body.Name = "default"
+	}
+	if body.Scope == "" {
+		body.Scope = "both"
+	}
+	if body.Scope != "produce" && body.Scope != "consume" && body.Scope != "both" {
+		writeError(w, http.StatusBadRequest, "scope must be 'produce', 'consume', or 'both'")
+		return
+	}
+	raw, token, err := h.rs.CreateAccessToken(id, body.Name, body.Scope)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"token":      raw,
+		"id":         token.ID,
+		"name":       token.Name,
+		"scope":      token.Scope,
+		"created_at": token.CreatedAt,
+	})
+}
+
+func (h *apiHandler) listAccessTokens(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	ch, err := h.rs.GetChannel(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	tokens := make([]map[string]string, 0, len(ch.AccessTokens))
+	for _, t := range ch.AccessTokens {
+		tokens = append(tokens, map[string]string{
+			"id":         t.ID,
+			"name":       t.Name,
+			"scope":      t.Scope,
+			"created_at": t.CreatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"access_mode": ch.AccessMode,
+		"tokens":      tokens,
+	})
+}
+
+func (h *apiHandler) deleteAccessToken(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	tokenID := chi.URLParam(r, "tokenID")
+	if err := h.rs.DeleteAccessToken(id, tokenID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *apiHandler) updateAccessMode(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		AccessMode string `json:"access_mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if body.AccessMode != "public" && body.AccessMode != "token" {
+		writeError(w, http.StatusBadRequest, "access_mode must be 'public' or 'token'")
+		return
+	}
+	ch, err := h.rs.GetChannel(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	if body.AccessMode == "token" && len(ch.AccessTokens) == 0 {
+		writeError(w, http.StatusBadRequest, "cannot enable token access without tokens")
+		return
+	}
+	ch.AccessMode = body.AccessMode
+	if err := h.rs.UpdateChannel(ch); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"access_mode": ch.AccessMode})
+}
+
+func (h *apiHandler) listRoleMappings(w http.ResponseWriter, r *http.Request) {
+	mappings, err := h.rs.ListRoleMappings()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, mappings)
+}
+
+func (h *apiHandler) createRoleMapping(w http.ResponseWriter, r *http.Request) {
+	var m RoleMapping
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if m.Type != "user" && m.Type != "group" {
+		writeError(w, http.StatusBadRequest, "type must be 'user' or 'group'")
+		return
+	}
+	if m.Subject == "" {
+		writeError(w, http.StatusBadRequest, "subject required")
+		return
+	}
+	if m.Role == "" {
+		writeError(w, http.StatusBadRequest, "role required")
+		return
+	}
+	if m.ChannelScope == "" {
+		m.ChannelScope = "*"
+	}
+	if err := h.rs.CreateRoleMapping(&m); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, &m)
+}
+
+func (h *apiHandler) deleteRoleMapping(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := h.rs.DeleteRoleMapping(id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *apiHandler) listChannelACL(w http.ResponseWriter, r *http.Request) {
+	channelID := chi.URLParam(r, "id")
+	acls, err := h.rs.ListChannelRoleMappings(channelID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, acls)
+}
+
+func (h *apiHandler) addChannelACLEntry(w http.ResponseWriter, r *http.Request) {
+	channelID := chi.URLParam(r, "id")
+	var m ChannelRoleMapping
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if m.Type != "user" && m.Type != "group" {
+		writeError(w, http.StatusBadRequest, "type must be 'user' or 'group'")
+		return
+	}
+	if m.Subject == "" {
+		writeError(w, http.StatusBadRequest, "subject required")
+		return
+	}
+	if m.Role != "owner" && m.Role != "write" && m.Role != "read" {
+		writeError(w, http.StatusBadRequest, "role must be 'owner', 'write', or 'read'")
+		return
+	}
+	m.ChannelID = channelID
+	if err := h.rs.CreateChannelRoleMapping(&m); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, &m)
+}
+
+func (h *apiHandler) deleteChannelACLEntry(w http.ResponseWriter, r *http.Request) {
+	channelID := chi.URLParam(r, "id")
+	entryID := chi.URLParam(r, "entryID")
+	if err := h.rs.DeleteChannelRoleMapping(channelID, entryID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *apiHandler) listOIDCProviders(w http.ResponseWriter, r *http.Request) {
+	providers, err := h.rs.OIDCProviders()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if providers == nil {
+		providers = []OIDCProvider{}
+	}
+	// Redact client_secret in list responses — only the write endpoints handle full secrets
+	for i := range providers {
+		if providers[i].ClientSecret != "" {
+			providers[i].ClientSecret = "<redacted>"
+		}
+	}
+	writeJSON(w, http.StatusOK, providers)
+}
+
+func (h *apiHandler) updateAllOIDCProviders(w http.ResponseWriter, r *http.Request) {
+	var providers []OIDCProvider
+	if err := json.NewDecoder(r.Body).Decode(&providers); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	for i := range providers {
+		if providers[i].GroupsClaim == "" {
+			providers[i].GroupsClaim = "groups"
+		}
+	}
+	if err := h.rs.SetOIDCProviders(providers); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, providers)
+}
+
+func (h *apiHandler) updateOIDCProvider(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var updated OIDCProvider
+	if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	providers, err := h.rs.OIDCProviders()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	found := false
+	for i, p := range providers {
+		if p.ID == id {
+			if updated.GroupsClaim == "" {
+				updated.GroupsClaim = "groups"
+			}
+			providers[i] = updated
+			found = true
+			break
+		}
+	}
+	if !found {
+		if updated.GroupsClaim == "" {
+			updated.GroupsClaim = "groups"
+		}
+		providers = append(providers, updated)
+	}
+	if err := h.rs.SetOIDCProviders(providers); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (h *apiHandler) deleteOIDCProvider(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	providers, err := h.rs.OIDCProviders()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var updated []OIDCProvider
+	for _, p := range providers {
+		if p.ID != id {
+			updated = append(updated, p)
+		}
+	}
+	if err := h.rs.SetOIDCProviders(updated); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -460,6 +811,16 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 func sanitizeChannelAPI(p *Channel) {
 	p.EncryptionPrivateKey = ""
+	if len(p.AccessTokens) == 0 {
+		p.AccessTokens = nil
+		return
+	}
+	sanitized := make([]ChannelAccessToken, len(p.AccessTokens))
+	for i, t := range p.AccessTokens {
+		t.TokenHash = ""
+		sanitized[i] = t
+	}
+	p.AccessTokens = sanitized
 }
 
 func writeCSV(w http.ResponseWriter, channels []*Channel) {

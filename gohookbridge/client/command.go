@@ -112,6 +112,7 @@ func clientAction(c *cli.Context) error {
 			encryptionKey:     c.String("encryption-key"),
 			resume:            c.Bool("resume"),
 			clientID:          c.String("client-id"),
+			token:             c.String("token"),
 		},
 		logger:  logger,
 		channel: c.String("channel"),

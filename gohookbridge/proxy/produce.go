@@ -61,6 +61,10 @@ func produce(c *cli.Context) error {
 		return fmt.Errorf("encrypt payload: %w", err)
 	}
 
+	if token := c.String("token"); token != "" {
+		serverURL = gohookbridge.URLWithQueryParam(serverURL, "token", token)
+	}
+
 	resp, err := postEncryptedPayload(serverURL, encrypted, c.Bool("insecure-skip-tls-verify"))
 	if err != nil {
 		return fmt.Errorf("post encrypted payload: %w", err)

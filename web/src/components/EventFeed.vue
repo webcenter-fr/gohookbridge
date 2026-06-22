@@ -32,7 +32,7 @@
           </n-space>
         </n-space>
         <n-alert v-if="evt.encrypted && encryptionMode === 'e2e'" type="warning" title="E2E Encrypted" :bordered="false" style="margin-bottom: 4px;">
-          This channel uses end-to-end encryption. Events are encrypted. Use the CLI client with <n-code>--encryption-key-file</n-code> to decrypt.
+          This channel uses end-to-end encryption. Provide the private key in the channel Data tab to decrypt in the browser, or use the CLI client with <n-code>--encryption-key-file</n-code>.
         </n-alert>
         <n-alert v-else-if="evt.encrypted" type="warning" title="Encrypted" :bordered="false" style="margin-bottom: 4px;">
           This channel uses server-side encryption. Events are encrypted. Use the CLI client with <n-code>--encryption-key</n-code> to decrypt.

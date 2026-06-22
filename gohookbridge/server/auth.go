@@ -24,10 +24,11 @@ const (
 var sessionSecret [32]byte
 
 type sessionToken struct {
-	Username  string `json:"username"`
-	Method    string `json:"method"`
-	Provider  string `json:"provider,omitempty"`
-	ExpiresAt int64  `json:"expires_at"`
+	Username  string   `json:"username"`
+	Method    string   `json:"method"`
+	Provider  string   `json:"provider,omitempty"`
+	ExpiresAt int64    `json:"expires_at"`
+	Groups    []string `json:"groups,omitempty"`
 }
 
 func deriveSessionSecret(secret string) [32]byte {
@@ -124,6 +125,9 @@ func RequireAuth(cfg *AuthConfig) func(http.Handler) http.Handler {
 				return
 			}
 			ctx := context.WithValue(r.Context(), store.UsernameContextKey, token.Username)
+			if len(token.Groups) > 0 {
+				ctx = context.WithValue(ctx, store.GroupsContextKey, token.Groups)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

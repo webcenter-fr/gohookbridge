@@ -7,9 +7,18 @@ import (
 	"github.com/go-playground/validator/v10"
 )
 
+type ChannelAccessToken struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	TokenHash string `json:"token_hash"`
+	Scope     string `json:"scope"`
+	CreatedAt string `json:"created_at"`
+}
+
 type Channel struct {
 	ID                string   `json:"id" validate:"required,min=1,max=64,channelid"`
 	Description       string   `json:"description,omitempty" validate:"max=500"`
+	CreatedBy         string   `json:"created_by,omitempty"`
 	WebhookSecret     string   `json:"webhook_secret,omitempty"`
 	AllowedIPs        []string `json:"allowed_ips,omitempty"`
 	MaxBodySize       int      `json:"max_body_size,omitempty"`
@@ -19,6 +28,8 @@ type Channel struct {
 	EncryptionPublicKey   string   `json:"encryption_public_key,omitempty"`
 	EncryptionPrivateKey  string   `json:"encryption_private_key,omitempty"`
 	EncryptionPubKeys     []string `json:"encryption_public_keys,omitempty"`
+	AccessMode        string               `json:"access_mode,omitempty"`
+	AccessTokens      []ChannelAccessToken `json:"access_tokens,omitempty"`
 
 	// Deprecated: use WebhookSecret instead
 	WebhookSignatures []string `json:"webhook_signatures,omitempty"`
@@ -109,6 +120,23 @@ type OIDCProvider struct {
 	ClientSecret string   `json:"client_secret"`
 	IssuerURL    string   `json:"issuer_url"`
 	Scopes       []string `json:"scopes"`
+	GroupsClaim  string   `json:"groups_claim"`
+}
+
+type RoleMapping struct {
+	ID           string `json:"id"`
+	Type         string `json:"type"`          // "user" or "group"
+	Subject      string `json:"subject"`       // user_id or group_name
+	Role         string `json:"role"`          // role name
+	ChannelScope string `json:"channel_scope"` // "*" or specific channel ID
+}
+
+type ChannelRoleMapping struct {
+	ID        string `json:"id"`
+	ChannelID string `json:"channel_id"`
+	Type      string `json:"type"`    // "user" or "group"
+	Subject   string `json:"subject"` // user_id or group_name
+	Role      string `json:"role"`    // "owner", "write", or "read"
 }
 
 type ClientCursor struct {
@@ -137,6 +165,9 @@ func defaultGlobalConfig() *GlobalConfig {
 func resolveChannelConfig(p *Channel, global *GlobalConfig) *Channel {
 	resolved := *p
 	migrateChannel(&resolved)
+	if resolved.AccessMode == "" {
+		resolved.AccessMode = "public"
+	}
 	if resolved.MaxBodySize == 0 {
 		resolved.MaxBodySize = global.Server.MaxBodySize
 	}

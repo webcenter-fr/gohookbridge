@@ -158,6 +158,11 @@ var ClientFlags = []cli.Flag{
 		Usage:   "Client identifier for resume tracking (auto-generated if not set)",
 		EnvVars: []string{"GOSMEE_CLIENT_ID"},
 	},
+	&cli.StringFlag{
+		Name:    "token",
+		Usage:   "Access token for channel authentication",
+		EnvVars: []string{"GOSMEE_TOKEN"},
+	},
 }
 
 var ProduceFlags = []cli.Flag{
@@ -170,6 +175,11 @@ var ProduceFlags = []cli.Flag{
 		Name:    "pubkey-file",
 		Usage:   "Path to keypair JSON file (uses public_key field)",
 		EnvVars: []string{"GOSMEE_ENCRYPTION_KEY_FILE"},
+	},
+	&cli.StringFlag{
+		Name:    "token",
+		Usage:   "Access token for channel authentication (sent as URL query parameter)",
+		EnvVars: []string{"GOSMEE_TOKEN"},
 	},
 }
 
@@ -193,6 +203,11 @@ var ProxyFlags = []cli.Flag{
 		Name:     "target",
 		Usage:    "Target gohookbridge server channel URL",
 		Required: true,
+	},
+	&cli.StringFlag{
+		Name:    "token",
+		Usage:   "Access token for channel authentication (sent as URL query parameter)",
+		EnvVars: []string{"GOSMEE_TOKEN"},
 	},
 }
 

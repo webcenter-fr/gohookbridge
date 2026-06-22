@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef } from 'vue'
+import { isE2EEncrypted, decryptE2E } from '../utils/crypto'
 
 export interface SSHEvent {
   id: number
@@ -17,6 +18,7 @@ export const useEventsStore = defineStore('events', () => {
   const eventSource = shallowRef<EventSource | null>(null)
 
   let eventCounter = 0
+  let decryptionKey: string | undefined
 
   function isAESEncrypted(data: unknown): boolean {
     if (typeof data === 'object' && data !== null) {
@@ -26,12 +28,16 @@ export const useEventsStore = defineStore('events', () => {
     return false
   }
 
-  function connect(channel: string) {
+  function connect(channel: string, token?: string, privateKey?: string) {
     disconnect()
     connecting.value = true
     events.value = []
+    decryptionKey = privateKey
 
-    const url = `/events/${channel}`
+    let url = `/events/${channel}`
+    if (token) {
+      url += `?token=${encodeURIComponent(token)}`
+    }
     const es = new EventSource(url)
 
     es.onopen = () => {
@@ -40,16 +46,9 @@ export const useEventsStore = defineStore('events', () => {
     }
 
     es.onmessage = (msg) => {
+      let parsed: any
       try {
-        const parsed = JSON.parse(msg.data)
-        if (parsed.message === 'connected' || parsed.message === 'ready') return
-        events.value.push({
-          id: eventCounter++,
-          data: parsed,
-          timestamp: new Date().toISOString(),
-          raw: msg.data,
-          encrypted: isAESEncrypted(parsed),
-        })
+        parsed = JSON.parse(msg.data)
       } catch {
         events.value.push({
           id: eventCounter++,
@@ -58,7 +57,52 @@ export const useEventsStore = defineStore('events', () => {
           raw: msg.data,
           encrypted: false,
         })
+        return
       }
+
+      if (parsed.message === 'connected' || parsed.message === 'ready') return
+
+      // For E2E channels, the encrypted envelope (epk/nonce/ciphertext) is
+      // nested inside bodyB. The server relays it as-is and never sees the keys.
+      // We must decode bodyB to find the actual encrypted payload.
+      if (parsed.bodyB && decryptE2E) {
+        try {
+          const decoded = atob(parsed.bodyB)
+          const inner = JSON.parse(decoded)
+          if (isE2EEncrypted(inner) && decryptionKey) {
+            try {
+              const decrypted = decryptE2E(inner, decryptionKey)
+              events.value.push({
+                id: eventCounter++,
+                data: JSON.parse(decrypted),
+                timestamp: new Date().toISOString(),
+                raw: decrypted,
+                encrypted: false,
+              })
+              return
+            } catch {
+              events.value.push({
+                id: eventCounter++,
+                data: inner,
+                timestamp: new Date().toISOString(),
+                raw: msg.data,
+                encrypted: true,
+              })
+              return
+            }
+          }
+        } catch {
+          // bodyB decode failed — fall through to normal handling
+        }
+      }
+
+      events.value.push({
+        id: eventCounter++,
+        data: parsed,
+        timestamp: new Date().toISOString(),
+        raw: msg.data,
+        encrypted: isAESEncrypted(parsed) || isE2EEncrypted(parsed),
+      })
     }
 
     es.onerror = () => {
@@ -76,6 +120,7 @@ export const useEventsStore = defineStore('events', () => {
     }
     connected.value = false
     connecting.value = false
+    decryptionKey = undefined
   }
 
   function clear() {
@@ -83,5 +128,9 @@ export const useEventsStore = defineStore('events', () => {
     eventCounter = 0
   }
 
-  return { events, connected, connecting, connect, disconnect, clear }
+  function setDecryptionKey(key: string | undefined) {
+    decryptionKey = key
+  }
+
+  return { events, connected, connecting, connect, disconnect, clear, setDecryptionKey }
 })

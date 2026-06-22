@@ -1311,7 +1311,7 @@ func TestClientSetupKeyFileWithSmeeIOFails(t *testing.T) {
 
 func TestPrepareSubscription(t *testing.T) {
 	t.Run("plaintext gohookbridge server does not require a key file", func(t *testing.T) {
-		channel, sseURL, privateKey, err := prepareSubscription("https://example.com/plainchannel", "", false, "")
+		channel, sseURL, privateKey, err := prepareSubscription("https://example.com/plainchannel", "", false, "", "")
 		assert.NilError(t, err)
 		assert.Equal(t, channel, "plainchannel")
 		assert.Equal(t, sseURL, "https://example.com/events/plainchannel")
@@ -1324,7 +1324,7 @@ func TestPrepareSubscription(t *testing.T) {
 		assert.NilError(t, err)
 		assert.NilError(t, gohookbridge.SaveKeyPair(keyPath, publicKey, privateKey))
 
-		channel, sseURL, loadedPrivateKey, err := prepareSubscription("https://example.com/protectedchan", keyPath, false, "")
+		channel, sseURL, loadedPrivateKey, err := prepareSubscription("https://example.com/protectedchan", keyPath, false, "", "")
 		assert.NilError(t, err)
 		assert.Equal(t, channel, "protectedchan")
 		assert.Assert(t, strings.HasPrefix(sseURL, "https://example.com/events/protectedchan?pubkey="))
@@ -1596,21 +1596,21 @@ func TestClientIDPersistence(t *testing.T) {
 }
 
 func TestResumeFlagAppendsClientIDToURL(t *testing.T) {
-	channel, sseURL, privateKey, err := prepareSubscription("https://example.com/my-channel", "", true, "test-client-id")
+	channel, sseURL, privateKey, err := prepareSubscription("https://example.com/my-channel", "", true, "test-client-id", "")
 	assert.NilError(t, err)
 	assert.Assert(t, privateKey == nil)
 	assert.Equal(t, channel, "my-channel")
 	assert.Assert(t, strings.Contains(sseURL, "client_id=test-client-id"))
 	assert.Assert(t, strings.Contains(sseURL, "/events/my-channel"))
 
-	channel, sseURL, privateKey, err = prepareSubscription("https://example.com/my-channel", "", false, "")
+	channel, sseURL, privateKey, err = prepareSubscription("https://example.com/my-channel", "", false, "", "")
 	assert.NilError(t, err)
 	assert.Assert(t, privateKey == nil)
 	assert.Equal(t, channel, "my-channel")
 	assert.Assert(t, !strings.Contains(sseURL, "client_id"))
 
 	t.Setenv("HOME", t.TempDir())
-	channel, sseURL, privateKey, err = prepareSubscription("https://example.com/auto-channel", "", true, "")
+	channel, sseURL, privateKey, err = prepareSubscription("https://example.com/auto-channel", "", true, "", "")
 	assert.NilError(t, err)
 	assert.Assert(t, privateKey == nil)
 	assert.Equal(t, channel, "auto-channel")

@@ -13,6 +13,7 @@ export interface AuthMethods {
 export interface Channel {
   id: string
   description?: string
+  created_by?: string
   webhook_secret?: string
   allowed_ips?: string[]
   max_body_size?: number
@@ -22,6 +23,8 @@ export interface Channel {
   encryption_public_key?: string
   encryption_private_key?: string
   encryption_public_keys?: string[]
+  access_mode?: string
+  access_tokens?: { id: string; name: string; scope: string; created_at: string }[]
 }
 
 export interface GlobalConfig {
@@ -64,6 +67,23 @@ export interface OIDCProvider {
   client_secret: string
   issuer_url: string
   scopes: string[]
+  groups_claim?: string
+}
+
+export interface RoleMapping {
+  id: string
+  type: string
+  subject: string
+  role: string
+  channel_scope: string
+}
+
+export interface ChannelRoleMapping {
+  id: string
+  channel_id: string
+  type: string
+  subject: string
+  role: string
 }
 
 class ApiClient {
@@ -168,9 +188,40 @@ class ApiClient {
     return this.request<Binding>(`/rbac/bindings/${userID}`, { method: 'PUT', body: JSON.stringify(binding) })
   }
 
+  async listRoleMappings(): Promise<RoleMapping[]> {
+    return this.request<RoleMapping[]>('/rbac/mappings')
+  }
+
+  async createRoleMapping(m: { type: string; subject: string; role: string; channel_scope?: string }): Promise<RoleMapping> {
+    return this.request<RoleMapping>('/rbac/mappings', { method: 'POST', body: JSON.stringify(m) })
+  }
+
+  async deleteRoleMapping(id: string): Promise<void> {
+    return this.request<void>(`/rbac/mappings/${id}`, { method: 'DELETE' })
+  }
+
+  async listChannelACL(channelId: string): Promise<ChannelRoleMapping[]> {
+    return this.request<ChannelRoleMapping[]>(`/channels/${channelId}/acl`)
+  }
+
+  async addChannelACLEntry(channelId: string, entry: { type: string; subject: string; role: string }): Promise<ChannelRoleMapping> {
+    return this.request<ChannelRoleMapping>(`/channels/${channelId}/acl`, { method: 'POST', body: JSON.stringify(entry) })
+  }
+
+  async deleteChannelACLEntry(channelId: string, entryId: string): Promise<void> {
+    return this.request<void>(`/channels/${channelId}/acl/${entryId}`, { method: 'DELETE' })
+  }
+
   async listOIDCProviders(): Promise<OIDCProvider[]> {
-    const methods = await this.getAuthMethods()
-    return methods.oidc_providers.map(p => ({ ...p, client_id: '', client_secret: '', issuer_url: '', scopes: [] }))
+    return this.request<OIDCProvider[]>('/oidc/providers')
+  }
+
+  async updateOIDCProvider(id: string, provider: Partial<OIDCProvider>): Promise<OIDCProvider> {
+    return this.request<OIDCProvider>(`/oidc/providers/${id}`, { method: 'PUT', body: JSON.stringify(provider) })
+  }
+
+  async deleteOIDCProvider(id: string): Promise<void> {
+    return this.request<void>(`/oidc/providers/${id}`, { method: 'DELETE' })
   }
 
   async sendTestPayload(channelId: string, payload: Record<string, any>): Promise<void> {
@@ -199,6 +250,22 @@ class ApiClient {
 
   async replayEvent(channelId: string, eventId: string): Promise<void> {
     await this.request<void>(`/channels/${channelId}/events/${eventId}/replay`, { method: 'POST' })
+  }
+
+  async createAccessToken(channelId: string, name: string, scope: string): Promise<{ token: string; id: string; name: string; scope: string; created_at: string }> {
+    return this.request(`/channels/${channelId}/access-tokens`, { method: 'POST', body: JSON.stringify({ name, scope }) })
+  }
+
+  async listAccessTokens(channelId: string): Promise<{ access_mode: string; tokens: { id: string; name: string; scope: string; created_at: string }[] }> {
+    return this.request(`/channels/${channelId}/access-tokens`)
+  }
+
+  async deleteAccessToken(channelId: string, tokenId: string): Promise<void> {
+    return this.request<void>(`/channels/${channelId}/access-tokens/${tokenId}`, { method: 'DELETE' })
+  }
+
+  async updateAccessMode(channelId: string, mode: string): Promise<{ access_mode: string }> {
+    return this.request(`/channels/${channelId}/access-mode`, { method: 'PUT', body: JSON.stringify({ access_mode: mode }) })
   }
 }
 

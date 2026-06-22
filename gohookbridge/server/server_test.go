@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -322,30 +321,143 @@ func TestHandleWebhookPost(t *testing.T) {
 
 func TestHandleEventsGet(t *testing.T) {
 	broker := newNatsBroker(t, 4243)
-	allowedKey := mustGeneratePublicKey(t)
-	protectedChannels := mustProtectedChannels(t, map[string][]string{
-		"test-channel": {allowedKey},
-	})
-	router := chi.NewRouter()
 	rs := storetest.NewRaftStore(t)
-	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, protectedChannels, rs))
 
-	t.Run("Rejects Invalid Public Key", func(t *testing.T) {
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/test-channel?pubkey=!!!", nil)
-		w := httptest.NewRecorder()
+	sessionSecret = deriveSessionSecret("test-secret")
 
-		router.ServeHTTP(w, req)
+	err := rs.CreateUser(&store.User{
+		ID:       "user-1",
+		Username: "alice",
+		Roles:    []string{"channel_viewer"},
+		Channels: []string{"e2e-channel"},
+	})
+	assert.NilError(t, err)
 
-		assert.Equal(t, w.Result().StatusCode, http.StatusNotFound)
+	err = rs.CreateChannel(&store.Channel{
+		ID:                "e2e-channel",
+		EncryptionMode:    "e2e",
+		EncryptionPubKeys: []string{"dummy-key"},
+		AccessMode:        "public",
+	})
+	assert.NilError(t, err)
+
+	t.Run("SessionAuth_Allowed", func(t *testing.T) {
+		token, err := encodeSession(&sessionToken{
+			Username:  "alice",
+			Method:    "internal",
+			ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		}, sessionSecret)
+		assert.NilError(t, err)
+
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/e2e-channel", nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "e2e-channel")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+		reqCtx, cancel := context.WithCancel(req.Context())
+		req = req.WithContext(reqCtx)
+		defer cancel()
+
+		response := httptest.NewRecorder()
+		done := make(chan struct{})
+		go func() {
+			channelAccessMiddleware(rs, "consume")(handleEventsGet(broker, rs)).ServeHTTP(response, req)
+			close(done)
+		}()
+
+		assert.Assert(t, eventually(t, func() bool {
+			return strings.Contains(response.Body.String(), `{"message":"connected"}`)
+		}))
+		cancel()
+		<-done
 	})
 
-	t.Run("Rejects Missing Public Key", func(t *testing.T) {
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/test-channel", nil)
+	t.Run("SessionAuth_Forbidden", func(t *testing.T) {
+		token, err := encodeSession(&sessionToken{
+			Username:  "alice",
+			Method:    "internal",
+			ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		}, sessionSecret)
+		assert.NilError(t, err)
+
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/unknown-channel", nil)
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "unknown-channel")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
 		w := httptest.NewRecorder()
+		channelAccessMiddleware(rs, "consume")(handleEventsGet(broker, rs)).ServeHTTP(w, req)
+		assert.Equal(t, w.Result().StatusCode, http.StatusForbidden)
+	})
 
-		router.ServeHTTP(w, req)
+	t.Run("TokenAuth_Allowed", func(t *testing.T) {
+		assert.NilError(t, rs.UpdateChannel(&store.Channel{ID: "e2e-channel", AccessMode: "token"}))
+		tokenRaw, _, err := rs.CreateAccessToken("e2e-channel", "consume-token", "consume")
+		assert.NilError(t, err)
 
-		assert.Equal(t, w.Result().StatusCode, http.StatusNotFound)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/e2e-channel?token="+tokenRaw, nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "e2e-channel")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		channelAccessMiddleware(rs, "consume")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(w, req)
+		assert.Equal(t, w.Result().StatusCode, http.StatusOK)
+	})
+
+	t.Run("TokenAuth_Unauthorized", func(t *testing.T) {
+		assert.NilError(t, rs.UpdateChannel(&store.Channel{ID: "e2e-channel", AccessMode: "token"}))
+
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/e2e-channel", nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "e2e-channel")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		channelAccessMiddleware(rs, "consume")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(w, req)
+		assert.Equal(t, w.Result().StatusCode, http.StatusUnauthorized)
+	})
+
+	t.Run("E2EChannel_RelayEncrypted", func(t *testing.T) {
+		assert.NilError(t, rs.UpdateChannel(&store.Channel{ID: "e2e-channel", AccessMode: "public"}))
+		err := broker.Publish("e2e-channel", []byte(`{"encrypted":true,"ciphertext":"dGVzdA=="}`))
+		assert.NilError(t, err)
+		time.Sleep(100 * time.Millisecond)
+
+		token, err := encodeSession(&sessionToken{
+			Username:  "alice",
+			Method:    "internal",
+			ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		}, sessionSecret)
+		assert.NilError(t, err)
+
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/e2e-channel", nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "e2e-channel")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+		reqCtx, cancel := context.WithCancel(req.Context())
+		req = req.WithContext(reqCtx)
+		defer cancel()
+
+		response := httptest.NewRecorder()
+		done := make(chan struct{})
+		go func() {
+			channelAccessMiddleware(rs, "consume")(handleEventsGet(broker, rs)).ServeHTTP(response, req)
+			close(done)
+		}()
+
+		assert.Assert(t, eventually(t, func() bool {
+			return strings.Contains(response.Body.String(), `{"encrypted":true,"ciphertext":"dGVzdA=="}`)
+		}), "E2E channel should relay encrypted data without 404")
+
+		cancel()
+		<-done
 	})
 
 	t.Run("Allows Plaintext Subscriber On Unprotected Channel", func(t *testing.T) {
@@ -354,6 +466,9 @@ func TestHandleEventsGet(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/plain-channel", nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "plain-channel")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 		reqCtx, cancel := context.WithCancel(req.Context())
 		req = req.WithContext(reqCtx)
 		defer cancel()
@@ -361,7 +476,7 @@ func TestHandleEventsGet(t *testing.T) {
 		response := httptest.NewRecorder()
 		done := make(chan struct{})
 		go func() {
-			router.ServeHTTP(response, req)
+			handleEventsGet(broker, rs).ServeHTTP(response, req)
 			close(done)
 		}()
 
@@ -374,32 +489,6 @@ func TestHandleEventsGet(t *testing.T) {
 		assert.Assert(t, strings.Contains(body, `{"message":"ready"}`))
 		assert.Assert(t, strings.Contains(body, `{"plain":true}`))
 		assert.Assert(t, !strings.Contains(body, `"ciphertext"`))
-
-		cancel()
-		<-done
-	})
-
-	t.Run("Allows Unprotected Channel Even With PubKey Query", func(t *testing.T) {
-		err := broker.Publish("unknown-channel", []byte(`{"plain":true}`))
-		assert.NilError(t, err)
-		time.Sleep(100 * time.Millisecond)
-
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/unknown-channel?pubkey="+url.QueryEscape(allowedKey), nil)
-		reqCtx, cancel := context.WithCancel(req.Context())
-		req = req.WithContext(reqCtx)
-		defer cancel()
-
-		response := httptest.NewRecorder()
-		done := make(chan struct{})
-		go func() {
-			router.ServeHTTP(response, req)
-			close(done)
-		}()
-
-		assert.Assert(t, eventually(t, func() bool {
-			return strings.Contains(response.Body.String(), `{"plain":true}`)
-		}))
-		assert.Assert(t, !strings.Contains(response.Body.String(), `"ciphertext"`))
 
 		cancel()
 		<-done
@@ -435,8 +524,6 @@ func TestHandleEventsGetCORSOrigin(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			broker := newNatsBroker(t, 4244)
-			protectedChannels, err := LoadProtectedChannels("")
-			assert.NilError(t, err)
 			rs := storetest.NewRaftStore(t)
 
 			assert.NilError(t, rs.UpdateGlobalConfig(&store.GlobalConfig{
@@ -448,7 +535,7 @@ func TestHandleEventsGetCORSOrigin(t *testing.T) {
 			}))
 
 			router := chi.NewRouter()
-			router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, protectedChannels, rs))
+			router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, rs))
 
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/plainchannel1", nil)
 			reqCtx, cancel := context.WithCancel(req.Context())
@@ -477,6 +564,182 @@ func TestHandleEventsGetCORSOrigin(t *testing.T) {
 			<-done
 		})
 	}
+}
+
+func TestChannelAccessMiddleware(t *testing.T) {
+	rs := storetest.NewRaftStore(t)
+
+	// Create a channel with an access token
+	assert.NilError(t, rs.CreateChannel(&store.Channel{ID: "token-chan"}))
+
+	produceRaw, _, err := rs.CreateAccessToken("token-chan", "produce-token", "produce")
+	assert.NilError(t, err)
+	consumeRaw, _, err := rs.CreateAccessToken("token-chan", "consume-token", "consume")
+	assert.NilError(t, err)
+	bothRaw, _, err := rs.CreateAccessToken("token-chan", "both-token", "both")
+	assert.NilError(t, err)
+
+	// Create a public channel (no tokens)
+	assert.NilError(t, rs.CreateChannel(&store.Channel{ID: "public-chan"}))
+
+	t.Run("POST returns 401 when access_mode=token and no token provided", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token-chan", strings.NewReader(`{"test":true}`))
+		req.Header.Set("Content-Type", contentType)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "token-chan")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		middleware := channelAccessMiddleware(rs, "produce")
+		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(w, req)
+
+		assert.Equal(t, w.Result().StatusCode, http.StatusUnauthorized)
+	})
+
+	t.Run("POST returns 202 when access_mode=token and valid produce token in query", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token-chan?token="+produceRaw, strings.NewReader(`{"test":true}`))
+		req.Header.Set("Content-Type", contentType)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "token-chan")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		middleware := channelAccessMiddleware(rs, "produce")
+		nextCalled := false
+		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+			w.WriteHeader(http.StatusAccepted)
+		})).ServeHTTP(w, req)
+
+		assert.Equal(t, w.Result().StatusCode, http.StatusAccepted)
+		assert.Assert(t, nextCalled)
+	})
+
+	t.Run("POST returns 401 when token has consume-only scope", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token-chan?token="+consumeRaw, strings.NewReader(`{"test":true}`))
+		req.Header.Set("Content-Type", contentType)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "token-chan")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		middleware := channelAccessMiddleware(rs, "produce")
+		nextCalled := false
+		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(w, req)
+
+		assert.Equal(t, w.Result().StatusCode, http.StatusUnauthorized)
+		assert.Assert(t, !nextCalled)
+	})
+
+	t.Run("POST works with public channel (backward compat)", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/public-chan", strings.NewReader(`{"test":true}`))
+		req.Header.Set("Content-Type", contentType)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "public-chan")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		middleware := channelAccessMiddleware(rs, "produce")
+		nextCalled := false
+		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(w, req)
+
+		assert.Equal(t, w.Result().StatusCode, http.StatusOK)
+		assert.Assert(t, nextCalled)
+	})
+
+	t.Run("SSE returns 401 when access_mode=token and no token", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/token-chan", nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "token-chan")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		middleware := channelAccessMiddleware(rs, "consume")
+		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(w, req)
+
+		assert.Equal(t, w.Result().StatusCode, http.StatusUnauthorized)
+	})
+
+	t.Run("SSE returns 200 with valid consume token via query param", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/token-chan?token="+consumeRaw, nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "token-chan")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		middleware := channelAccessMiddleware(rs, "consume")
+		nextCalled := false
+		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(w, req)
+
+		assert.Equal(t, w.Result().StatusCode, http.StatusOK)
+		assert.Assert(t, nextCalled)
+	})
+
+	t.Run("SSE returns 200 with valid both-scope token via Bearer header", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/token-chan", nil)
+		req.Header.Set("Authorization", "Bearer "+bothRaw)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "token-chan")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		middleware := channelAccessMiddleware(rs, "consume")
+		nextCalled := false
+		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(w, req)
+
+		assert.Equal(t, w.Result().StatusCode, http.StatusOK)
+		assert.Assert(t, nextCalled)
+	})
+
+	t.Run("SSE returns 401 when token has produce-only scope", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/token-chan?token="+produceRaw, nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "token-chan")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		middleware := channelAccessMiddleware(rs, "consume")
+		nextCalled := false
+		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(w, req)
+
+		assert.Equal(t, w.Result().StatusCode, http.StatusUnauthorized)
+		assert.Assert(t, !nextCalled)
+	})
+
+	t.Run("POST returns 401 with invalid token", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token-chan?token=invalidtoken123", strings.NewReader(`{"test":true}`))
+		req.Header.Set("Content-Type", contentType)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "token-chan")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		middleware := channelAccessMiddleware(rs, "produce")
+		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(w, req)
+
+		assert.Equal(t, w.Result().StatusCode, http.StatusUnauthorized)
+	})
 }
 
 func TestSPAHandler(t *testing.T) {
@@ -706,12 +969,10 @@ func TestHandleWebhookPostWithNATS(t *testing.T) {
 
 func TestHandleEventsGetWithNATS(t *testing.T) {
 	broker := newNatsBroker(t, 4243)
-	protectedChannels, err := LoadProtectedChannels("")
-	assert.NilError(t, err)
 	rs := storetest.NewRaftStore(t)
 
 	router := chi.NewRouter()
-	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, protectedChannels, rs))
+	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, rs))
 
 	t.Run("Delivers historical and live events via NATS", func(t *testing.T) {
 		err := broker.Publish("nats-sse-channel", []byte(`{"history":true}`))
@@ -747,27 +1008,10 @@ func TestHandleEventsGetWithNATS(t *testing.T) {
 		<-done
 	})
 
-	t.Run("Rejects protected channel with NATS broker", func(t *testing.T) {
-		allowed := mustGeneratePublicKey(t)
-		localProtectedChannels := mustProtectedChannels(t, map[string][]string{
-			"protected-nats": {allowed},
-		})
-		localRouter := chi.NewRouter()
-		rs2 := storetest.NewRaftStore(t)
-		localRouter.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, localProtectedChannels, rs2))
-
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/protected-nats?pubkey="+url.QueryEscape(allowed), nil)
-		w := httptest.NewRecorder()
-		localRouter.ServeHTTP(w, req)
-
-		resp := w.Result()
-		assert.Equal(t, resp.StatusCode, http.StatusNotImplemented)
-	})
-
 	t.Run("Handles unprotected channel with NATS broker", func(t *testing.T) {
 		localRouter := chi.NewRouter()
 		rs3 := storetest.NewRaftStore(t)
-		localRouter.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, protectedChannels, rs3))
+		localRouter.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, rs3))
 
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/unprotected-nats", nil)
 		reqCtx, cancel := context.WithCancel(req.Context())
@@ -847,51 +1091,11 @@ func eventually(t *testing.T, predicate func() bool) bool {
 	return false
 }
 
-func mustGeneratePublicKey(t *testing.T) string {
-	t.Helper()
-
-	publicKey, _, err := gohookbridge.GenerateKeyPair()
-	assert.NilError(t, err)
-	return gohookbridge.EncodePublicKey(publicKey)
-}
-
-func mustProtectedChannels(t *testing.T, channels map[string][]string) *store.ProtectedChannels {
-	t.Helper()
-
-	rs := storetest.NewRaftStore(t)
-
-	globalCfg := &store.GlobalConfig{
-		Server: store.ServerConfig{
-			MaxBodySize: 26214400,
-			CORSOrigin:  "*",
-		},
-		Defaults: store.DefaultChannelConfig{},
-	}
-	if err := rs.UpdateGlobalConfig(globalCfg); err != nil {
-		t.Fatal(err)
-	}
-
-	for channel, allowedKeys := range channels {
-		p := &store.Channel{
-			ID:                channel,
-			EncryptionMode:    "provider_side",
-			EncryptionPubKeys: allowedKeys,
-		}
-		if err := rs.CreateChannel(p); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	return store.NewProtectedChannels(rs)
-}
-
 func TestHandleEventsGetWithClientID(t *testing.T) {
 	broker := newNatsBroker(t, 4247)
-	protectedChannels, err := LoadProtectedChannels("")
-	assert.NilError(t, err)
 	rs := storetest.NewRaftStore(t)
 
-	err = broker.Publish("cursor-channel", []byte(`{"old":true}`))
+	err := broker.Publish("cursor-channel", []byte(`{"old":true}`))
 	assert.NilError(t, err)
 	time.Sleep(100 * time.Millisecond)
 
@@ -909,7 +1113,7 @@ func TestHandleEventsGetWithClientID(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	router := chi.NewRouter()
-	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, protectedChannels, rs))
+	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, rs))
 
 	t.Run("Delivers only events after cursor", func(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/cursor-channel?client_id=test-client", nil)

@@ -183,9 +183,84 @@ func TestDeleteChannel_Nonexistent(t *testing.T) {
 	assert.Equal(t, w.Code, http.StatusNoContent)
 }
 
-func TestUpdateChannel_Valid(t *testing.T) {
+func TestUpdateUser_CannotRemoveAdminRole(t *testing.T) {
 	rs, router := setupAPI(t)
 
+	err := rs.CreateUser(&User{
+		ID:       "user1",
+		Username: "user1",
+		Roles:    []string{"admin"},
+		Channels: []string{},
+	})
+	assert.NilError(t, err)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("PUT", "/users/user1", map[string]any{
+		"username": "user1",
+		"roles":    []string{},
+	}))
+	assert.Equal(t, w.Code, http.StatusBadRequest)
+	assert.Assert(t, strings.Contains(w.Body.String(), "cannot remove admin role"))
+}
+
+func TestUpdateBinding_CannotRemoveAdminRole(t *testing.T) {
+	rs, router := setupAPI(t)
+
+	err := rs.CreateUser(&User{
+		ID:       "user1",
+		Username: "user1",
+		Roles:    []string{"admin"},
+		Channels: []string{},
+	})
+	assert.NilError(t, err)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("PUT", "/rbac/bindings/user1", map[string]any{
+		"roles":    []string{},
+		"channels": []string{},
+	}))
+	assert.Equal(t, w.Code, http.StatusBadRequest)
+	assert.Assert(t, strings.Contains(w.Body.String(), "cannot remove admin role"))
+}
+
+func TestDeleteUser_CanDeleteAdminWhenOtherAdminExists(t *testing.T) {
+	rs, router := setupAPI(t)
+
+	err := rs.CreateUser(&User{
+		ID:       "admin2",
+		Username: "admin2",
+		Roles:    []string{"admin"},
+		Channels: []string{"*"},
+	})
+	assert.NilError(t, err)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("DELETE", "/users/admin", nil))
+	assert.Equal(t, w.Code, http.StatusNoContent)
+}
+
+func TestUpdateBinding_AdminCanChangeOtherRoles(t *testing.T) {
+	_, router := setupAPI(t)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("PUT", "/rbac/bindings/admin", map[string]any{
+		"roles":    []string{"admin", "channel_admin"},
+		"channels": []string{"*"},
+	}))
+	assert.Equal(t, w.Code, http.StatusOK)
+}
+
+func TestDeleteUser_CannotDeleteLastAdmin(t *testing.T) {
+	_, router := setupAPI(t)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("DELETE", "/users/admin", nil))
+	assert.Equal(t, w.Code, http.StatusBadRequest)
+	assert.Assert(t, strings.Contains(w.Body.String(), "cannot delete the last admin user"))
+}
+
+func TestUpdateChannel_Valid(t *testing.T) {
+	rs, router := setupAPI(t)
 	ch := &Channel{ID: "update-test"}
 	assert.NilError(t, rs.CreateChannel(ch))
 
@@ -196,4 +271,66 @@ func TestUpdateChannel_Valid(t *testing.T) {
 	got, err := rs.GetChannel("update-test")
 	assert.NilError(t, err)
 	assert.Equal(t, got.Description, "new desc")
+}
+
+func TestChannelACL_ListRequiresChannelRead(t *testing.T) {
+	rs, router := setupAPI(t)
+
+	err := rs.CreateChannel(&Channel{ID: "test-channel"})
+	assert.NilError(t, err)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("GET", "/channels/test-channel/acl", nil))
+	assert.Equal(t, w.Code, http.StatusOK)
+}
+
+func TestChannelACL_AddRequiresChannelWriteOrRBACWrite(t *testing.T) {
+	rs, router := setupAPI(t)
+
+	err := rs.CreateChannel(&Channel{ID: "test-channel"})
+	assert.NilError(t, err)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("POST", "/channels/test-channel/acl", map[string]string{
+		"type":    "user",
+		"subject": "someone",
+		"role":    "read",
+	}))
+	assert.Equal(t, w.Code, http.StatusCreated)
+
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("DELETE", "/channels/test-channel/acl/nonexistent", nil))
+	assert.Equal(t, w.Code, http.StatusNoContent)
+}
+
+func TestChannelACL_NonAdminCannotAddACL(t *testing.T) {
+	rs := newTestRaftStore(t)
+
+	err := rs.CreateUser(&User{
+		ID:       "reader",
+		Username: "reader",
+		Roles:    []string{"channel_viewer"},
+		Channels: []string{},
+	})
+	assert.NilError(t, err)
+
+	err = rs.CreateChannel(&Channel{ID: "test-channel"})
+	assert.NilError(t, err)
+
+	r := chi.NewRouter()
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), UsernameContextKey, "reader")
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	})
+	RegisterAPIHandlers(r, rs, nil)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, apiRequest("POST", "/channels/test-channel/acl", map[string]string{
+		"type":    "user",
+		"subject": "someone",
+		"role":    "read",
+	}))
+	assert.Equal(t, w.Code, http.StatusForbidden)
 }

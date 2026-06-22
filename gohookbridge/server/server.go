@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -19,13 +21,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/urfave/cli/v2"
 	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
 	"github.com/webcenter-fr/gohookbridge/gohookbridge/nats"
 	"github.com/webcenter-fr/gohookbridge/gohookbridge/store"
 	"github.com/webcenter-fr/gohookbridge/gohookbridge/web"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/urfave/cli/v2"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -103,11 +105,6 @@ func (eb *EventBroker) Publish(channel string, data []byte) {
 	}
 }
 
-func rejectProtectedChannelRequest(w http.ResponseWriter) {
-	http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-}
-
-
 func effectivePublicURL(publicURL, portAddr string, sslEnabled bool) string {
 	if publicURL != "" {
 		return publicURL
@@ -120,7 +117,6 @@ func effectivePublicURL(publicURL, portAddr string, sslEnabled bool) string {
 
 	return fmt.Sprintf("%s%s", scheme, portAddr)
 }
-
 
 func errorIt(w http.ResponseWriter, _ *http.Request, status int, err error) {
 	w.WriteHeader(status)
@@ -487,8 +483,8 @@ func getRealIP(r *http.Request, behindReverseProxy bool) (net.IP, error) {
 
 func ipRestrictMiddleware(rs *store.RaftStore) func(http.Handler) http.Handler {
 	var (
-		mu     sync.Mutex
-		cache  = make(map[string]*ipRanges)
+		mu    sync.Mutex
+		cache = make(map[string]*ipRanges)
 	)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -535,6 +531,69 @@ func ipRestrictMiddleware(rs *store.RaftStore) func(http.Handler) http.Handler {
 	}
 }
 
+func channelAccessMiddleware(rs *store.RaftStore, requiredScope string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			channel := chi.URLParam(r, "channel")
+
+			// Try session-based auth first (browser UI)
+			cookie, err := r.Cookie(sessionCookieName)
+			if err == nil {
+				token, err := decodeSession(cookie.Value, sessionSecret)
+				if err == nil {
+					perm := store.PermChannelRead
+					if requiredScope == "produce" {
+						perm = store.PermChannelWrite
+					}
+					if store.UserHasPermission(rs, token.Username, perm, channel) {
+						ctx := context.WithValue(r.Context(), store.UsernameContextKey, token.Username)
+						if len(token.Groups) > 0 {
+							ctx = context.WithValue(ctx, store.GroupsContextKey, token.Groups)
+						}
+						next.ServeHTTP(w, r.WithContext(ctx))
+						return
+					}
+					http.Error(w, "Forbidden", http.StatusForbidden)
+					return
+				}
+			}
+
+			// Fall back to token-based auth (CLI clients)
+			chConfig, err := rs.ResolveChannelConfig(channel)
+			if err != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			if chConfig.AccessMode != "token" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			token := r.URL.Query().Get("token")
+
+			if token == "" {
+				auth := r.Header.Get("Authorization")
+				if strings.HasPrefix(auth, "Bearer ") {
+					token = strings.TrimPrefix(auth, "Bearer ")
+				}
+			}
+
+			if token == "" {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			if !rs.ValidateChannelToken(channel, token, requiredScope) {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func retVersion(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set(versionHeaderName, strings.TrimSpace(string(gohookbridge.Version)))
@@ -546,7 +605,7 @@ func retVersion(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-func handleEventsGet(broker *nats.Broker, protectedChannels *store.ProtectedChannels, rs *store.RaftStore) http.HandlerFunc {
+func handleEventsGet(broker *nats.Broker, rs *store.RaftStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		channel := chi.URLParam(r, "channel")
 		if channel == "" {
@@ -559,20 +618,6 @@ func handleEventsGet(broker *nats.Broker, protectedChannels *store.ProtectedChan
 		}
 
 		corsOrigin := rs.ResolveCORSOrigin()
-
-		if protectedChannels.Has(channel) {
-			pubKeyValue := r.URL.Query().Get("pubkey")
-			if pubKeyValue == "" {
-				rejectProtectedChannelRequest(w)
-				return
-			}
-
-			pubKey, err := gohookbridge.ParsePublicKey(pubKeyValue)
-			if err != nil || !protectedChannels.IsAllowed(channel, pubKey) {
-				rejectProtectedChannelRequest(w)
-				return
-			}
-		}
 
 		clientID := r.URL.Query().Get("client_id")
 
@@ -782,6 +827,28 @@ func publishEvent(broker *nats.Broker, channel string, reencoded []byte) {
 	}
 }
 
+// safeLogger wraps the chi request logger to redact sensitive query parameters
+// (e.g., channel access tokens) from server logs.
+func safeLogger(next http.Handler) http.Handler {
+	return middleware.RequestLogger(&safeLogFormatter{Logger: log.Default()})(next)
+}
+
+type safeLogFormatter struct {
+	Logger *log.Logger
+}
+
+func (l *safeLogFormatter) NewLogEntry(r *http.Request) middleware.LogEntry {
+	clean := new(http.Request)
+	*clean = *r
+	q := r.URL.Query()
+	if q.Get("token") != "" {
+		cleanQ := q
+		cleanQ.Set("token", "<redacted>")
+		clean.URL.RawQuery = cleanQ.Encode()
+	}
+	return (&middleware.DefaultLogFormatter{Logger: l.Logger, NoColor: true}).NewLogEntry(clean)
+}
+
 func serve(c *cli.Context) error {
 	deprecatedEnvVars := map[string]string{
 		"GOSMEE_WEBHOOK_SIGNATURE":       "--webhook-signature",
@@ -815,8 +882,6 @@ func serve(c *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("init raft store: %w", err)
 	}
-
-	protectedChannels := store.NewProtectedChannelsDynamic(rs)
 
 	natsCfg := nats.Config{
 		NodeID:      c.String("raft-node-id"),
@@ -856,11 +921,11 @@ func serve(c *cli.Context) error {
 	restrictedRouter := chi.NewRouter()
 
 	mainRouter.Use(middleware.RequestID)
-	mainRouter.Use(middleware.Logger)
+	mainRouter.Use(safeLogger)
 	mainRouter.Use(middleware.Recoverer)
 
 	restrictedRouter.Use(middleware.RequestID)
-	restrictedRouter.Use(middleware.Logger)
+	restrictedRouter.Use(safeLogger)
 	restrictedRouter.Use(middleware.Recoverer)
 
 	restrictedRouter.Use(ipRestrictMiddleware(rs))
@@ -900,7 +965,7 @@ func serve(c *cli.Context) error {
 	mainRouter.Get("/health", retVersion)
 	mainRouter.Get("/livez", retVersion)
 
-	mainRouter.Get(eventsPath, handleEventsGet(broker, protectedChannels, rs))
+	mainRouter.Get(eventsPath, channelAccessMiddleware(rs, "consume")(handleEventsGet(broker, rs)).ServeHTTP)
 
 	// OIDC routes (registered dynamically from Raft config)
 	providers, _ := rs.OIDCProviders()
@@ -917,6 +982,7 @@ func serve(c *cli.Context) error {
 	mainRouter.NotFound(web.SPAHandler().ServeHTTP)
 
 	// POST routes on restricted router
+	restrictedRouter.Use(channelAccessMiddleware(rs, "produce"))
 	restrictedRouter.Post(channelPath, handleWebhookPost(broker, rs))
 
 	// Public auth API routes — mounted before main /api to avoid middleware intercept

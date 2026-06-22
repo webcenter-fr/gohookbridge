@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
 	"github.com/hashicorp/raft"
 	"go.etcd.io/bbolt"
 	"golang.org/x/crypto/bcrypt"
@@ -94,6 +95,10 @@ func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
 		r.Shutdown()
 		db.Close()
 		return nil, fmt.Errorf("bootstrap: %w", err)
+	}
+
+	if err := MigrateRBAC(rs); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: rbac migration error (server will continue): %v\n", err)
 	}
 
 	return rs, nil
@@ -766,4 +771,162 @@ func (rs *RaftStore) SetClientCursor(cursor *ClientCursor) error {
 		return err
 	}
 	return rs.applyCommand("set", key, val)
+}
+
+func (rs *RaftStore) CreateRoleMapping(m *RoleMapping) error {
+	// Check for existing identical mapping to make this idempotent
+	existing, _ := rs.ListRoleMappings()
+	for _, e := range existing {
+		if e.Type == m.Type && e.Subject == m.Subject && e.Role == m.Role && e.ChannelScope == m.ChannelScope {
+			return nil // already exists, idempotent
+		}
+	}
+	m.ID = gohookbridge.GenerateUUID()
+	val, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return rs.applyCommand("set", "/rbac/mappings/"+m.ID+"/", val)
+}
+
+func (rs *RaftStore) ListRoleMappings() ([]RoleMapping, error) {
+	keys, err := listFSMKeys(rs.db, "/rbac/mappings/")
+	if err != nil {
+		return nil, err
+	}
+	var mappings []RoleMapping
+	for _, key := range keys {
+		parts := strings.Split(strings.TrimPrefix(key, "/rbac/mappings/"), "/")
+		if len(parts) < 1 || parts[0] == "" {
+			continue
+		}
+		val, err := getFSMValue(rs.db, key)
+		if err != nil || val == nil {
+			continue
+		}
+		var m RoleMapping
+		if err := json.Unmarshal(val, &m); err != nil {
+			continue
+		}
+		mappings = append(mappings, m)
+	}
+	return mappings, nil
+}
+
+func (rs *RaftStore) DeleteRoleMapping(id string) error {
+	return rs.applyCommand("delete", "/rbac/mappings/"+id+"/", nil)
+}
+
+func (rs *RaftStore) GetUserRoleMappings(userID string) ([]RoleMapping, error) {
+	all, err := rs.ListRoleMappings()
+	if err != nil {
+		return nil, err
+	}
+	var result []RoleMapping
+	for _, m := range all {
+		if m.Type == "user" && m.Subject == userID {
+			result = append(result, m)
+		}
+	}
+	return result, nil
+}
+
+func (rs *RaftStore) GetGroupRoleMappings(groupName string) ([]RoleMapping, error) {
+	all, err := rs.ListRoleMappings()
+	if err != nil {
+		return nil, err
+	}
+	var result []RoleMapping
+	for _, m := range all {
+		if m.Type == "group" && m.Subject == groupName {
+			result = append(result, m)
+		}
+	}
+	return result, nil
+}
+
+func (rs *RaftStore) CreateChannelRoleMapping(m *ChannelRoleMapping) error {
+	// Check for existing identical mapping to make this idempotent
+	existing, _ := rs.ListChannelRoleMappings(m.ChannelID)
+	for _, e := range existing {
+		if e.Type == m.Type && e.Subject == m.Subject && e.Role == m.Role {
+			return nil // already exists, idempotent
+		}
+	}
+	m.ID = gohookbridge.GenerateUUID()
+	if m.ChannelID == "" {
+		return fmt.Errorf("channel_id required")
+	}
+	val, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return rs.applyCommand("set", "/channels/"+m.ChannelID+"/acl/"+m.ID+"/", val)
+}
+
+func (rs *RaftStore) ListChannelRoleMappings(channelID string) ([]ChannelRoleMapping, error) {
+	keys, err := listFSMKeys(rs.db, "/channels/"+channelID+"/acl/")
+	if err != nil {
+		return nil, err
+	}
+	var mappings []ChannelRoleMapping
+	for _, key := range keys {
+		val, err := getFSMValue(rs.db, key)
+		if err != nil || val == nil {
+			continue
+		}
+		var m ChannelRoleMapping
+		if err := json.Unmarshal(val, &m); err != nil {
+			continue
+		}
+		mappings = append(mappings, m)
+	}
+	if mappings == nil {
+		mappings = make([]ChannelRoleMapping, 0)
+	}
+	return mappings, nil
+}
+
+func (rs *RaftStore) DeleteChannelRoleMapping(channelID, entryID string) error {
+	return rs.applyCommand("delete", "/channels/"+channelID+"/acl/"+entryID+"/", nil)
+}
+
+func (rs *RaftStore) GetUserChannelRoleMappings(userID string) ([]ChannelRoleMapping, error) {
+	channels, err := rs.ListChannels()
+	if err != nil {
+		return nil, err
+	}
+	var result []ChannelRoleMapping
+	for _, ch := range channels {
+		acls, err := rs.ListChannelRoleMappings(ch.ID)
+		if err != nil {
+			continue
+		}
+		for _, a := range acls {
+			if a.Type == "user" && a.Subject == userID {
+				result = append(result, a)
+			}
+		}
+	}
+	return result, nil
+}
+
+func (rs *RaftStore) GetGroupChannelRoleMappings(groupName string) ([]ChannelRoleMapping, error) {
+	channels, err := rs.ListChannels()
+	if err != nil {
+		return nil, err
+	}
+	var result []ChannelRoleMapping
+	for _, ch := range channels {
+		acls, err := rs.ListChannelRoleMappings(ch.ID)
+		if err != nil {
+			continue
+		}
+		for _, a := range acls {
+			if a.Type == "group" && a.Subject == groupName {
+				result = append(result, a)
+			}
+		}
+	}
+	return result, nil
 }

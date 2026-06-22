@@ -327,7 +327,7 @@ sequenceDiagram
     participant Sender as Webhook Sender
 
     Client->>HTTP: GET /events/abc123
-    HTTP->>HTTP: Validate channel, CORS, auth
+    HTTP->>HTTP: Validate channel, CORS, auth (session or token)
 
     Note over HTTP: Phase 1: Drain historical
     HTTP->>RB: Get("abc123", since=now-1h, limit=100)

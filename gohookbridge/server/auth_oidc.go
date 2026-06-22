@@ -27,6 +27,9 @@ type OIDCHandler struct {
 }
 
 func NewOIDCHandler(provider OIDCProvider, sessionSecret [32]byte, publicURL string) (*OIDCHandler, error) {
+	if provider.GroupsClaim == "" {
+		provider.GroupsClaim = "groups"
+	}
 	discURL := strings.TrimSuffix(provider.IssuerURL, "/") + "/.well-known/openid-configuration"
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, discURL, nil)
 	if err != nil {
@@ -135,11 +138,14 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 			username = sub
 		}
 
+		groups := extractGroupsFromToken(userInfo, h.Provider.GroupsClaim)
+
 		sessionTok := &sessionToken{
 			Username:  username,
 			Method:    "oidc",
 			Provider:  h.Provider.ID,
 			ExpiresAt: time.Now().Unix() + sessionMaxAge,
+			Groups:    groups,
 		}
 		encoded, err := encodeSession(sessionTok, h.SessionSecret)
 		if err != nil {
@@ -213,4 +219,30 @@ func clearOIDCStateCookie(w http.ResponseWriter) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
+}
+
+func extractGroupsFromToken(token map[string]any, claimName string) []string {
+	if claimName == "" {
+		claimName = "groups"
+	}
+	raw, ok := token[claimName]
+	if !ok {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []any:
+		groups := make([]string, 0, len(v))
+		for _, g := range v {
+			if s, ok := g.(string); ok {
+				groups = append(groups, s)
+			}
+		}
+		return groups
+	case []string:
+		return v
+	case string:
+		return strings.Split(v, ",")
+	default:
+		return nil
+	}
 }

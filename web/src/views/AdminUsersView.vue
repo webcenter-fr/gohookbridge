@@ -48,9 +48,14 @@ const users = ref<User[]>([])
 const loading = ref(true)
 const showModal = ref(false)
 const editingId = ref<string | null>(null)
+const editingUserIsAdmin = ref(false)
 const roles = ref<{ name: string }[]>([])
 
-const roleOptions = computed(() => roles.value.map(r => ({ label: r.name, value: r.name })))
+const roleOptions = computed(() => roles.value.map(r => ({
+  label: r.name,
+  value: r.name,
+  disabled: editingUserIsAdmin.value && editingId.value !== null && r.name === 'admin',
+})))
 
 const form = reactive({
   username: '',
@@ -112,6 +117,7 @@ function openCreate() {
 
 function openEdit(user: User) {
   editingId.value = user.id
+  editingUserIsAdmin.value = (user.roles || []).includes('admin')
   form.username = user.username
   form.password = ''
   form.roles = user.roles || []

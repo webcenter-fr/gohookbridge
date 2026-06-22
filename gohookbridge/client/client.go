@@ -304,6 +304,7 @@ type replayDataOpts struct {
 	encryptionKey               string
 	resume                      bool
 	clientID                    string
+	token                       string
 }
 
 func replayData(ropts *replayDataOpts, logger *slog.Logger, pm payloadMsg) error {
@@ -601,7 +602,7 @@ func isOlderVersion(v1, v2 []int) bool {
 	return len(v1) < len(v2)
 }
 
-func prepareSubscription(smeeURL, encryptionKeyFile string, resume bool, clientID string) (channel string, sseURL string, privateKey *[32]byte, err error) {
+func prepareSubscription(smeeURL, encryptionKeyFile string, resume bool, clientID string, token string) (channel string, sseURL string, privateKey *[32]byte, err error) {
 	channel = filepath.Base(smeeURL)
 	baseURL := strings.TrimSuffix(smeeURL, "/"+channel)
 
@@ -614,16 +615,21 @@ func prepareSubscription(smeeURL, encryptionKeyFile string, resume bool, clientI
 
 	sseURL = fmt.Sprintf("%s/events/%s", baseURL, channel)
 
-	if resume {
-		if clientID == "" {
-			clientID = getOrCreateClientID()
-		}
+	if resume || token != "" {
 		parsedURL, err := url.Parse(sseURL)
 		if err != nil {
 			return "", "", nil, fmt.Errorf("parse sse url: %w", err)
 		}
 		query := parsedURL.Query()
-		query.Set("client_id", clientID)
+		if resume {
+			if clientID == "" {
+				clientID = getOrCreateClientID()
+			}
+			query.Set("client_id", clientID)
+		}
+		if token != "" {
+			query.Set("token", token)
+		}
 		parsedURL.RawQuery = query.Encode()
 		sseURL = parsedURL.String()
 	}
@@ -657,7 +663,7 @@ func (c goSmee) clientSetup() error {
 		c.logger.WarnContext(context.Background(), fmt.Sprintf("%sCould not get server version: %s", emoji("⚠", "yellow+b", c.replayDataOpts.decorate), err.Error()))
 	}
 
-	channel, sseURL, privateKey, err := prepareSubscription(c.replayDataOpts.smeeURL, c.replayDataOpts.encryptionKeyFile, c.replayDataOpts.resume, c.replayDataOpts.clientID)
+	channel, sseURL, privateKey, err := prepareSubscription(c.replayDataOpts.smeeURL, c.replayDataOpts.encryptionKeyFile, c.replayDataOpts.resume, c.replayDataOpts.clientID, c.replayDataOpts.token)
 	if err != nil {
 		return err
 	}

@@ -39,6 +39,10 @@ func startProxy(c *cli.Context) error {
 		return fmt.Errorf("target URL required: use --target")
 	}
 
+	if token := c.String("token"); token != "" {
+		targetURL = gohookbridge.URLWithQueryParam(targetURL, "token", token)
+	}
+
 	insecureSkip := c.Bool("insecure-skip-tls-verify")
 
 	tr := &http.Transport{

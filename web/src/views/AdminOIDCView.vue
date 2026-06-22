@@ -32,6 +32,10 @@
         <n-form-item label="Scopes">
           <n-input v-model:value="form.scopesStr" placeholder="openid profile email" />
         </n-form-item>
+        <n-form-item label="Groups Claim">
+          <n-input v-model:value="form.groups_claim" placeholder="groups" />
+          <n-text depth="3" style="margin-top: 4px;">The OIDC claim name that contains group memberships (default: groups)</n-text>
+        </n-form-item>
         <n-space justify="end">
           <n-button @click="showModal = false">Cancel</n-button>
           <n-button type="primary" @click="handleSave">Save</n-button>
@@ -43,7 +47,7 @@
 
 <script setup lang="ts">
 import { ref, h, onMounted, reactive } from 'vue'
-import { NSpace, NH3, NButton, NDataTable, NModal, NForm, NFormItem, NInput } from 'naive-ui'
+import { NSpace, NH3, NButton, NDataTable, NModal, NForm, NFormItem, NInput, NText } from 'naive-ui'
 import { api, type OIDCProvider } from '../api/client'
 import { useMessage, useDialog } from 'naive-ui'
 
@@ -62,6 +66,7 @@ const form = reactive({
   client_secret: '',
   issuer_url: '',
   scopesStr: 'openid profile email',
+  groups_claim: 'groups',
 })
 
 const columns = [
@@ -69,6 +74,7 @@ const columns = [
   { title: 'Name', key: 'name' as const },
   { title: 'Client ID', key: 'client_id' as const },
   { title: 'Issuer URL', key: 'issuer_url' as const },
+  { title: 'Groups Claim', key: 'groups_claim' as const },
   {
     title: 'Actions',
     key: 'id' as const,
@@ -80,8 +86,6 @@ const columns = [
   },
 ]
 
-// We need to fetch OIDC providers via the global config or a dedicated endpoint
-// Since the API doesn't expose OIDC providers directly, load from auth methods
 onMounted(async () => {
   await fetchProviders()
 })
@@ -89,14 +93,7 @@ onMounted(async () => {
 async function fetchProviders() {
   loading.value = true
   try {
-    const methods = await api.getAuthMethods()
-    providers.value = methods.oidc_providers.map(p => ({
-      ...p,
-      client_id: '',
-      client_secret: '',
-      issuer_url: '',
-      scopes: [],
-    }))
+    providers.value = await api.listOIDCProviders()
   } catch (e: any) {
     message.error(e.message)
   } finally {
@@ -112,6 +109,7 @@ function openCreate() {
   form.client_secret = ''
   form.issuer_url = ''
   form.scopesStr = 'openid profile email'
+  form.groups_claim = 'groups'
   showModal.value = true
 }
 
@@ -123,13 +121,21 @@ function openEdit(provider: OIDCProvider) {
   form.client_secret = provider.client_secret
   form.issuer_url = provider.issuer_url
   form.scopesStr = provider.scopes?.join(' ') || 'openid profile email'
+  form.groups_claim = provider.groups_claim || 'groups'
   showModal.value = true
 }
 
 async function handleSave() {
   try {
-    // OIDC providers are managed via the API - we'd need to call a dedicated endpoint
-    // For now show a success message; the actual saving depends on backend endpoint availability
+    await api.updateOIDCProvider(form.id, {
+      id: form.id,
+      name: form.name,
+      client_id: form.client_id,
+      client_secret: form.client_secret,
+      issuer_url: form.issuer_url,
+      scopes: form.scopesStr.split(' ').filter(Boolean),
+      groups_claim: form.groups_claim || 'groups',
+    })
     message.success('OIDC provider saved')
     showModal.value = false
     await fetchProviders()
@@ -145,6 +151,7 @@ function handleDelete(id: string) {
     positiveText: 'Delete',
     onPositiveClick: async () => {
       try {
+        await api.deleteOIDCProvider(id)
         message.success('OIDC provider deleted')
         await fetchProviders()
       } catch (e: any) {

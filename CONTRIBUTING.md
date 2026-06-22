@@ -197,6 +197,27 @@ Flags are defined in `gohookbridge/flags.go` and shared between the `server` and
 
 The server router is assembled in `gohookbridge/server/server.go`. Add new routes there and implement handlers in the same package or extract them into focused files (e.g., `gohookbridge/server/auth_oidc.go` for OIDC-related handlers).
 
+### Channel access token authentication
+
+Channel access tokens are passed as a URL query parameter (`?token=xxx`) rather than an HTTP header. This is a deliberate design choice forced by GitHub webhooks: GitHub only allows configuring a webhook URL, with no ability to set custom headers. The same `--token` query-param approach is used consistently across the client, proxy, and produce CLI tools for uniformity.
+
+For SSE consumers, the token is also accepted via the `Authorization: Bearer` header as an alternative, but the query parameter remains the primary mechanism.
+
+### Encryption vs Access Control
+
+Gohookbridge separates **access control** from **encryption**:
+
+- **Access control** determines who can connect to a channel:
+  - Browser UI: Session-based auth with RBAC permission checks (`channel:read`)
+  - CLI clients: Channel access tokens with scope validation (`consume`/`produce`)
+
+- **Encryption** determines the data format:
+  - **No encryption**: Plaintext data
+  - **Server-side encryption** (`encryption_mode: "server_side"`): Server decrypts before sending
+  - **E2E encryption** (`encryption_mode: "e2e"`): Server relays encrypted data as-is; client decrypts
+
+The SSE endpoint (`GET /events/{channel}`) checks access control but does not enforce encryption rules. E2E channels can be accessed by any authorized user; the encrypted data is relayed as-is. Client-side decryption is optional and performed in the browser using the private key.
+
 ## UI conventions
 
 ### Technology stack
