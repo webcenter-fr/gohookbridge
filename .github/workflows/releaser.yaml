@@ -8,7 +8,7 @@ on:
 
 permissions:
   contents: write
-  # packages: write
+  packages: write
   issues: write
 
 jobs:
@@ -55,3 +55,26 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           ./hack/generate-release-notes.sh
+
+  helm-release:
+    runs-on: ubuntu-latest
+    needs: goreleaser
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: azure/setup-helm@v4
+        with:
+          version: latest
+      - name: Set chart version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version:.*/version: ${VERSION}/" helm/gohookbridge/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" helm/gohookbridge/Chart.yaml
+      - name: Package Helm chart
+        run: helm package helm/gohookbridge
+      - name: Push Helm chart to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+          helm push gohookbridge-*.tgz oci://ghcr.io/webcenter-fr/gohookbridge

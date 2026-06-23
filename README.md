@@ -138,6 +138,34 @@ System service example files for macOS and Linux are available in the [misc](./m
 
 You can deploy gohookbridge on Kubernetes to relay webhooks to your internal services.
 
+#### Helm
+
+The Helm chart is published as an OCI artifact to GHCR:
+
+```shell
+# Install the server
+helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
+  --set server.enabled=true \
+  --set server.publicURL=https://webhook.example.com
+
+# Install with client forwarding
+helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
+  --set server.enabled=true \
+  --set client.enabled=true \
+  --set client.channelURL=https://webhook.example.com/my-channel \
+  --set client.targetURL=http://my-service:8080
+
+# Install with encrypt proxy
+helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
+  --set proxy.enabled=true \
+  --set proxy.targetURL=https://webhook.example.com/my-channel \
+  --set proxy.publicKey=YOUR_PUBLIC_KEY
+```
+
+For full Helm configuration options, see [`helm/gohookbridge/values.yaml`](./helm/gohookbridge/values.yaml).
+
+#### Raw YAML manifests
+
 Two deployment configurations are available:
 
 - [gohookbridge-server-deployment.yaml](./misc/gohookbridge-server-deployment.yaml) - For deploying the public-facing server component

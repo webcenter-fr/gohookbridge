@@ -102,6 +102,29 @@ Health check available at `http://localhost:8081/health`.
 
 ## Kubernetes Quick Start
 
+### Kubernetes with Helm (recommended)
+
+```shell
+# Deploy the server
+helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
+  --namespace gohookbridge --create-namespace \
+  --set server.enabled=true \
+  --set server.publicURL=https://webhook.example.com
+
+# Deploy server + client
+helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
+  --namespace gohookbridge --create-namespace \
+  --set server.enabled=true \
+  --set server.publicURL=https://webhook.example.com \
+  --set client.enabled=true \
+  --set client.channelURL=https://webhook.example.com/my-channel \
+  --set client.targetURL=http://my-service:8080
+
+# Verify
+kubectl get pods -n gohookbridge
+helm status gohookbridge -n gohookbridge
+```
+
 ### Server Deployment
 
 Deploy the gohookbridge server to receive webhooks from external sources:
