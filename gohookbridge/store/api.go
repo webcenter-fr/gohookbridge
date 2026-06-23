@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -27,7 +28,7 @@ type apiHandler struct {
 func RegisterAPIHandlers(r chi.Router, rs *RaftStore, notifier ChannelChangeNotifier) {
 	h := &apiHandler{rs: rs, channelNotifier: notifier}
 
-		r.Route("/channels", func(r chi.Router) {
+	r.Route("/channels", func(r chi.Router) {
 		r.Use(RequirePermission(rs, PermChannelRead))
 		r.Get("/", h.listChannels)
 		r.Post("/", h.createChannel)
@@ -105,7 +106,7 @@ func (h *apiHandler) listChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-filtered := make([]*Channel, 0)
+	filtered := make([]*Channel, 0)
 	for _, p := range channels {
 		if hasChannelAccess(allowedChannels, p.ID) {
 			sanitizeChannelAPI(p)
@@ -141,7 +142,7 @@ func (h *apiHandler) createChannel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	h.rs.CreateChannelRoleMapping(&ChannelRoleMapping{
+	_ = h.rs.CreateChannelRoleMapping(&ChannelRoleMapping{
 		ChannelID: ch.ID,
 		Type:      "user",
 		Subject:   username,
@@ -198,7 +199,7 @@ func (h *apiHandler) deleteChannel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *apiHandler) getGlobalConfig(w http.ResponseWriter, r *http.Request) {
+func (h *apiHandler) getGlobalConfig(w http.ResponseWriter, _ *http.Request) {
 	cfg, err := h.rs.GetGlobalConfig()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -206,11 +207,11 @@ func (h *apiHandler) getGlobalConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := GlobalConfigResponse{
 		Server: ServerConfigResponse{
-			MaxBodySize:   cfg.Server.MaxBodySize,
-			BehindReverseProxy:    cfg.Server.BehindReverseProxy,
-			CORSOrigin:    cfg.Server.CORSOrigin,
-			Footer:        cfg.Server.Footer,
-			SessionSecret: "<redacted>",
+			MaxBodySize:        cfg.Server.MaxBodySize,
+			BehindReverseProxy: cfg.Server.BehindReverseProxy,
+			CORSOrigin:         cfg.Server.CORSOrigin,
+			Footer:             cfg.Server.Footer,
+			SessionSecret:      "<redacted>",
 
 			RateLimitEnabled:       cfg.Server.RateLimitEnabled,
 			RateLimitRequests:      cfg.Server.RateLimitRequests,
@@ -257,7 +258,7 @@ func (h *apiHandler) updateGlobalConfig(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, &cfg)
 }
 
-func (h *apiHandler) listUsers(w http.ResponseWriter, r *http.Request) {
+func (h *apiHandler) listUsers(w http.ResponseWriter, _ *http.Request) {
 	users, err := h.rs.ListUsers()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -326,9 +327,9 @@ func (h *apiHandler) getUser(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func hasRole(roles []string, role string) bool {
+func hasAdminRole(roles []string) bool {
 	for _, r := range roles {
-		if r == role {
+		if r == "admin" {
 			return true
 		}
 	}
@@ -338,7 +339,7 @@ func hasRole(roles []string, role string) bool {
 func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var input struct {
-		Username string   `json:"username" validate:"max=128"`
+		Username string   `json:"username"           validate:"max=128"`
 		Password string   `json:"password,omitempty"`
 		Roles    []string `json:"roles"`
 		Channels []string `json:"channels"`
@@ -357,7 +358,7 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
-	if input.Roles != nil && hasRole(u.Roles, "admin") && !hasRole(input.Roles, "admin") {
+	if input.Roles != nil && hasAdminRole(u.Roles) && !hasAdminRole(input.Roles) {
 		writeError(w, http.StatusBadRequest, "cannot remove admin role")
 		return
 	}
@@ -392,7 +393,7 @@ func (h *apiHandler) deleteUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
-	if hasRole(u.Roles, "admin") {
+	if hasAdminRole(u.Roles) {
 		users, err := h.rs.ListUsers()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list users")
@@ -400,7 +401,7 @@ func (h *apiHandler) deleteUser(w http.ResponseWriter, r *http.Request) {
 		}
 		adminCount := 0
 		for _, usr := range users {
-			if hasRole(usr.Roles, "admin") && usr.ID != id {
+			if hasAdminRole(usr.Roles) && usr.ID != id {
 				adminCount++
 			}
 		}
@@ -416,7 +417,7 @@ func (h *apiHandler) deleteUser(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *apiHandler) listRoles(w http.ResponseWriter, r *http.Request) {
+func (h *apiHandler) listRoles(w http.ResponseWriter, _ *http.Request) {
 	roles, err := h.rs.ListRoles()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -425,7 +426,7 @@ func (h *apiHandler) listRoles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, roles)
 }
 
-func (h *apiHandler) listBindings(w http.ResponseWriter, r *http.Request) {
+func (h *apiHandler) listBindings(w http.ResponseWriter, _ *http.Request) {
 	bindings, err := h.rs.ListBindings()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -451,7 +452,7 @@ func (h *apiHandler) updateBinding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get user")
 		return
 	}
-	if hasRole(u.Roles, "admin") && !hasRole(binding.Roles, "admin") {
+	if hasAdminRole(u.Roles) && !hasAdminRole(binding.Roles) {
 		writeError(w, http.StatusBadRequest, "cannot remove admin role")
 		return
 	}
@@ -623,7 +624,7 @@ func (h *apiHandler) updateAccessMode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"access_mode": ch.AccessMode})
 }
 
-func (h *apiHandler) listRoleMappings(w http.ResponseWriter, r *http.Request) {
+func (h *apiHandler) listRoleMappings(w http.ResponseWriter, _ *http.Request) {
 	mappings, err := h.rs.ListRoleMappings()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -716,7 +717,7 @@ func (h *apiHandler) deleteChannelACLEntry(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *apiHandler) listOIDCProviders(w http.ResponseWriter, r *http.Request) {
+func (h *apiHandler) listOIDCProviders(w http.ResponseWriter, _ *http.Request) {
 	providers, err := h.rs.OIDCProviders()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -814,7 +815,10 @@ func (h *apiHandler) deleteOIDCProvider(w http.ResponseWriter, r *http.Request) 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
@@ -839,7 +843,7 @@ func writeCSV(w http.ResponseWriter, channels []*Channel) {
 	w.Header().Set("Content-Type", "text/csv")
 	w.Header().Set("Content-Disposition", "attachment; filename=channels.csv")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("id\n"))
+	_, _ = w.Write([]byte("id\n"))
 	for _, ch := range channels {
 		fmt.Fprintf(w, "%s\n", ch.ID)
 	}
@@ -847,8 +851,8 @@ func writeCSV(w http.ResponseWriter, channels []*Channel) {
 
 func validateStruct(s interface{}) string {
 	if err := validate.Struct(s); err != nil {
-		ve, ok := err.(validator.ValidationErrors)
-		if !ok {
+		var ve validator.ValidationErrors
+		if !errors.As(err, &ve) {
 			return err.Error()
 		}
 		var msgs []string

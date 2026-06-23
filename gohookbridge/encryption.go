@@ -17,10 +17,6 @@ type aesEncryptedPayload struct {
 	Ciphertext string `json:"ciphertext"`
 }
 
-type aesKey struct {
-	Key string `json:"key"`
-}
-
 func GenerateAESKey() (string, error) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {

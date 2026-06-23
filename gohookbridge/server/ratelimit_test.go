@@ -153,31 +153,31 @@ func TestFingerprintGeneration(t *testing.T) {
 
 func TestExtractSignatureValue(t *testing.T) {
 	t.Run("github", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/ch", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/ch", nil)
 		req.Header.Set("X-Hub-Signature-256", "sha256=abc123")
 		assert.Equal(t, "sha256=abc123", extractSignatureValue(req))
 	})
 
 	t.Run("gitlab", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/ch", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/ch", nil)
 		req.Header.Set("X-Gitlab-Token", "my-secret")
 		assert.Equal(t, "my-secret", extractSignatureValue(req))
 	})
 
 	t.Run("bitbucket", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/ch", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/ch", nil)
 		req.Header.Set("X-Hub-Signature", "sha256=def456")
 		assert.Equal(t, "sha256=def456", extractSignatureValue(req))
 	})
 
 	t.Run("gitea", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/ch", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/ch", nil)
 		req.Header.Set("X-Gitea-Signature", "sha256=ghi789")
 		assert.Equal(t, "sha256=ghi789", extractSignatureValue(req))
 	})
 
 	t.Run("unknown", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/ch", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/ch", nil)
 		assert.Equal(t, "unknown", extractSignatureValue(req))
 	})
 }

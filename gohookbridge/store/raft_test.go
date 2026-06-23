@@ -14,7 +14,7 @@ func newTestRaftStore(t *testing.T) *RaftStore {
 		BindAddr: "127.0.0.1:0",
 	})
 	assert.NilError(t, err)
-	t.Cleanup(func() { rs.Shutdown() })
+	t.Cleanup(func() { _ = rs.Shutdown() })
 	return rs
 }
 
@@ -114,10 +114,10 @@ func TestRaftStore_UpdateGlobalConfig(t *testing.T) {
 
 	newCfg := &GlobalConfig{
 		Server: ServerConfig{
-			MaxBodySize: 100,
-			BehindReverseProxy:  true,
-			CORSOrigin:  "https://example.com",
-			Footer:      "custom footer",
+			MaxBodySize:        100,
+			BehindReverseProxy: true,
+			CORSOrigin:         "https://example.com",
+			Footer:             "custom footer",
 		},
 		Defaults: DefaultChannelConfig{
 			WebhookSecret: "sig1",

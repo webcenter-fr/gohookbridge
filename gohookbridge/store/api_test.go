@@ -28,6 +28,7 @@ func setupAPI(t *testing.T) (*RaftStore, *chi.Mux) {
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			//nolint:revive,staticcheck
 			ctx := context.WithValue(r.Context(), UsernameContextKey, "admin")
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -39,9 +40,11 @@ func setupAPI(t *testing.T) (*RaftStore, *chi.Mux) {
 func apiRequest(method, path string, body any) *http.Request {
 	var buf bytes.Buffer
 	if body != nil {
-		json.NewEncoder(&buf).Encode(body)
+		if err := json.NewEncoder(&buf).Encode(body); err != nil {
+			panic(err)
+		}
 	}
-	req := httptest.NewRequest(method, path, &buf)
+	req := httptest.NewRequestWithContext(context.Background(), method, path, &buf)
 	req.Header.Set("Content-Type", "application/json")
 	return req
 }
@@ -265,7 +268,7 @@ func TestUpdateChannel_Valid(t *testing.T) {
 	assert.NilError(t, rs.CreateChannel(ch))
 
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, httptest.NewRequest("PUT", "/channels/update-test", bytes.NewReader([]byte(`{"description":"new desc"}`))))
+	router.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), "PUT", "/channels/update-test", bytes.NewReader([]byte(`{"description":"new desc"}`))))
 	assert.Equal(t, w.Code, http.StatusOK)
 
 	got, err := rs.GetChannel("update-test")
@@ -320,6 +323,7 @@ func TestChannelACL_NonAdminCannotAddACL(t *testing.T) {
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			//nolint:revive,staticcheck
 			ctx := context.WithValue(r.Context(), UsernameContextKey, "reader")
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

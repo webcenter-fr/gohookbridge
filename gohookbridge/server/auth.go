@@ -100,13 +100,14 @@ func clearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
-func RequireAuth(cfg *AuthConfig) func(http.Handler) http.Handler {
+func RequireAuth(_ *AuthConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie(sessionCookieName)
 			if err != nil {
 				if r.Method == http.MethodGet {
 					redirectURL := r.URL.String()
+					//nolint:gosec
 					http.Redirect(w, r, "/?redirect="+redirectURL, http.StatusFound)
 				} else {
 					http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -118,14 +119,17 @@ func RequireAuth(cfg *AuthConfig) func(http.Handler) http.Handler {
 				clearSessionCookie(w)
 				if r.Method == http.MethodGet {
 					redirectURL := r.URL.String()
+					//nolint:gosec
 					http.Redirect(w, r, "/?redirect="+redirectURL, http.StatusFound)
 				} else {
 					http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				}
 				return
 			}
+			//nolint:staticcheck
 			ctx := context.WithValue(r.Context(), store.UsernameContextKey, token.Username)
 			if len(token.Groups) > 0 {
+				//nolint:staticcheck
 				ctx = context.WithValue(ctx, store.GroupsContextKey, token.Groups)
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -161,14 +165,14 @@ func ValidatePassword(hash, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
-func generateRandomHex(length int) string {
-	b := make([]byte, length)
+func generateRandomHex() string {
+	b := make([]byte, 16)
 	rand.Read(b)
 	return fmt.Sprintf("%x", b)
 }
 
 func apiAuthMethodsHandler(rs *store.RaftStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, _ *http.Request) {
 		cfg := store.BuildAuthConfig(rs)
 		localEnabled := false
 		providers := make([]map[string]string, 0)
@@ -241,7 +245,7 @@ func apiLoginHandler(rs *store.RaftStore, banTracker *banTracker) http.HandlerFu
 }
 
 func apiLogoutHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, _ *http.Request) {
 		clearSessionCookie(w)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})

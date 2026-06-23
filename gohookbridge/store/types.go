@@ -1,7 +1,6 @@
 package store
 
 import (
-	"encoding/json"
 	"regexp"
 
 	"github.com/go-playground/validator/v10"
@@ -16,20 +15,20 @@ type ChannelAccessToken struct {
 }
 
 type Channel struct {
-	ID                string   `json:"id" validate:"required,min=1,max=64,channelid"`
-	Description       string   `json:"description,omitempty" validate:"max=500"`
-	CreatedBy         string   `json:"created_by,omitempty"`
-	WebhookSecret     string   `json:"webhook_secret,omitempty"`
-	AllowedIPs        []string `json:"allowed_ips,omitempty"`
-	MaxBodySize       int      `json:"max_body_size,omitempty"`
-	MessageTTLSeconds int      `json:"message_ttl_seconds,omitempty"`
-	EncryptionMode        string   `json:"encryption_mode,omitempty"`
-	EncryptionKey         string   `json:"encryption_key,omitempty"`
-	EncryptionPublicKey   string   `json:"encryption_public_key,omitempty"`
-	EncryptionPrivateKey  string   `json:"encryption_private_key,omitempty"`
-	EncryptionPubKeys     []string `json:"encryption_public_keys,omitempty"`
-	AccessMode        string               `json:"access_mode,omitempty"`
-	AccessTokens      []ChannelAccessToken `json:"access_tokens,omitempty"`
+	ID                   string               `json:"id"                               validate:"required,min=1,max=64,channelid"`
+	Description          string               `json:"description,omitempty"            validate:"max=500"`
+	CreatedBy            string               `json:"created_by,omitempty"`
+	WebhookSecret        string               `json:"webhook_secret,omitempty"`
+	AllowedIPs           []string             `json:"allowed_ips,omitempty"`
+	MaxBodySize          int                  `json:"max_body_size,omitempty"`
+	MessageTTLSeconds    int                  `json:"message_ttl_seconds,omitempty"`
+	EncryptionMode       string               `json:"encryption_mode,omitempty"`
+	EncryptionKey        string               `json:"encryption_key,omitempty"`
+	EncryptionPublicKey  string               `json:"encryption_public_key,omitempty"`
+	EncryptionPrivateKey string               `json:"encryption_private_key,omitempty"`
+	EncryptionPubKeys    []string             `json:"encryption_public_keys,omitempty"`
+	AccessMode           string               `json:"access_mode,omitempty"`
+	AccessTokens         []ChannelAccessToken `json:"access_tokens,omitempty"`
 
 	// Deprecated: use WebhookSecret instead
 	WebhookSignatures []string `json:"webhook_signatures,omitempty"`
@@ -39,24 +38,25 @@ type Channel struct {
 
 var validate *validator.Validate
 
+//nolint:gochecknoinits
 func init() {
 	validate = validator.New()
-	validate.RegisterValidation("channelid", func(fl validator.FieldLevel) bool {
+	_ = validate.RegisterValidation("channelid", func(fl validator.FieldLevel) bool {
 		return regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`).MatchString(fl.Field().String())
 	})
 }
 
 type GlobalConfig struct {
-	Server   ServerConfig          `json:"server"`
-	Defaults DefaultChannelConfig  `json:"defaults"`
+	Server   ServerConfig         `json:"server"`
+	Defaults DefaultChannelConfig `json:"defaults"`
 }
 
 type ServerConfig struct {
-	MaxBodySize   int    `json:"max_body_size"`
-	BehindReverseProxy    bool   `json:"behind_reverse_proxy"`
-	CORSOrigin    string `json:"cors_origin"`
-	Footer        string `json:"footer"`
-	SessionSecret string `json:"session_secret"`
+	MaxBodySize        int    `json:"max_body_size"`
+	BehindReverseProxy bool   `json:"behind_reverse_proxy"`
+	CORSOrigin         string `json:"cors_origin"`
+	Footer             string `json:"footer"`
+	SessionSecret      string `json:"session_secret"`
 
 	RateLimitEnabled       bool `json:"rate_limit_enabled"`
 	RateLimitRequests      int  `json:"rate_limit_requests"`
@@ -74,11 +74,11 @@ type GlobalConfigResponse struct {
 }
 
 type ServerConfigResponse struct {
-	MaxBodySize   int    `json:"max_body_size"`
-	BehindReverseProxy    bool   `json:"behind_reverse_proxy"`
-	CORSOrigin    string `json:"cors_origin"`
-	Footer        string `json:"footer"`
-	SessionSecret string `json:"session_secret"`
+	MaxBodySize        int    `json:"max_body_size"`
+	BehindReverseProxy bool   `json:"behind_reverse_proxy"`
+	CORSOrigin         string `json:"cors_origin"`
+	Footer             string `json:"footer"`
+	SessionSecret      string `json:"session_secret"`
 
 	RateLimitEnabled       bool `json:"rate_limit_enabled"`
 	RateLimitRequests      int  `json:"rate_limit_requests"`
@@ -97,8 +97,8 @@ type DefaultChannelConfig struct {
 }
 
 type User struct {
-	ID           string   `json:"id" validate:"required,min=1,max=128"`
-	Username     string   `json:"username" validate:"required,min=1,max=128"`
+	ID           string   `json:"id"                      validate:"required,min=1,max=128"`
+	Username     string   `json:"username"                validate:"required,min=1,max=128"`
 	PasswordHash string   `json:"password_hash,omitempty"`
 	OIDCSubjects []string `json:"oidc_subjects,omitempty"`
 	Roles        []string `json:"roles"`
@@ -164,7 +164,7 @@ type ClientCursor struct {
 }
 
 type UserBinding struct {
-	UserID   string   `json:"user_id" validate:"required"`
+	UserID   string   `json:"user_id"  validate:"required"`
 	Roles    []string `json:"roles"`
 	Channels []string `json:"channels"`
 }
@@ -172,9 +172,9 @@ type UserBinding struct {
 func defaultGlobalConfig() *GlobalConfig {
 	return &GlobalConfig{
 		Server: ServerConfig{
-			MaxBodySize: 26214400,
-			BehindReverseProxy:  false,
-			CORSOrigin:  "*",
+			MaxBodySize:        26214400,
+			BehindReverseProxy: false,
+			CORSOrigin:         "*",
 
 			RateLimitEnabled:       false,
 			RateLimitRequests:      100,
@@ -224,12 +224,4 @@ func migrateChannel(p *Channel) {
 
 func MigrateChannelForTest(p *Channel) {
 	migrateChannel(p)
-}
-
-func marshalJSON(v any) (string, error) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
 }

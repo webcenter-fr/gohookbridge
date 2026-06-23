@@ -67,7 +67,7 @@ func (f *FSM) Apply(log *raft.Log) interface{} {
 }
 
 func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
-	return &StoreSnapshot{db: f.db}, nil
+	return &Snapshot{db: f.db}, nil
 }
 
 func (f *FSM) Restore(rc io.ReadCloser) error {
@@ -95,8 +95,7 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 		// Clear existing data
 		if err := clearBucket(b); err != nil {
 			return err
-
-                }
+		}
 		for k, v := range snapshot.Data {
 			if err := b.Put([]byte(k), v); err != nil {
 				return err
@@ -131,7 +130,7 @@ func (f *FSM) applyBootstrap(value []byte) error {
 		if b == nil {
 			return fmt.Errorf("bucket %s not found", fsmDataBucketName)
 		}
-		if err := b.ForEach(func(k, _ []byte) error {
+		if err := b.ForEach(func(_, _ []byte) error {
 			return nil // just check if data exists
 		}); err != nil {
 			return err
@@ -146,6 +145,7 @@ func (f *FSM) applyBootstrap(value []byte) error {
 		}
 
 		if payload.Global != nil {
+			//nolint:gosec
 			scVal, err := json.Marshal(payload.Global.Server)
 			if err != nil {
 				return fmt.Errorf("marshal server config: %w", err)

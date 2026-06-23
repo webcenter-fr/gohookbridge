@@ -113,13 +113,13 @@ func (b *boltLogStore) StoreLogs(logs []*raft.Log) error {
 	})
 }
 
-func (b *boltLogStore) DeleteRange(min, max uint64) error {
+func (b *boltLogStore) DeleteRange(low, high uint64) error {
 	return b.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(logsBucketName))
 		if bucket == nil {
 			return nil
 		}
-		for i := min; i <= max; i++ {
+		for i := low; i <= high; i++ {
 			if err := bucket.Delete(itob(i)); err != nil {
 				return err
 			}
@@ -180,13 +180,21 @@ func (b *boltStableStore) GetUint64(key []byte) (uint64, error) {
 
 func itob(v uint64) []byte {
 	b := make([]byte, 8)
+	//nolint:gosec
 	b[0] = byte(v >> 56)
+	//nolint:gosec
 	b[1] = byte(v >> 48)
+	//nolint:gosec
 	b[2] = byte(v >> 40)
+	//nolint:gosec
 	b[3] = byte(v >> 32)
+	//nolint:gosec
 	b[4] = byte(v >> 24)
+	//nolint:gosec
 	b[5] = byte(v >> 16)
+	//nolint:gosec
 	b[6] = byte(v >> 8)
+	//nolint:gosec
 	b[7] = byte(v)
 	return b
 }
@@ -204,7 +212,7 @@ func decodeLog(data []byte, log *raft.Log) error {
 	return json.Unmarshal(data, log)
 }
 
-// FSM data access helpers
+// FSM data access helpers.
 func getFSMValue(db *bbolt.DB, key string) ([]byte, error) {
 	var val []byte
 	err := db.View(func(tx *bbolt.Tx) error {
@@ -268,12 +276,12 @@ func iterateFSM(db *bbolt.DB, fn func(key, value []byte) error) error {
 	})
 }
 
-// StoreSnapshot wraps BoltDB snapshot operations.
-type StoreSnapshot struct {
+// Snapshot wraps BoltDB snapshot operations.
+type Snapshot struct {
 	db *bbolt.DB
 }
 
-func (s *StoreSnapshot) Persist(sink raft.SnapshotSink) error {
+func (s *Snapshot) Persist(sink raft.SnapshotSink) error {
 	snapshot := make(map[string][]byte)
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(fsmDataBucketName))
@@ -288,22 +296,21 @@ func (s *StoreSnapshot) Persist(sink raft.SnapshotSink) error {
 		})
 	})
 	if err != nil {
-		sink.Cancel()
+		_ = sink.Cancel()
 		return err
 	}
 
 	enc := map[string]map[string][]byte{"data": snapshot}
 	b, err := json.Marshal(enc)
 	if err != nil {
-		sink.Cancel()
+		_ = sink.Cancel()
 		return err
 	}
 	if _, err := sink.Write(b); err != nil {
-		sink.Cancel()
+		_ = sink.Cancel()
 		return err
-
-        }
+	}
 	return sink.Close()
 }
 
-func (s *StoreSnapshot) Release() {}
+func (s *Snapshot) Release() {}

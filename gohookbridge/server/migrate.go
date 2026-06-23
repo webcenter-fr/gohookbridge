@@ -6,12 +6,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/webcenter-fr/gohookbridge/gohookbridge/store"
 	"github.com/urfave/cli/v2"
+	"github.com/webcenter-fr/gohookbridge/gohookbridge/store"
 	"gopkg.in/yaml.v3"
 )
 
-func migrateConfig(c *cli.Context) error {
+func migrateConfig(_ *cli.Context) error {
 	global := store.GlobalConfig{}
 	hasConfig := false
 

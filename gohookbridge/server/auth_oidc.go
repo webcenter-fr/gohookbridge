@@ -63,8 +63,8 @@ func (h *OIDCHandler) LoginHandler() http.HandlerFunc {
 			redirect = "/"
 		}
 
-		state := generateRandomHex(16)
-		nonce := generateRandomHex(16)
+		state := generateRandomHex()
+		nonce := generateRandomHex()
 
 		stateValue := fmt.Sprintf("%s|%s", state, redirect)
 		http.SetCookie(w, &http.Cookie{

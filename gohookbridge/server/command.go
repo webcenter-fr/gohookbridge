@@ -3,10 +3,10 @@ package server
 import (
 	"os"
 
-	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
 	"github.com/mattn/go-isatty"
 	"github.com/mgutz/ansi"
 	"github.com/urfave/cli/v2"
+	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
 )
 
 func Command() *cli.Command {

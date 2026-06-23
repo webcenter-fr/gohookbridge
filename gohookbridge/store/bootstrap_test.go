@@ -100,9 +100,9 @@ func TestApplyBootstrap_GlobalConfig(t *testing.T) {
 	cfg := &BootstrapConfig{
 		Global: &GlobalConfig{
 			Server: ServerConfig{
-				MaxBodySize: 500,
-				CORSOrigin:  "https://app.example.com",
-				BehindReverseProxy:  true,
+				MaxBodySize:        500,
+				CORSOrigin:         "https://app.example.com",
+				BehindReverseProxy: true,
 			},
 		},
 	}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -120,7 +121,7 @@ func TestRequireAuthMiddleware(t *testing.T) {
 	})
 
 	t.Run("NoCookieRedirectsToLogin", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		assert.Equal(t, w.Code, http.StatusFound)
@@ -132,7 +133,7 @@ func TestRequireAuthMiddleware(t *testing.T) {
 		tok := newTestSessionToken("testuser", "internal")
 		enc, err := encodeSession(tok, secret)
 		assert.NilError(t, err)
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: enc})
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -147,7 +148,7 @@ func TestRequireAuthMiddleware(t *testing.T) {
 		}
 		enc, err := encodeSession(tok, secret)
 		assert.NilError(t, err)
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: enc})
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -157,7 +158,7 @@ func TestRequireAuthMiddleware(t *testing.T) {
 	})
 
 	t.Run("NonGetReturns401", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		assert.Equal(t, w.Code, http.StatusUnauthorized)
@@ -166,7 +167,7 @@ func TestRequireAuthMiddleware(t *testing.T) {
 
 func TestLogoutHandler(t *testing.T) {
 	handler := LogoutHandler()
-	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/logout", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	assert.Equal(t, w.Code, http.StatusFound)
@@ -197,7 +198,7 @@ func TestOIDCLoginHandler(t *testing.T) {
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"authorization_endpoint": "https://example.com/auth",
 				"token_endpoint":         "https://example.com/token",
 				"userinfo_endpoint":      "https://example.com/userinfo",
@@ -211,7 +212,7 @@ func TestOIDCLoginHandler(t *testing.T) {
 	handler, err := NewOIDCHandler(provider, secret, "http://localhost:3333")
 	assert.NilError(t, err)
 
-	req := httptest.NewRequest(http.MethodGet, "/auth/oidc/test/login?redirect=/my-channel", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/oidc/test/login?redirect=/my-channel", nil)
 	w := httptest.NewRecorder()
 	handler.LoginHandler().ServeHTTP(w, req)
 	assert.Equal(t, w.Code, http.StatusFound)
@@ -247,20 +248,20 @@ func TestOIDCCallbackHandler(t *testing.T) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration"):
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"authorization_endpoint": mockServer.URL + "/auth",
 				"token_endpoint":         mockServer.URL + "/token",
 				"userinfo_endpoint":      mockServer.URL + "/userinfo",
 			})
 		case strings.HasSuffix(r.URL.Path, "/token"):
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"access_token": "mock-access-token",
 				"token_type":   "Bearer",
 			})
 		case strings.HasSuffix(r.URL.Path, "/userinfo"):
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"sub":   "user123",
 				"email": "user@example.com",
 			})
@@ -285,7 +286,7 @@ func TestOIDCCallbackHandler(t *testing.T) {
 	state := "valid-state-value"
 	redirectTarget := "/my-channel"
 
-	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
 	req.AddCookie(&http.Cookie{
 		Name:     oidcStateCookieName,
 		Value:    state + "|" + redirectTarget,
@@ -319,7 +320,7 @@ func TestOIDCCallback_InvalidState(t *testing.T) {
 	mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"authorization_endpoint": mockServer.URL + "/auth",
 				"token_endpoint":         mockServer.URL + "/token",
 				"userinfo_endpoint":      mockServer.URL + "/userinfo",
@@ -340,7 +341,7 @@ func TestOIDCCallback_InvalidState(t *testing.T) {
 	handler, err := NewOIDCHandler(provider, secret, mockServer.URL)
 	assert.NilError(t, err)
 
-	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=code&state=wrong-state", mockServer.URL), nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=code&state=wrong-state", mockServer.URL), nil)
 	req.AddCookie(&http.Cookie{
 		Name:     oidcStateCookieName,
 		Value:    "expected-state|/",
@@ -375,7 +376,7 @@ func TestFullProtectedFlow(t *testing.T) {
 					encoded, _ := encodeSession(token, sessionSecret)
 					setSessionCookie(w, encoded)
 					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+					_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 					return
 				}
 			}
@@ -396,7 +397,7 @@ func TestFullProtectedFlow(t *testing.T) {
 	})
 
 	t.Run("AccessWithoutAuthRedirects", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		assert.Equal(t, w.Code, http.StatusFound)
@@ -407,7 +408,7 @@ func TestFullProtectedFlow(t *testing.T) {
 	var sessionCookie *http.Cookie
 	t.Run("LoginSucceeds", func(t *testing.T) {
 		body := `{"username":"testuser","password":"testpass"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/auth/login", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -423,7 +424,7 @@ func TestFullProtectedFlow(t *testing.T) {
 	})
 
 	t.Run("AccessWithCookieSucceeds", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.AddCookie(sessionCookie)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -433,7 +434,7 @@ func TestFullProtectedFlow(t *testing.T) {
 	})
 
 	t.Run("AccessNewWithCookieSucceeds", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/new", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/new", nil)
 		req.AddCookie(sessionCookie)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -443,7 +444,7 @@ func TestFullProtectedFlow(t *testing.T) {
 	})
 
 	t.Run("LogoutClearsSession", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/logout", nil)
 		req.AddCookie(sessionCookie)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -461,7 +462,7 @@ func TestFullProtectedFlow(t *testing.T) {
 	})
 
 	t.Run("AccessAfterLogoutRedirects", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.AddCookie(sessionCookie)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -480,8 +481,8 @@ func TestDeriveSessionSecret(t *testing.T) {
 }
 
 func TestGenerateRandomHex(t *testing.T) {
-	s1 := generateRandomHex(16)
-	s2 := generateRandomHex(16)
+	s1 := generateRandomHex()
+	s2 := generateRandomHex()
 	assert.Assert(t, s1 != "")
 	assert.Assert(t, s1 != s2)
 	assert.Equal(t, len(s1), 32)

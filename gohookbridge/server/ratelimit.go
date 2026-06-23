@@ -194,7 +194,7 @@ func banMiddleware(tracker *banTracker, rs *store.RaftStore) func(http.Handler) 
 			if tracker.isBanned(ip.String()) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
-				json.NewEncoder(w).Encode(map[string]string{
+				_ = json.NewEncoder(w).Encode(map[string]string{
 					"error": "IP address is banned due to suspicious activity",
 				})
 				return
@@ -222,7 +222,7 @@ func rateLimitMiddleware(limiter *rateLimiter, rs *store.RaftStore) func(http.Ha
 			if !limiter.allow(ip.String(), cfg.Server.RateLimitRequests, cfg.Server.RateLimitWindowSeconds) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
-				json.NewEncoder(w).Encode(map[string]string{
+				_ = json.NewEncoder(w).Encode(map[string]string{
 					"error": "rate limit exceeded",
 				})
 				return
@@ -280,9 +280,9 @@ func extractSignatureValue(r *http.Request) string {
 }
 
 func apiBansHandler(tracker *banTracker) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(tracker.listBans())
+		_ = json.NewEncoder(w).Encode(tracker.listBans())
 	}
 }
 
@@ -292,13 +292,13 @@ func apiUnbanHandler(tracker *banTracker) http.HandlerFunc {
 		if ip == "" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "IP address required"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "IP address required"})
 			return
 		}
 		if net.ParseIP(ip) == nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("invalid IP address %q", ip)})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("invalid IP address %q", ip)})
 			return
 		}
 		tracker.unban(ip)

@@ -10,30 +10,30 @@ import (
 )
 
 type BootstrapConfig struct {
-	Raft     *BootstrapRaft      `yaml:"raft,omitempty" json:"raft,omitempty"`
-	Global   *GlobalConfig       `yaml:"global,omitempty" json:"global,omitempty"`
-	Users    []BootstrapUser     `yaml:"users,omitempty" json:"users,omitempty"`
-	Channels []BootstrapChannel  `yaml:"channels,omitempty" json:"channels,omitempty"`
+	Raft     *BootstrapRaft     `json:"raft,omitempty"     yaml:"raft,omitempty"`
+	Global   *GlobalConfig      `json:"global,omitempty"   yaml:"global,omitempty"`
+	Users    []BootstrapUser    `json:"users,omitempty"    yaml:"users,omitempty"`
+	Channels []BootstrapChannel `json:"channels,omitempty" yaml:"channels,omitempty"`
 }
 
 type BootstrapRaft struct {
-	NodeID string   `yaml:"node_id,omitempty" json:"node_id,omitempty"`
-	Peers  []string `yaml:"peers,omitempty" json:"peers,omitempty"`
+	NodeID string   `json:"node_id,omitempty" yaml:"node_id,omitempty"`
+	Peers  []string `json:"peers,omitempty"   yaml:"peers,omitempty"`
 }
 
 type BootstrapUser struct {
-	Username string   `yaml:"username" json:"username"`
-	Password string   `yaml:"password" json:"password"`
-	Roles    []string `yaml:"roles" json:"roles"`
-	Channels []string `yaml:"channels" json:"channels"`
+	Username string   `json:"username" yaml:"username"`
+	Password string   `json:"password" yaml:"password"`
+	Roles    []string `json:"roles"    yaml:"roles"`
+	Channels []string `json:"channels" yaml:"channels"`
 }
 
 type BootstrapChannel struct {
-	ID                string   `yaml:"id" json:"id"`
-	Description       string   `yaml:"description,omitempty" json:"description,omitempty"`
-	WebhookSecret     string   `yaml:"webhook_secret,omitempty" json:"webhook_secret,omitempty"`
-	WebhookSignatures []string `yaml:"webhook_signatures,omitempty" json:"webhook_signatures,omitempty"`
-	AllowedIPs        []string `yaml:"allowed_ips,omitempty" json:"allowed_ips,omitempty"`
+	ID                string   `json:"id"                           yaml:"id"`
+	Description       string   `json:"description,omitempty"        yaml:"description,omitempty"`
+	WebhookSecret     string   `json:"webhook_secret,omitempty"     yaml:"webhook_secret,omitempty"`
+	WebhookSignatures []string `json:"webhook_signatures,omitempty" yaml:"webhook_signatures,omitempty"`
+	AllowedIPs        []string `json:"allowed_ips,omitempty"        yaml:"allowed_ips,omitempty"`
 }
 
 func LoadBootstrap(path string) (*BootstrapConfig, error) {
@@ -69,12 +69,7 @@ func (rs *RaftStore) ApplyBootstrap(cfg *BootstrapConfig) error {
 		payload.Global = cfg.Global
 	}
 	for _, u := range cfg.Users {
-		payload.Users = append(payload.Users, fsmBootstrapUser{
-			Username: u.Username,
-			Password: u.Password,
-			Roles:    u.Roles,
-			Channels: u.Channels,
-		})
+		payload.Users = append(payload.Users, fsmBootstrapUser(u))
 	}
 	for _, p := range cfg.Channels {
 		ch := &Channel{
@@ -110,8 +105,8 @@ func IsIPAllowed(allowedIPs []string, clientIP string) (bool, error) {
 }
 
 type ipList struct {
-	cidrs    []string
-	exact    []string
+	cidrs []string
+	exact []string
 }
 
 func parseIPList(ranges []string) *ipList {
@@ -140,6 +135,7 @@ func (l *ipList) contains(ip string) bool {
 	return false
 }
 
+//nolint:unparam,revive
 func matchCIDR(cidr, ip string) bool {
 	// Simple CIDR matching
 	parts := strings.Split(cidr, "/")
@@ -154,8 +150,8 @@ func matchCIDR(cidr, ip string) bool {
 // DefaultRoles returns the predefined roles map.
 func GetDefaultRoles() map[string][]string {
 	return map[string][]string{
-		"admin":           {"*"},
-		"channel_admin":   {"channel:write", "channel:read"},
-		"channel_viewer":  {"channel:read"},
+		"admin":          {"*"},
+		"channel_admin":  {"channel:write", "channel:read"},
+		"channel_viewer": {"channel:read"},
 	}
 }

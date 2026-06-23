@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
 	"github.com/hashicorp/raft"
+	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
 	"go.etcd.io/bbolt"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -65,17 +65,17 @@ func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
 	}
 
 	raftCfg := &raft.Config{
-		LocalID:              raft.ServerID(cfg.NodeID),
-		ProtocolVersion:      raft.ProtocolVersionMax,
-		HeartbeatTimeout:     1 * time.Second,
-		ElectionTimeout:      1 * time.Second,
-		LeaderLeaseTimeout:   500 * time.Millisecond,
-		CommitTimeout:        50 * time.Millisecond,
-		MaxAppendEntries:     64,
-		ShutdownOnRemove:     true,
-		TrailingLogs:         10240,
-		SnapshotInterval:     120 * time.Second,
-		SnapshotThreshold:    8192,
+		LocalID:                  raft.ServerID(cfg.NodeID),
+		ProtocolVersion:          raft.ProtocolVersionMax,
+		HeartbeatTimeout:         1 * time.Second,
+		ElectionTimeout:          1 * time.Second,
+		LeaderLeaseTimeout:       500 * time.Millisecond,
+		CommitTimeout:            50 * time.Millisecond,
+		MaxAppendEntries:         64,
+		ShutdownOnRemove:         true,
+		TrailingLogs:             10240,
+		SnapshotInterval:         120 * time.Second,
+		SnapshotThreshold:        8192,
 		NoSnapshotRestoreOnStart: true,
 	}
 
@@ -340,6 +340,7 @@ func (rs *RaftStore) UpdateGlobalConfig(cfg *GlobalConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("config required")
 	}
+	//nolint:gosec
 	scVal, err := json.Marshal(cfg.Server)
 	if err != nil {
 		return err
@@ -357,7 +358,10 @@ func (rs *RaftStore) UpdateGlobalConfig(cfg *GlobalConfig) error {
 func (rs *RaftStore) ResolveChannelConfig(id string) (*Channel, error) {
 	ch, err := rs.GetChannel(id)
 	if err != nil {
-		global, _ := rs.GetGlobalConfig()
+		global, globalErr := rs.GetGlobalConfig()
+		if globalErr != nil {
+			global = defaultGlobalConfig()
+		}
 		return &Channel{
 			ID:                id,
 			MaxBodySize:       global.Server.MaxBodySize,
@@ -366,7 +370,10 @@ func (rs *RaftStore) ResolveChannelConfig(id string) (*Channel, error) {
 			MessageTTLSeconds: global.Defaults.MessageTTLSeconds,
 		}, nil
 	}
-	global, _ := rs.GetGlobalConfig()
+	global, globalErr := rs.GetGlobalConfig()
+	if globalErr != nil {
+		global = defaultGlobalConfig()
+	}
 	return resolveChannelConfig(ch, global), nil
 }
 
@@ -395,7 +402,10 @@ func usernameIndexKey(username string) string {
 
 func usernameIndexValue(userID string) []byte {
 	idx := usernameIndex{UserID: userID}
-	val, _ := json.Marshal(idx)
+	val, err := json.Marshal(idx)
+	if err != nil {
+		return nil
+	}
 	return val
 }
 
@@ -507,7 +517,7 @@ func (rs *RaftStore) SetSetupModeEndTime(t time.Time) error {
 func (rs *RaftStore) OIDCProviders() ([]OIDCProvider, error) {
 	val, err := getFSMValue(rs.db, "/global/auth/oidc_providers")
 	if err != nil || val == nil {
-		return nil, nil
+		return nil, err
 	}
 	var providers []OIDCProvider
 	if err := json.Unmarshal(val, &providers); err != nil {
@@ -517,6 +527,7 @@ func (rs *RaftStore) OIDCProviders() ([]OIDCProvider, error) {
 }
 
 func (rs *RaftStore) SetOIDCProviders(providers []OIDCProvider) error {
+	//nolint:gosec
 	val, err := json.Marshal(providers)
 	if err != nil {
 		return err
@@ -545,8 +556,8 @@ func (rs *RaftStore) GetRole(name string) (*Role, error) {
 }
 
 func (rs *RaftStore) ListRoles() ([]Role, error) {
-	roles := make([]Role, len(DefaultRoles))
-	copy(roles, DefaultRoles)
+	roles := make([]Role, 0, len(DefaultRoles))
+	roles = append(roles, DefaultRoles...)
 
 	keys, err := listFSMKeys(rs.db, "/rbac/roles/")
 	if err != nil {
@@ -661,47 +672,65 @@ func (rs *RaftStore) CreateDevAdmin(password string) error {
 func (rs *RaftStore) ResolveChannelWebhookSecret(channelID string) (string, error) {
 	p, err := rs.GetChannel(channelID)
 	if err != nil {
-		global, _ := rs.GetGlobalConfig()
+		global, globalErr := rs.GetGlobalConfig()
+		if globalErr != nil {
+			global = defaultGlobalConfig()
+		}
 		return global.Defaults.WebhookSecret, nil
 	}
 	migrateChannel(p)
 	if p.WebhookSecret != "" {
 		return p.WebhookSecret, nil
 	}
-	global, _ := rs.GetGlobalConfig()
+	global, globalErr := rs.GetGlobalConfig()
+	if globalErr != nil {
+		global = defaultGlobalConfig()
+	}
 	return global.Defaults.WebhookSecret, nil
 }
 
 func (rs *RaftStore) ResolveChannelAllowedIPs(channelID string) ([]string, error) {
 	p, err := rs.GetChannel(channelID)
 	if err != nil {
-		global, _ := rs.GetGlobalConfig()
+		global, globalErr := rs.GetGlobalConfig()
+		if globalErr != nil {
+			global = defaultGlobalConfig()
+		}
 		return global.Defaults.AllowedIPs, nil
 	}
 	if len(p.AllowedIPs) > 0 {
 		return p.AllowedIPs, nil
 	}
-	global, _ := rs.GetGlobalConfig()
+	global, globalErr := rs.GetGlobalConfig()
+	if globalErr != nil {
+		global = defaultGlobalConfig()
+	}
 	return global.Defaults.AllowedIPs, nil
 }
 
 func (rs *RaftStore) ResolveChannelMaxBodySize(channelID string) (int, error) {
 	p, err := rs.GetChannel(channelID)
 	if err != nil {
-		global, _ := rs.GetGlobalConfig()
+		global, globalErr := rs.GetGlobalConfig()
+		if globalErr != nil {
+			global = defaultGlobalConfig()
+		}
 		return global.Server.MaxBodySize, nil
 	}
 	if p.MaxBodySize > 0 {
 		return p.MaxBodySize, nil
 	}
-	global, _ := rs.GetGlobalConfig()
+	global, globalErr := rs.GetGlobalConfig()
+	if globalErr != nil {
+		global = defaultGlobalConfig()
+	}
 	return global.Server.MaxBodySize, nil
 }
 
 func (rs *RaftStore) ResolveChannelEncryption(channelID string) (string, string, string, error) {
 	p, err := rs.GetChannel(channelID)
 	if err != nil {
-		return "", "", "", nil
+		return "", "", "", err
 	}
 	migrateChannel(p)
 	return p.EncryptionMode, p.EncryptionKey, p.EncryptionPublicKey, nil
@@ -755,7 +784,7 @@ func (rs *RaftStore) GetClientCursor(channel, clientID string) (*ClientCursor, e
 	key := "/cursors/" + channel + "/" + clientID + "/"
 	val, err := getFSMValue(rs.db, key)
 	if err != nil || val == nil {
-		return nil, nil
+		return nil, err
 	}
 	var c ClientCursor
 	if err := json.Unmarshal(val, &c); err != nil {

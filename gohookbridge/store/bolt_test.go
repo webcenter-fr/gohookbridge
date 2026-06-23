@@ -211,13 +211,13 @@ func TestFSMDataAccess(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, 2, len(keys))
 
-	err = iterateFSM(db, func(k, v []byte) error {
+	err = iterateFSM(db, func(_, _ []byte) error {
 		return nil
 	})
 	assert.NilError(t, err)
 
 	var count int
-	err = iterateFSM(db, func(k, v []byte) error {
+	err = iterateFSM(db, func(_, _ []byte) error {
 		count++
 		return nil
 	})
@@ -233,7 +233,7 @@ func TestStoreSnapshot(t *testing.T) {
 	err = setFSMValue(db, "/key2", []byte("val2"))
 	assert.NilError(t, err)
 
-	snapshot := &StoreSnapshot{db: db}
+	snapshot := &Snapshot{db: db}
 
 	var buf bytes.Buffer
 	sink := &mockSnapshotSink{Buffer: &buf}
@@ -305,7 +305,6 @@ func TestDeleteRangeNonExistent(t *testing.T) {
 
 func TestStoreSnapshotRelease(t *testing.T) {
 	db := newTestBoltDB(t)
-	snapshot := &StoreSnapshot{db: db}
+	snapshot := &Snapshot{db: db}
 	snapshot.Release()
 }
-

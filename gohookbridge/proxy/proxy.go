@@ -109,7 +109,7 @@ func startProxy(c *cli.Context) error {
 			}
 		}
 		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
+		_, _ = io.Copy(w, resp.Body)
 	})
 
 	srv := &http.Server{

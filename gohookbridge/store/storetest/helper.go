@@ -17,7 +17,7 @@ func NewRaftStore(t *testing.T) *store.RaftStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { rs.Shutdown() })
+	t.Cleanup(func() { _ = rs.Shutdown() })
 	return rs
 }
 
@@ -36,7 +36,7 @@ func NewRaftStoreWithConfig(t *testing.T, cfg store.RaftConfig) *store.RaftStore
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { rs.Shutdown() })
+	t.Cleanup(func() { _ = rs.Shutdown() })
 	return rs
 }
 

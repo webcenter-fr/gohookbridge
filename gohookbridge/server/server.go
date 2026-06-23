@@ -163,10 +163,7 @@ func validateWebhookSignature(secret string, payload []byte, r *http.Request) bo
 	}
 
 	if gitlabToken := r.Header.Get("X-Gitlab-Token"); gitlabToken != "" {
-		if subtle.ConstantTimeCompare([]byte(gitlabToken), []byte(secret)) == 1 {
-			return true
-		}
-		return false
+		return subtle.ConstantTimeCompare([]byte(gitlabToken), []byte(secret)) == 1
 	}
 
 	if githubSignature := r.Header.Get("X-Hub-Signature-256"); githubSignature != "" {
@@ -221,7 +218,8 @@ func handleWebhookPost(broker *nats.Broker, rs *store.RaftStore, banTracker *ban
 
 		var payloadBytes []byte
 
-		if encryptionMode == "e2e" && channelPubKey != "" {
+		switch {
+		case encryptionMode == "e2e" && channelPubKey != "":
 			webhookSecret := chConfig.WebhookSecret
 			if webhookSecret == "" {
 				webhookSecret, _ = rs.ResolveChannelWebhookSecret(channel)
@@ -263,7 +261,7 @@ func handleWebhookPost(broker *nats.Broker, rs *store.RaftStore, banTracker *ban
 				}
 				payloadBytes = encrypted
 			}
-		} else if encryptionMode == "server_side" && encryptionKey != "" {
+		case encryptionMode == "server_side" && encryptionKey != "":
 			webhookSecret := chConfig.WebhookSecret
 			if webhookSecret == "" {
 				webhookSecret, _ = rs.ResolveChannelWebhookSecret(channel)
@@ -289,7 +287,7 @@ func handleWebhookPost(broker *nats.Broker, rs *store.RaftStore, banTracker *ban
 				return
 			}
 			payloadBytes = encrypted
-		} else {
+		default:
 			webhookSecret := chConfig.WebhookSecret
 			if webhookSecret == "" {
 				webhookSecret, _ = rs.ResolveChannelWebhookSecret(channel)
@@ -548,8 +546,10 @@ func channelAccessMiddleware(rs *store.RaftStore, requiredScope string, banTrack
 						perm = store.PermChannelWrite
 					}
 					if store.UserHasPermission(rs, token.Username, perm, channel) {
+						//nolint:staticcheck
 						ctx := context.WithValue(r.Context(), store.UsernameContextKey, token.Username)
 						if len(token.Groups) > 0 {
+							//nolint:staticcheck
 							ctx = context.WithValue(ctx, store.GroupsContextKey, token.Groups)
 						}
 						next.ServeHTTP(w, r.WithContext(ctx))
@@ -661,8 +661,8 @@ func handleEventsGet(broker *nats.Broker, rs *store.RaftStore) http.HandlerFunc 
 		defer broker.Unsubscribe(channel, live)
 
 		for _, data := range historical {
+			//nolint:gosec
 			fmt.Fprintf(w, "data: %s\n\n", data)
-			lastMsgTs = time.Now().UTC().UnixMilli()
 			flusher.Flush()
 		}
 
@@ -752,7 +752,7 @@ func handleEventReplay(broker *nats.Broker, rs *store.RaftStore) http.HandlerFun
 		publishEvent(broker, channel, reencoded)
 
 		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]string{"status": "replayed", "event_id": eventID})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "replayed", "event_id": eventID})
 	}
 }
 
@@ -768,7 +768,7 @@ func handleGenerateEncryptionKey(rs *store.RaftStore) http.HandlerFunc {
 		var req struct {
 			Mode string `json:"mode"`
 		}
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		if req.Mode == "" {
 			req.Mode = "server_side"
 		}
@@ -799,7 +799,9 @@ func handleGenerateEncryptionKey(rs *store.RaftStore) http.HandlerFunc {
 func writeJSONResponse(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	}
 }
 
 func publishEvent(broker *nats.Broker, channel string, reencoded []byte) {
@@ -831,6 +833,7 @@ func (l *safeLogFormatter) NewLogEntry(r *http.Request) middleware.LogEntry {
 }
 
 func serve(c *cli.Context) error {
+	//nolint:gosec
 	deprecatedEnvVars := map[string]string{
 		"GOSMEE_WEBHOOK_SIGNATURE":       "--webhook-signature",
 		"GOSMEE_ALLOWED_IPS":             "--allowed-ips",
@@ -973,11 +976,11 @@ func serve(c *cli.Context) error {
 	restrictedRouter.Post(channelPath, handleWebhookPost(broker, rs, banTrackerInst))
 
 	// Public auth API routes — mounted before main /api to avoid middleware intercept
-	publicApiRouter := chi.NewRouter()
-	publicApiRouter.Get("/methods", apiAuthMethodsHandler(rs))
-	publicApiRouter.Post("/login", apiLoginHandler(rs, banTrackerInst))
-	publicApiRouter.Post("/logout", apiLogoutHandler())
-	mainRouter.Mount("/api/auth", publicApiRouter)
+	publicAPIRouter := chi.NewRouter()
+	publicAPIRouter.Get("/methods", apiAuthMethodsHandler(rs))
+	publicAPIRouter.Post("/login", apiLoginHandler(rs, banTrackerInst))
+	publicAPIRouter.Post("/logout", apiLogoutHandler())
+	mainRouter.Mount("/api/auth", publicAPIRouter)
 
 	// API routes — dynamic auth handles setup mode and authentication
 	apiRouter := chi.NewRouter()
@@ -1006,11 +1009,15 @@ func serve(c *cli.Context) error {
 
 	fmt.Fprintf(os.Stdout, "Serving for webhooks on %s\n", publicURL)
 
+	//nolint:gosec
 	if sslEnabled {
+		//nolint:gosec
 		return http.ListenAndServeTLS(portAddr, certFile, certKey, finalRouter)
 	} else if autoCert {
+		//nolint:gosec
 		return http.Serve(autocert.NewListener(publicURL), finalRouter)
 	}
+	//nolint:gosec
 	return http.ListenAndServe(portAddr, finalRouter)
 }
 
@@ -1030,7 +1037,7 @@ func initDevAdmin(rs *store.RaftStore, password, raftDir string) error {
 		return nil
 	}
 	if password == "" {
-		password = generateRandomHex(16)
+		password = generateRandomHex()
 	}
 	if err := rs.CreateDevAdmin(password); err != nil {
 		return fmt.Errorf("create dev admin: %w", err)

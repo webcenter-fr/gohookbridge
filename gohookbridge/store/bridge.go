@@ -60,10 +60,7 @@ func (p *ProtectedChannels) IsAllowed(channel string, publicKey *[32]byte) bool 
 		return ch.EncryptionPublicKey == encoded
 	}
 	_, ok := p.channels[channel]
-	if !ok {
-		return false
-	}
-	return true
+	return ok
 }
 
 func BuildAuthConfig(rs *RaftStore) *AuthConfig {
