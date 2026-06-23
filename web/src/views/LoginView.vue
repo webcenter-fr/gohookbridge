@@ -3,7 +3,7 @@
     <n-card style="width: 400px;" :bordered="true">
       <template #header>
         <div style="text-align: center;">
-          <n-h2 style="margin: 0;">gohookbridge</n-h2>
+          <img src="/logo.svg" alt="gohookbridge" style="height: 36px; margin-bottom: 8px;" />
           <n-text depth="3">Sign in to continue</n-text>
         </div>
       </template>
@@ -46,7 +46,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { NCard, NButton, NInput, NForm, NFormItem, NDivider, NText, NH2, NIcon, NSpace, NAlert } from 'naive-ui'
+import { NCard, NButton, NInput, NForm, NFormItem, NDivider, NText, NIcon, NSpace, NAlert } from 'naive-ui'
 import { useAuthStore } from '../stores/auth'
 import { api } from '../api/client'
 

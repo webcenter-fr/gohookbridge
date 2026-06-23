@@ -21,7 +21,6 @@ export interface Channel {
   encryption_mode?: string
   encryption_key?: string
   encryption_public_key?: string
-  encryption_private_key?: string
   encryption_public_keys?: string[]
   access_mode?: string
   access_tokens?: { id: string; name: string; scope: string; created_at: string }[]
@@ -34,6 +33,13 @@ export interface GlobalConfig {
     cors_origin: string
     footer: string
     session_secret: string
+    rate_limit_enabled: boolean
+    rate_limit_requests: number
+    rate_limit_window_seconds: number
+    ban_enabled: boolean
+    ban_max_unique_failures: number
+    ban_window_seconds: number
+    ban_duration_seconds: number
   }
   defaults: {
     webhook_secret: string
@@ -84,6 +90,12 @@ export interface ChannelRoleMapping {
   type: string
   subject: string
   role: string
+}
+
+export interface BanEntry {
+  ip: string
+  until: string
+  unique_failures: number
 }
 
 class ApiClient {
@@ -236,15 +248,11 @@ class ApiClient {
     encryption_mode: string
     encryption_key?: string
     encryption_public_key?: string
-    encryption_private_key?: string
-    key_file?: { public_key: string; private_key: string }
   }> {
     return this.request(`/channels/${channelId}/generate-encryption-key`, { method: 'POST', body: JSON.stringify({ mode }) }) as unknown as Promise<{
       encryption_mode: string
       encryption_key?: string
       encryption_public_key?: string
-      encryption_private_key?: string
-      key_file?: { public_key: string; private_key: string }
     }>
   }
 
@@ -266,6 +274,14 @@ class ApiClient {
 
   async updateAccessMode(channelId: string, mode: string): Promise<{ access_mode: string }> {
     return this.request(`/channels/${channelId}/access-mode`, { method: 'PUT', body: JSON.stringify({ access_mode: mode }) })
+  }
+
+  async listBans(): Promise<BanEntry[]> {
+    return this.request<BanEntry[]>('/bans')
+  }
+
+  async unbanIP(ip: string): Promise<void> {
+    return this.request<void>(`/bans/${ip}`, { method: 'DELETE' })
   }
 }
 

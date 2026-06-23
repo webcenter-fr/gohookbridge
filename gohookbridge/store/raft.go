@@ -698,13 +698,13 @@ func (rs *RaftStore) ResolveChannelMaxBodySize(channelID string) (int, error) {
 	return global.Server.MaxBodySize, nil
 }
 
-func (rs *RaftStore) ResolveChannelEncryption(channelID string) (string, string, string, string, error) {
+func (rs *RaftStore) ResolveChannelEncryption(channelID string) (string, string, string, error) {
 	p, err := rs.GetChannel(channelID)
 	if err != nil {
-		return "", "", "", "", nil
+		return "", "", "", nil
 	}
 	migrateChannel(p)
-	return p.EncryptionMode, p.EncryptionKey, p.EncryptionPublicKey, p.EncryptionPrivateKey, nil
+	return p.EncryptionMode, p.EncryptionKey, p.EncryptionPublicKey, nil
 }
 
 func (rs *RaftStore) SessionSecret() string {
@@ -794,7 +794,7 @@ func (rs *RaftStore) ListRoleMappings() ([]RoleMapping, error) {
 	if err != nil {
 		return nil, err
 	}
-	var mappings []RoleMapping
+	mappings := make([]RoleMapping, 0)
 	for _, key := range keys {
 		parts := strings.Split(strings.TrimPrefix(key, "/rbac/mappings/"), "/")
 		if len(parts) < 1 || parts[0] == "" {

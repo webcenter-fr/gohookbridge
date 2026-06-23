@@ -211,6 +211,15 @@ func (h *apiHandler) getGlobalConfig(w http.ResponseWriter, r *http.Request) {
 			CORSOrigin:    cfg.Server.CORSOrigin,
 			Footer:        cfg.Server.Footer,
 			SessionSecret: "<redacted>",
+
+			RateLimitEnabled:       cfg.Server.RateLimitEnabled,
+			RateLimitRequests:      cfg.Server.RateLimitRequests,
+			RateLimitWindowSeconds: cfg.Server.RateLimitWindowSeconds,
+
+			BanEnabled:           cfg.Server.BanEnabled,
+			BanMaxUniqueFailures: cfg.Server.BanMaxUniqueFailures,
+			BanWindowSeconds:     cfg.Server.BanWindowSeconds,
+			BanDurationSeconds:   cfg.Server.BanDurationSeconds,
 		},
 		Defaults: cfg.Defaults,
 	}
@@ -730,6 +739,9 @@ func (h *apiHandler) updateAllOIDCProviders(w http.ResponseWriter, r *http.Reque
 	if err := json.NewDecoder(r.Body).Decode(&providers); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
+	}
+	if providers == nil {
+		providers = []OIDCProvider{}
 	}
 	for i := range providers {
 		if providers[i].GroupsClaim == "" {

@@ -2,10 +2,8 @@
   <n-layout position="absolute" style="height: 100vh">
     <n-layout-header bordered style="padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px;">
       <div style="display: flex; align-items: center; gap: 16px;">
-        <router-link to="/" style="text-decoration: none; color: inherit;">
-          <n-h4 style="margin: 0;">
-            <n-text type="info">gohookbridge</n-text>
-          </n-h4>
+        <router-link to="/" style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 8px;">
+          <img src="/logo.svg" alt="gohookbridge" style="height: 28px; width: 210px; flex-shrink: 0;" />
         </router-link>
       </div>
       <div style="display: flex; align-items: center; gap: 12px;">
@@ -27,7 +25,7 @@
 <script setup lang="ts">
 import { computed, h } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { NLayout, NLayoutHeader, NLayoutSider, NButton, NMenu, NTag, NH4, NText } from 'naive-ui'
+import { NLayout, NLayoutHeader, NLayoutSider, NButton, NMenu, NTag } from 'naive-ui'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
@@ -53,6 +51,7 @@ const menuOptions = computed(() => {
       { key: 'admin-users', label: 'Users', icon: () => h('span', '👥') },
       { key: 'admin-rbac', label: 'RBAC', icon: () => h('span', '🔐') },
       { key: 'admin-oidc', label: 'OIDC', icon: () => h('span', '🔗') },
+      { key: 'admin-bans', label: 'Banned IPs', icon: () => h('span', '🚫') },
     )
   }
   return items

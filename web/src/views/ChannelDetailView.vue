@@ -84,12 +84,6 @@
                   <n-input :value="form.encryption_public_key" readonly />
                   <n-button @click="copyText(form.encryption_public_key!)">Copy</n-button>
                 </n-input-group>
-                <n-text depth="3">Private Key:</n-text>
-                <n-input-group>
-                  <n-input :value="form.encryption_private_key" readonly type="password" show-password-on="click" />
-                  <n-button @click="copyText(form.encryption_private_key!)">Copy</n-button>
-                </n-input-group>
-                <n-button @click="downloadKeyFile" secondary>Download Key File</n-button>
               </template>
               <n-text v-else depth="3">No keypair generated yet.</n-text>
               <n-text depth="3" style="margin-top: 4px;">One shared keypair per channel. The public key is used by producers; the private key is distributed to clients.</n-text>
@@ -168,9 +162,7 @@
               </n-space>
             </template>
             <n-h5 style="margin-top: 24px;">Client</n-h5>
-            <n-button v-if="form.encryption_private_key" @click="downloadKeyFile" secondary>Download Key File</n-button>
-            <n-text v-else depth="3">Generate a keypair in the Settings tab first.</n-text>
-            <template v-if="form.encryption_private_key">
+            <template v-if="form.encryption_public_key">
               <n-text depth="3" style="margin-top: 8px;">Client command:</n-text>
               <n-code :code="clientCommandE2E" language="bash" />
               <n-space justify="end" style="margin-top: 4px;">
@@ -312,6 +304,7 @@ import { useEventsStore } from '../stores/events'
 import EventFeed from '../components/EventFeed.vue'
 import { useMessage } from 'naive-ui'
 import { bodySizeToBytes, bytesToBodySizeUnit, bodySizeUnitOptions, type BodySizeUnit } from '../utils/units'
+import { generateKeyPair } from '../utils/crypto'
 
 const route = useRoute()
 const router = useRouter()
@@ -332,7 +325,6 @@ const form = reactive({
   encryption_mode: '',
   encryption_key: '',
   encryption_public_key: '',
-  encryption_private_key: '',
   access_mode: 'public',
 })
 
@@ -712,7 +704,6 @@ onMounted(async () => {
     form.encryption_mode = channel.value.encryption_mode || ''
     form.encryption_key = channel.value.encryption_key || ''
     form.encryption_public_key = channel.value.encryption_public_key || ''
-    form.encryption_private_key = channel.value.encryption_private_key || ''
     form.access_mode = channel.value.access_mode || 'public'
 
     await Promise.all([loadAccessTokens(), loadAcl()])
@@ -752,7 +743,6 @@ async function handleSave() {
       encryption_mode: form.encryption_mode || undefined,
       encryption_key: form.encryption_key || undefined,
       encryption_public_key: form.encryption_mode === 'e2e' ? form.encryption_public_key || undefined : undefined,
-      encryption_private_key: form.encryption_mode === 'e2e' ? form.encryption_private_key || undefined : undefined,
     })
     message.success('Saved')
   } catch (e: any) {
@@ -786,40 +776,20 @@ async function handleGenerateEncryptionKey(mode: string) {
 async function handleGenerateKeypair() {
   generatingKey.value = true
   try {
-    const result = await api.generateEncryptionKey(channelId, 'e2e')
-    form.encryption_mode = result.encryption_mode || 'e2e'
-    if (result.encryption_public_key) {
-      form.encryption_public_key = result.encryption_public_key
-    }
-    if (result.encryption_private_key) {
-      form.encryption_private_key = result.encryption_private_key
-    }
-    if (result.key_file) {
-      downloadBlob(result.key_file)
-    }
+    const kp = generateKeyPair()
+    form.encryption_mode = 'e2e'
+    form.encryption_public_key = kp.publicKey
+    await api.updateChannel(channelId, {
+      encryption_mode: 'e2e',
+      encryption_public_key: kp.publicKey,
+    })
+    downloadBlob(kp.keyFile)
     message.success('Keypair generated')
   } catch (e: any) {
     message.error(e.message || 'Failed to generate keypair')
   } finally {
     generatingKey.value = false
   }
-}
-
-function downloadKeyFile() {
-  if (form.encryption_public_key && form.encryption_private_key) {
-    const keyFile = {
-      public_key: rawURLToStd(form.encryption_public_key),
-      private_key: form.encryption_private_key,
-    }
-    downloadBlob(keyFile)
-  }
-}
-
-function rawURLToStd(rawURL: string): string {
-  const raw = rawURL.replace(/-/g, '+').replace(/_/g, '/')
-  const padding = (4 - (raw.length % 4)) % 4
-  const std = raw + '='.repeat(padding)
-  return std
 }
 
 function downloadBlob(keyFile: { public_key: string; private_key: string }) {

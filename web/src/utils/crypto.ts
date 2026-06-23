@@ -1,5 +1,5 @@
 import nacl from 'tweetnacl'
-import { decodeBase64, encodeUTF8 } from 'tweetnacl-util'
+import { decodeBase64, encodeBase64, encodeUTF8 } from 'tweetnacl-util'
 
 export interface EncryptedEnvelope {
   encrypted: boolean
@@ -46,4 +46,33 @@ export function decryptE2E(data: string | Record<string, unknown>, privateKeyBas
   }
 
   return encodeUTF8(decrypted)
+}
+
+export interface KeyPairResult {
+  publicKey: string
+  publicKeyStd: string
+  privateKey: string
+  keyFile: {
+    public_key: string
+    private_key: string
+  }
+}
+
+export function generateKeyPair(): KeyPairResult {
+  const kp = nacl.box.keyPair()
+
+  const publicKeyStd = encodeBase64(kp.publicKey)
+  const privateKeyStd = encodeBase64(kp.secretKey)
+
+  const publicKeyWire = publicKeyStd.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+
+  return {
+    publicKey: publicKeyWire,
+    publicKeyStd,
+    privateKey: privateKeyStd,
+    keyFile: {
+      public_key: publicKeyStd,
+      private_key: privateKeyStd,
+    },
+  }
 }

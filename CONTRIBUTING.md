@@ -19,6 +19,7 @@
 │   │   ├── server.go           # HTTP server, SSE, webhook handlers
 │   │   ├── auth.go             # Session + RBAC authentication
 │   │   ├── auth_oidc.go        # OIDC authentication
+│   │   ├── ratelimit.go        # IP rate limiter + ban tracker + middlewares
 │   │   ├── migrate.go          # Config migration helper
 │   │   └── templates/          # Server-specific embedded templates
 │   ├── client/                 # Client sub-package
@@ -178,6 +179,7 @@ curl -X POST "$CHANNEL" \
 - Use `gotest.tools/v3/assert` for test assertions (already used across the codebase).
 - Name test helpers with the `t.Helper()` call at the top.
 - Avoid package-level mutable state and `init()` functions. Configuration should be passed explicitly.
+- **JSON API responses must return empty slices (`[]`) instead of `null`.** When a function returns a slice that will be JSON-encoded, initialize it with `make([]T, 0)` or `[]T{}` rather than `var s []T` (which produces `null` when nil). Go's `encoding/json` encodes nil slices as `null`, causing frontend `TypeError: Cannot read properties of null` errors when templates iterate over the response. Apply the same nil-to-empty conversion at the call site before `writeJSON`/`json.Encode` when consuming a slice from external code.
 
 ### Package organization
 
@@ -196,6 +198,16 @@ Flags are defined in `gohookbridge/flags.go` and shared between the `server` and
 ### Adding a new HTTP route
 
 The server router is assembled in `gohookbridge/server/server.go`. Add new routes there and implement handlers in the same package or extract them into focused files (e.g., `gohookbridge/server/auth_oidc.go` for OIDC-related handlers).
+
+### Rate limiting and ban patterns
+
+`gohookbridge/server/ratelimit.go` contains three components:
+
+- **`rateLimiter`** — Sliding window counter per IP (`map[string][]time.Time`). Exposes `allow(ip, maxRequests, windowSeconds) bool`. Used by `rateLimitMiddleware`.
+- **`banTracker`** — Credential failure counter with deduplication per IP. Tracks unique credential fingerprints (SHA-256 hashes) to distinguish misconfiguration from attacks. Exposes `recordFailure(ip, fingerprint)`, `banIfSuspicious(ip, maxUnique, banDuration)`, `isBanned(ip)`, `listBans()`, and `unban(ip)`.
+- **Middlewares** — `banMiddleware` (403 if banned) and `rateLimitMiddleware` (429 if over limit). Both use `getRealIP()` for proxy-aware IP resolution.
+
+The middlewares are wired into both `mainRouter` and `restrictedRouter` via chi's `Use()` method in `serve()`.
 
 ### Channel access token authentication
 

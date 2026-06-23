@@ -43,6 +43,8 @@ internet → [gohookbridge server] → [/login] → [API /admin]
 | Unauthorized config mutations | RBAC permission checks (global:write, users:write, rbac:write, project:write) |
 | NATS cluster eavesdropping / unauthorized connection | Firewall NATS cluster port (`6222`) to peer nodes only; use secure overlay network |
 | NATS ring buffer memory exhaustion | Configure `--nats-buffer-size` and `--nats-buffer-ttl` to limit memory consumption |
+| Brute force / credential stuffing across endpoints | IP ban system (automatic banning after N unique credential failures) |
+| DoS via excessive requests from single IP | IP rate limiting (configurable requests per time window per IP) |
 
 ---
 
@@ -60,6 +62,8 @@ If you do nothing else, apply these controls before deploying gohookbridge in pr
 - [ ] Set replay tokens per-project or globally via `bootstrap.yaml` or Admin UI
 - [ ] Configure CORS origin globally via `bootstrap.yaml` or Admin UI
 - [ ] If using `--exec`, validate and sanitize all payload fields in scripts before passing them to shell commands
+- [ ] Enable IP rate limiting via Admin UI (`rate_limit_enabled: true`) to prevent DoS from single IPs
+- [ ] Enable IP ban system via Admin UI (`ban_enabled: true`) to automatically block brute force attempts
 
 ---
 
@@ -295,6 +299,98 @@ Generate a new keypair with `gohookbridge keygen`, add the new public key to the
 ### Kubernetes Considerations
 
 When changing `--max-body-size` or `--sse-buffer-size`, update the memory `requests` and `limits` in your deployment manifests proportionally. Pods that exceed their memory limit are OOMKilled without warning.
+
+## IP Rate Limiting
+
+Rate limiting restricts the number of HTTP requests a single IP address can make within a configurable time window. When the limit is exceeded, the server returns HTTP 429 (Too Many Requests).
+
+Both rate limiting and IP banning are **disabled by default** (opt-in) to avoid breaking existing deployments.
+
+### Configuration
+
+Configure via Admin UI (Global Config → Rate Limiting) or `bootstrap.yaml`:
+
+```yaml
+global:
+  server:
+    rate_limit_enabled: true
+    rate_limit_requests: 100        # max requests per window
+    rate_limit_window_seconds: 60   # 1-minute sliding window
+```
+
+### Architecture
+
+- **In-memory only** — Rate limit state is per-node, not shared across Raft cluster. This avoids Raft write overhead on every request and keeps the feature simple.
+- **Sliding window** — Each IP's request timestamps are tracked in a sorted list. Expired entries are pruned on each check. Under typical load, memory usage is negligible (~100 entries × ~24 bytes = ~2.4KB per active IP).
+- **Proxy-aware** — Uses the existing `getRealIP()` function with the `behind_reverse_proxy` setting to resolve the client's real IP.
+
+---
+
+## IP Ban System (Brute Force Detection)
+
+The IP ban system automatically detects and blocks IP addresses that attempt to authenticate with **multiple different credentials** — a strong signal of brute force or credential stuffing attacks. IPs using the **same** failing credential repeatedly are treated as misconfiguration (wrong password, expired token, outdated webhook secret) and **never trigger a ban**.
+
+### How It Works
+
+1. Each authentication failure logs the IP and a **SHA-256 hash** of the credential type + value (never stores raw credentials).
+2. Credential fingerprints are **deduplicated per IP** — an IP failing 100 times with the same password only generates **one unique fingerprint**.
+3. If the count of **unique fingerprints** from one IP within the observation window reaches the threshold, the IP is banned.
+4. Banned IPs receive HTTP 403 for all requests during the ban duration.
+
+### Credential Fingerprinting Points
+
+| Failure Type | Fingerprint Formula |
+|---|---|
+| Invalid login (username/password) | `SHA-256("login:" + username)` |
+| Invalid channel access token | `SHA-256("token:" + token)` |
+| Invalid webhook signature | `SHA-256("signature:" + channel + ":" + signatureValue)` |
+
+### Configuration
+
+Configure via Admin UI (Global Config → IP Ban) or `bootstrap.yaml`:
+
+```yaml
+global:
+  server:
+    ban_enabled: true
+    ban_max_unique_failures: 5      # unique credentials before ban
+    ban_window_seconds: 300         # 5-minute observation window
+    ban_duration_seconds: 3600      # 1-hour ban
+```
+
+### Examples
+
+| Scenario | Result |
+|---|---|
+| IP sends 100 requests with same wrong password | Logged as errors, **no ban** |
+| IP sends requests with 5 different usernames | Ban triggered (5 unique fingerprints) |
+| IP sends requests with 5 different access tokens | Ban triggered |
+| IP sends requests with same expired token repeatedly | **No ban** (1 unique fingerprint) |
+| Mix: 2 different usernames + 3 different tokens | Ban triggered (5 unique fingerprints) |
+
+### Managing Bans
+
+Administrators can view and manually unban IPs via the Admin UI (Banned IPs page) or the Admin API:
+
+- `GET /api/bans` — list all currently banned IPs (requires `global:read`)
+- `DELETE /api/bans/{ip}` — unban an IP (requires `global:write`)
+
+### Architecture
+
+- **In-memory only** — Ban state is per-node, not shared across Raft cluster. Bans are transient by nature. This avoids Raft write overhead on every authentication failure.
+- **No credential storage** — Only SHA-256 hashes of credentials are stored, never raw passwords, tokens, or secrets.
+- **Proxy-aware** — Uses the existing `getRealIP()` function with the `behind_reverse_proxy` setting.
+
+### Misconfiguration vs Attack Detection
+
+The ban system distinguishes between misconfiguration and attacks by counting **unique** credential fingerprints per IP:
+
+- **Same credential failing repeatedly** = misconfiguration. The user has a wrong password, an expired token, or the webhook secret is outdated. These failures are logged as errors but never count toward a ban.
+- **Different credentials failing** = attack. The IP is trying different username/password combinations, different access tokens, or different webhook signatures. This triggers a ban when the unique count reaches the threshold.
+
+This means an honest user who forgot their password and tries it 50 times will not be banned. An attacker who uses a list of 5 stolen credentials will be banned.
+
+---
 
 ## Authentication and RBAC (ACL)
 

@@ -57,6 +57,15 @@ type ServerConfig struct {
 	CORSOrigin    string `json:"cors_origin"`
 	Footer        string `json:"footer"`
 	SessionSecret string `json:"session_secret"`
+
+	RateLimitEnabled       bool `json:"rate_limit_enabled"`
+	RateLimitRequests      int  `json:"rate_limit_requests"`
+	RateLimitWindowSeconds int  `json:"rate_limit_window_seconds"`
+
+	BanEnabled           bool `json:"ban_enabled"`
+	BanMaxUniqueFailures int  `json:"ban_max_unique_failures"`
+	BanWindowSeconds     int  `json:"ban_window_seconds"`
+	BanDurationSeconds   int  `json:"ban_duration_seconds"`
 }
 
 type GlobalConfigResponse struct {
@@ -70,6 +79,15 @@ type ServerConfigResponse struct {
 	CORSOrigin    string `json:"cors_origin"`
 	Footer        string `json:"footer"`
 	SessionSecret string `json:"session_secret"`
+
+	RateLimitEnabled       bool `json:"rate_limit_enabled"`
+	RateLimitRequests      int  `json:"rate_limit_requests"`
+	RateLimitWindowSeconds int  `json:"rate_limit_window_seconds"`
+
+	BanEnabled           bool `json:"ban_enabled"`
+	BanMaxUniqueFailures int  `json:"ban_max_unique_failures"`
+	BanWindowSeconds     int  `json:"ban_window_seconds"`
+	BanDurationSeconds   int  `json:"ban_duration_seconds"`
 }
 
 type DefaultChannelConfig struct {
@@ -157,6 +175,15 @@ func defaultGlobalConfig() *GlobalConfig {
 			MaxBodySize: 26214400,
 			BehindReverseProxy:  false,
 			CORSOrigin:  "*",
+
+			RateLimitEnabled:       false,
+			RateLimitRequests:      100,
+			RateLimitWindowSeconds: 60,
+
+			BanEnabled:           false,
+			BanMaxUniqueFailures: 5,
+			BanWindowSeconds:     300,
+			BanDurationSeconds:   3600,
 		},
 		Defaults: DefaultChannelConfig{},
 	}

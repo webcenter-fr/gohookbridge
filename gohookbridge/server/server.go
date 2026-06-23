@@ -185,7 +185,7 @@ func validateWebhookSignature(secret string, payload []byte, r *http.Request) bo
 	return false
 }
 
-func handleWebhookPost(broker *nats.Broker, rs *store.RaftStore) http.HandlerFunc {
+func handleWebhookPost(broker *nats.Broker, rs *store.RaftStore, banTracker *banTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now().UTC()
 		if !strings.Contains(r.Header.Get("Content-Type"), contentType) {
@@ -215,9 +215,8 @@ func handleWebhookPost(broker *nats.Broker, rs *store.RaftStore) http.HandlerFun
 		encryptionMode := chConfig.EncryptionMode
 		encryptionKey := chConfig.EncryptionKey
 		channelPubKey := chConfig.EncryptionPublicKey
-		channelPrivKey := chConfig.EncryptionPrivateKey
 		if encryptionMode == "" {
-			encryptionMode, encryptionKey, channelPubKey, channelPrivKey, _ = rs.ResolveChannelEncryption(channel)
+			encryptionMode, encryptionKey, channelPubKey, _ = rs.ResolveChannelEncryption(channel)
 		}
 
 		var payloadBytes []byte
@@ -231,6 +230,7 @@ func handleWebhookPost(broker *nats.Broker, rs *store.RaftStore) http.HandlerFun
 			if gohookbridge.IsEncrypted(body) {
 				if webhookSecret != "" {
 					if !validateWebhookSignature(webhookSecret, body, r) {
+						recordCredentialFailure(banTracker, rs, r, fingerprintSignature(channel, extractSignatureValue(r)))
 						http.Error(w, "invalid signature", http.StatusUnauthorized)
 						return
 					}
@@ -239,6 +239,7 @@ func handleWebhookPost(broker *nats.Broker, rs *store.RaftStore) http.HandlerFun
 			} else {
 				if webhookSecret != "" {
 					if !validateWebhookSignature(webhookSecret, body, r) {
+						recordCredentialFailure(banTracker, rs, r, fingerprintSignature(channel, extractSignatureValue(r)))
 						http.Error(w, "invalid signature", http.StatusUnauthorized)
 						return
 					}
@@ -261,7 +262,6 @@ func handleWebhookPost(broker *nats.Broker, rs *store.RaftStore) http.HandlerFun
 					return
 				}
 				payloadBytes = encrypted
-				_ = channelPrivKey
 			}
 		} else if encryptionMode == "server_side" && encryptionKey != "" {
 			webhookSecret := chConfig.WebhookSecret
@@ -270,6 +270,7 @@ func handleWebhookPost(broker *nats.Broker, rs *store.RaftStore) http.HandlerFun
 			}
 			if webhookSecret != "" {
 				if !validateWebhookSignature(webhookSecret, body, r) {
+					recordCredentialFailure(banTracker, rs, r, fingerprintSignature(channel, extractSignatureValue(r)))
 					http.Error(w, "invalid signature", http.StatusUnauthorized)
 					return
 				}
@@ -295,6 +296,7 @@ func handleWebhookPost(broker *nats.Broker, rs *store.RaftStore) http.HandlerFun
 			}
 			if webhookSecret != "" {
 				if !validateWebhookSignature(webhookSecret, body, r) {
+					recordCredentialFailure(banTracker, rs, r, fingerprintSignature(channel, extractSignatureValue(r)))
 					http.Error(w, "invalid signature", http.StatusUnauthorized)
 					return
 				}
@@ -531,7 +533,7 @@ func ipRestrictMiddleware(rs *store.RaftStore) func(http.Handler) http.Handler {
 	}
 }
 
-func channelAccessMiddleware(rs *store.RaftStore, requiredScope string) func(http.Handler) http.Handler {
+func channelAccessMiddleware(rs *store.RaftStore, requiredScope string, banTracker *banTracker) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			channel := chi.URLParam(r, "channel")
@@ -585,6 +587,7 @@ func channelAccessMiddleware(rs *store.RaftStore, requiredScope string) func(htt
 			}
 
 			if !rs.ValidateChannelToken(channel, token, requiredScope) {
+				recordCredentialFailure(banTracker, rs, r, fingerprintToken(token))
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -787,28 +790,6 @@ func handleGenerateEncryptionKey(rs *store.RaftStore) http.HandlerFunc {
 				"encryption_key":  key,
 				"encryption_mode": "server_side",
 			})
-		case "e2e":
-			pub, priv, err := gohookbridge.GenerateKeyPair()
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			ch.EncryptionMode = "e2e"
-			ch.EncryptionPublicKey = gohookbridge.EncodePublicKey(pub)
-			ch.EncryptionPrivateKey = base64.StdEncoding.EncodeToString(priv[:])
-			if err := rs.UpdateChannel(ch); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			writeJSONResponse(w, http.StatusOK, map[string]any{
-				"encryption_mode":        "e2e",
-				"encryption_public_key":  ch.EncryptionPublicKey,
-				"encryption_private_key": ch.EncryptionPrivateKey,
-				"key_file": map[string]string{
-					"public_key":  base64.StdEncoding.EncodeToString(pub[:]),
-					"private_key": base64.StdEncoding.EncodeToString(priv[:]),
-				},
-			})
 		default:
 			http.Error(w, "unsupported encryption mode: "+req.Mode, http.StatusBadRequest)
 		}
@@ -910,6 +891,9 @@ func serve(c *cli.Context) error {
 		}
 	}
 
+	rateLimiterInst := newRateLimiter()
+	banTrackerInst := newBanTracker()
+
 	autoCert := c.Bool("auto-cert")
 	certFile := c.String("tls-cert")
 	certKey := c.String("tls-key")
@@ -923,11 +907,14 @@ func serve(c *cli.Context) error {
 	mainRouter.Use(middleware.RequestID)
 	mainRouter.Use(safeLogger)
 	mainRouter.Use(middleware.Recoverer)
+	mainRouter.Use(banMiddleware(banTrackerInst, rs))
+	mainRouter.Use(rateLimitMiddleware(rateLimiterInst, rs))
 
 	restrictedRouter.Use(middleware.RequestID)
 	restrictedRouter.Use(safeLogger)
 	restrictedRouter.Use(middleware.Recoverer)
-
+	restrictedRouter.Use(banMiddleware(banTrackerInst, rs))
+	restrictedRouter.Use(rateLimitMiddleware(rateLimiterInst, rs))
 	restrictedRouter.Use(ipRestrictMiddleware(rs))
 
 	// Always set up session secret if not already configured
@@ -965,7 +952,7 @@ func serve(c *cli.Context) error {
 	mainRouter.Get("/health", retVersion)
 	mainRouter.Get("/livez", retVersion)
 
-	mainRouter.Get(eventsPath, channelAccessMiddleware(rs, "consume")(handleEventsGet(broker, rs)).ServeHTTP)
+	mainRouter.Get(eventsPath, channelAccessMiddleware(rs, "consume", banTrackerInst)(handleEventsGet(broker, rs)).ServeHTTP)
 
 	// OIDC routes (registered dynamically from Raft config)
 	providers, _ := rs.OIDCProviders()
@@ -982,13 +969,13 @@ func serve(c *cli.Context) error {
 	mainRouter.NotFound(web.SPAHandler().ServeHTTP)
 
 	// POST routes on restricted router
-	restrictedRouter.Use(channelAccessMiddleware(rs, "produce"))
-	restrictedRouter.Post(channelPath, handleWebhookPost(broker, rs))
+	restrictedRouter.Use(channelAccessMiddleware(rs, "produce", banTrackerInst))
+	restrictedRouter.Post(channelPath, handleWebhookPost(broker, rs, banTrackerInst))
 
 	// Public auth API routes — mounted before main /api to avoid middleware intercept
 	publicApiRouter := chi.NewRouter()
 	publicApiRouter.Get("/methods", apiAuthMethodsHandler(rs))
-	publicApiRouter.Post("/login", apiLoginHandler(rs))
+	publicApiRouter.Post("/login", apiLoginHandler(rs, banTrackerInst))
 	publicApiRouter.Post("/logout", apiLogoutHandler())
 	mainRouter.Mount("/api/auth", publicApiRouter)
 
@@ -1000,6 +987,11 @@ func serve(c *cli.Context) error {
 	apiRouter.Post("/send/{channel:"+channelIDPattern+"}", handleTestPayloadSend(broker, rs))
 	apiRouter.Post("/channels/{channel:"+channelIDPattern+"}/events/{eventId}/replay", handleEventReplay(broker, rs))
 	apiRouter.Post("/channels/{channel:"+channelIDPattern+"}/generate-encryption-key", handleGenerateEncryptionKey(rs))
+	apiRouter.Group(func(r chi.Router) {
+		r.Use(store.RequirePermission(rs, store.PermGlobalRead))
+		r.Get("/bans", apiBansHandler(banTrackerInst))
+		r.With(store.RequirePermission(rs, store.PermGlobalWrite)).Delete("/bans/{ip}", apiUnbanHandler(banTrackerInst))
+	})
 	mainRouter.Mount("/api", apiRouter)
 
 	finalRouter := chi.NewRouter()

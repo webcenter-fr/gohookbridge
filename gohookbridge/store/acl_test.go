@@ -118,7 +118,7 @@ func TestGetUserPermissions(t *testing.T) {
 	assert.Assert(t, contains(perms, "channel:write"), "expected project:write")
 
 	perms = GetUserPermissions(rs, "unknown")
-	assert.Assert(t, perms == nil)
+	assert.Assert(t, len(perms) == 0)
 }
 
 func TestIsAdmin(t *testing.T) {

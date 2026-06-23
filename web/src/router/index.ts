@@ -56,6 +56,12 @@ const router = createRouter({
           meta: { requiresAdmin: true },
         },
         {
+          path: 'admin/bans',
+          name: 'admin-bans',
+          component: () => import('../views/AdminBansView.vue'),
+          meta: { requiresAdmin: true },
+        },
+        {
           path: ':channel',
           redirect: to => ({ name: 'channel-detail', params: { id: to.params.channel as string } }),
         },

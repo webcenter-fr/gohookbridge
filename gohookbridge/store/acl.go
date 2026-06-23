@@ -254,7 +254,7 @@ func UserHasPermission(rs *RaftStore, username string, perm Permission, channelI
 func UserChannels(rs *RaftStore, username string) ([]string, error) {
 	user := getUserObject(rs, username)
 	if user == nil {
-		return nil, nil
+		return []string{}, nil
 	}
 
 	oidcGroups := user.OIDCSubjects
@@ -370,7 +370,7 @@ func GetUserPermissions(rs *RaftStore, username string) []string {
 	perms := make(map[string]bool)
 	user := getUserObject(rs, username)
 	if user == nil {
-		return nil
+		return []string{}
 	}
 
 	for _, roleName := range user.Roles {

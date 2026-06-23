@@ -191,7 +191,7 @@ func apiAuthMethodsHandler(rs *store.RaftStore) http.HandlerFunc {
 	}
 }
 
-func apiLoginHandler(rs *store.RaftStore) http.HandlerFunc {
+func apiLoginHandler(rs *store.RaftStore, banTracker *banTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cfg := store.BuildAuthConfig(rs)
 		if cfg == nil || !cfg.Internal.Enabled {
@@ -218,6 +218,7 @@ func apiLoginHandler(rs *store.RaftStore) http.HandlerFunc {
 			}
 		}
 		if !valid {
+			recordCredentialFailure(banTracker, rs, r, fingerprintLogin(body.Username))
 			http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 			return
 		}

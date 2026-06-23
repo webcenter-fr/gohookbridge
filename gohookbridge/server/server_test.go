@@ -200,7 +200,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(broker, rs)
+		handler := handleWebhookPost(broker, rs, newBanTracker())
 		handler(w, req)
 
 		resp := w.Result()
@@ -233,7 +233,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "unknown-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(broker, rs)
+		handler := handleWebhookPost(broker, rs, newBanTracker())
 		handler(w, req)
 
 		resp := w.Result()
@@ -250,7 +250,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(broker, rs)
+		handler := handleWebhookPost(broker, rs, newBanTracker())
 		handler(w, req)
 
 		resp := w.Result()
@@ -270,7 +270,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(broker, rs)
+		handler := handleWebhookPost(broker, rs, newBanTracker())
 		handler(w, req)
 
 		resp := w.Result()
@@ -295,7 +295,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(broker, rs)
+		handler := handleWebhookPost(broker, rs, newBanTracker())
 		handler(w, req)
 
 		resp := w.Result()
@@ -311,7 +311,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler = handleWebhookPost(broker, rs)
+		handler = handleWebhookPost(broker, rs, newBanTracker())
 		handler(w, req)
 
 		resp = w.Result()
@@ -361,7 +361,7 @@ func TestHandleEventsGet(t *testing.T) {
 		response := httptest.NewRecorder()
 		done := make(chan struct{})
 		go func() {
-			channelAccessMiddleware(rs, "consume")(handleEventsGet(broker, rs)).ServeHTTP(response, req)
+			channelAccessMiddleware(rs, "consume", newBanTracker())(handleEventsGet(broker, rs)).ServeHTTP(response, req)
 			close(done)
 		}()
 
@@ -387,7 +387,7 @@ func TestHandleEventsGet(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		channelAccessMiddleware(rs, "consume")(handleEventsGet(broker, rs)).ServeHTTP(w, req)
+		channelAccessMiddleware(rs, "consume", newBanTracker())(handleEventsGet(broker, rs)).ServeHTTP(w, req)
 		assert.Equal(t, w.Result().StatusCode, http.StatusForbidden)
 	})
 
@@ -402,7 +402,7 @@ func TestHandleEventsGet(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		channelAccessMiddleware(rs, "consume")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		channelAccessMiddleware(rs, "consume", newBanTracker())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(w, req)
 		assert.Equal(t, w.Result().StatusCode, http.StatusOK)
@@ -417,7 +417,7 @@ func TestHandleEventsGet(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		channelAccessMiddleware(rs, "consume")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		channelAccessMiddleware(rs, "consume", newBanTracker())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(w, req)
 		assert.Equal(t, w.Result().StatusCode, http.StatusUnauthorized)
@@ -448,7 +448,7 @@ func TestHandleEventsGet(t *testing.T) {
 		response := httptest.NewRecorder()
 		done := make(chan struct{})
 		go func() {
-			channelAccessMiddleware(rs, "consume")(handleEventsGet(broker, rs)).ServeHTTP(response, req)
+			channelAccessMiddleware(rs, "consume", newBanTracker())(handleEventsGet(broker, rs)).ServeHTTP(response, req)
 			close(done)
 		}()
 
@@ -590,7 +590,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(rs, "produce")
+		middleware := channelAccessMiddleware(rs, "produce", newBanTracker())
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(w, req)
@@ -606,7 +606,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(rs, "produce")
+		middleware := channelAccessMiddleware(rs, "produce", newBanTracker())
 		nextCalled := false
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			nextCalled = true
@@ -625,7 +625,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(rs, "produce")
+		middleware := channelAccessMiddleware(rs, "produce", newBanTracker())
 		nextCalled := false
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			nextCalled = true
@@ -644,7 +644,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(rs, "produce")
+		middleware := channelAccessMiddleware(rs, "produce", newBanTracker())
 		nextCalled := false
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			nextCalled = true
@@ -662,7 +662,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(rs, "consume")
+		middleware := channelAccessMiddleware(rs, "consume", newBanTracker())
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(w, req)
@@ -677,7 +677,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(rs, "consume")
+		middleware := channelAccessMiddleware(rs, "consume", newBanTracker())
 		nextCalled := false
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			nextCalled = true
@@ -696,7 +696,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(rs, "consume")
+		middleware := channelAccessMiddleware(rs, "consume", newBanTracker())
 		nextCalled := false
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			nextCalled = true
@@ -714,7 +714,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(rs, "consume")
+		middleware := channelAccessMiddleware(rs, "consume", newBanTracker())
 		nextCalled := false
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			nextCalled = true
@@ -733,7 +733,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(rs, "produce")
+		middleware := channelAccessMiddleware(rs, "produce", newBanTracker())
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(w, req)
@@ -914,7 +914,7 @@ func TestHandleWebhookPostWithNATS(t *testing.T) {
 	broker := newNatsBroker(t, 4241)
 	rs := storetest.NewRaftStore(t)
 
-	handler := handleWebhookPost(broker, rs)
+	handler := handleWebhookPost(broker, rs, newBanTracker())
 
 	t.Run("Publishes via NATS to subscriber", func(t *testing.T) {
 		historical, live := broker.Subscribe("nats-test", time.Time{}, 10)
@@ -1155,7 +1155,7 @@ func TestChannelTTLPropagation(t *testing.T) {
 	})
 	assert.NilError(t, err)
 
-	handler := handleWebhookPost(broker, rs)
+	handler := handleWebhookPost(broker, rs, newBanTracker())
 
 	payload := map[string]any{"event": "ttl-test"}
 	payloadBytes, _ := json.Marshal(payload)

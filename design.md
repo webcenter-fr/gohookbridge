@@ -743,6 +743,92 @@ flowchart TD
 
 ---
 
+## IP Rate Limiting
+
+Rate limiting restricts the number of HTTP requests a single IP address can make within a configurable time window. When the limit is exceeded, the server returns HTTP 429 (Too Many Requests).
+
+### Architecture
+
+- **In-memory sliding window** — Each IP's request timestamps are tracked in a `map[string][]time.Time`. Expired entries are pruned on each check. Protected by `sync.Mutex`.
+- **Per-node only** — State is not shared across the Raft cluster. Rate limiting is best-effort (a distributed attacker could spread requests across nodes).
+- **No persistence** — Rate limit state is lost on server restart. Bans are transient by design.
+- **Proxy-aware** — Uses `getRealIP()` with the `behind_reverse_proxy` setting.
+
+### Middleware Chain Position
+
+Rate limiting runs after the ban check but before in-process business middleware:
+
+```
+mainRouter:
+  1. RequestID
+  2. safeLogger
+  3. Recoverer
+  4. banMiddleware        ← 403 if banned
+  5. rateLimitMiddleware   ← 429 if over limit
+  ... existing middlewares
+```
+
+---
+
+## IP Ban System (Brute Force Detection)
+
+The IP ban system detects brute force and credential stuffing attacks by tracking unique credential failures per IP. It distinguishes between misconfiguration (same credential failing repeatedly) and attacks (multiple different credentials failing).
+
+### Credential Fingerprinting
+
+Credentials are never stored in plaintext. Instead, SHA-256 hashes of credential type + value are used as fingerprints:
+
+| Failure Point | Fingerprint |
+|---|---|
+| Invalid login | `SHA-256("login:" + username)` |
+| Invalid channel access token | `SHA-256("token:" + token)` |
+| Invalid webhook signature | `SHA-256("signature:" + channel + ":" + signatureValue)` |
+
+### Failure Recording Points
+
+Failures are recorded at three authentication points in the server:
+
+1. **`apiLoginHandler`** — On invalid username/password (`server/auth.go`)
+2. **`channelAccessMiddleware`** — On invalid channel access token (`server/server.go`)
+3. **`handleWebhookPost`** — On invalid webhook signature (`server/server.go`)
+
+### Data Structures
+
+```go
+type banTracker struct {
+    mu       sync.Mutex
+    failures map[string][]banEntry    // IP → failure entries
+    banned   map[string]time.Time     // IP → ban expiry
+}
+
+type banEntry struct {
+    fingerprint string    // SHA-256 credential hash
+    timestamp   time.Time
+}
+```
+
+### Ban Logic
+
+1. `recordFailure(ip, fingerprint)` — Deduplicates fingerprints per IP within the window. Same fingerprint appearing again is silently ignored.
+2. `banIfSuspicious(ip, maxUnique, banDuration)` — Counts unique fingerprints in the window. If >= threshold, bans the IP for `banDuration` seconds.
+3. `isBanned(ip)` — Checks if IP is currently banned (cleans expired bans).
+
+The `recordFailure` → `banIfSuspicious` pipeline is called at each auth failure point.
+
+### Admin API
+
+- `GET /api/bans` — List currently banned IPs (requires `global:read`)
+- `DELETE /api/bans/{ip}` — Unban an IP (requires `global:write`)
+
+### Architecture Decisions
+
+- **In-memory only** — Ban state is per-node, not shared via Raft. Bans are transient by nature and do not require cluster-wide consistency.
+- **No credential storage** — Only SHA-256 hashes of credentials are stored in memory. Raw passwords, tokens, and secrets are never retained.
+- **Survives restart** — Bans are lost on restart (acceptable — bans are time-limited by design).
+- **Opt-in** — Both rate limiting and banning are disabled by default (false in `defaultGlobalConfig()`).
+
+---
+
 ## Error Handling
 
 ### NATS unavailable at publish time
