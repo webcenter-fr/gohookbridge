@@ -64,7 +64,7 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v6.0.3
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: latest
       - name: Set chart version from tag
