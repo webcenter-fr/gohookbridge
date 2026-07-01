@@ -15,7 +15,7 @@ require (
 	github.com/nats-io/nats.go v1.39.1
 	github.com/r3labs/sse/v2 v2.10.0
 	github.com/urfave/cli/v2 v2.27.7
-	go.etcd.io/bbolt v1.4.3
+	go.etcd.io/bbolt v1.5.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/text v0.38.0
 	gopkg.in/cenkalti/backoff.v1 v1.1.0
