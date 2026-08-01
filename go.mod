@@ -16,8 +16,8 @@ require (
 	github.com/r3labs/sse/v2 v2.10.0
 	github.com/urfave/cli/v2 v2.27.7
 	go.etcd.io/bbolt v1.4.3
-	golang.org/x/crypto v0.53.0
-	golang.org/x/text v0.38.0
+	golang.org/x/crypto v0.54.0
+	golang.org/x/text v0.40.0
 	gopkg.in/cenkalti/backoff.v1 v1.1.0
 	gopkg.in/yaml.v3 v3.0.1
 	gotest.tools/v3 v3.5.2
@@ -47,7 +47,7 @@ require (
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/xrash/smetrics v0.0.0-20250705151800-55b8f293f342 // indirect
-	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/time v0.11.0 // indirect
 )
