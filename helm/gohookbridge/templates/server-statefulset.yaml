@@ -63,6 +63,11 @@ spec:
         - "{{ .Values.server.natsClusterPort }}"
         - --nats-routes
         - {{ include "gohookbridge.natsRoutes" . | quote }}
+        # Every node must advertise the same NATS cluster name, otherwise
+        # route connections are rejected with "Cluster Name Conflict" and
+        # webhook fan-out stays local to each pod.
+        - --nats-cluster-name
+        - {{ .Values.server.natsClusterName | default (include "gohookbridge.fullname" .) | quote }}
         {{- if .Values.server.bootstrap.enabled }}
         - --bootstrap-config-file
         - /etc/gohookbridge/bootstrap.yaml

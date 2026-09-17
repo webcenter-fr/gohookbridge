@@ -171,6 +171,46 @@ func TestBrokerSubscribeWithSince(t *testing.T) {
 	b.Unsubscribe("sincechan", live)
 }
 
+func TestBrokerClusterFanout(t *testing.T) {
+	brokerA, err := New(Config{
+		NodeID:      "cluster-a",
+		Port:        4261,
+		ClusterPort: 6261,
+		BufferSize:  100,
+		ClusterName: "test-cluster",
+	})
+	assert.NilError(t, err)
+	defer brokerA.Shutdown()
+
+	brokerB, err := New(Config{
+		NodeID:      "cluster-b",
+		Port:        4262,
+		ClusterPort: 6262,
+		Routes:      []string{"nats://127.0.0.1:6261"},
+		BufferSize:  100,
+		ClusterName: "test-cluster",
+	})
+	assert.NilError(t, err)
+	defer brokerB.Shutdown()
+
+	_, live := brokerB.Subscribe("fanout", time.Time{}, 10)
+	defer brokerB.Unsubscribe("fanout", live)
+
+	// The route between the embedded servers may take a moment to connect,
+	// so retry the publish until the subscriber on broker B sees it.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		assert.NilError(t, brokerA.Publish("fanout", []byte("ping")))
+		select {
+		case data := <-live:
+			assert.Equal(t, "ping", string(data))
+			return
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	t.Fatal("timeout waiting for cross-node NATS fan-out")
+}
+
 func TestRingBufferPerChannelTTLEvictionMixed(t *testing.T) {
 	rb := NewRingBuffer(100, time.Hour)
 

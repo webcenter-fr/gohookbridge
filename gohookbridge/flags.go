@@ -288,6 +288,12 @@ var ServerFlags = []cli.Flag{
 		Usage:   "NATS cluster routes (nats://host:6222). Required for HA, same hosts as raft-peers",
 		EnvVars: []string{"GOSMEE_NATS_ROUTES"},
 	},
+	&cli.StringFlag{
+		Name:    "nats-cluster-name",
+		Usage:   "NATS cluster name shared by all HA nodes (must match on every node for routes to connect)",
+		Value:   "gohookbridge",
+		EnvVars: []string{"GOSMEE_NATS_CLUSTER_NAME"},
+	},
 	&cli.IntFlag{
 		Name:    "nats-buffer-size",
 		Usage:   "Max number of webhook entries to keep in ring buffer",

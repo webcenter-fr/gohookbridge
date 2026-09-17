@@ -12,6 +12,7 @@ server:
   raftPort: 6001
   natsPort: 4222
   natsClusterPort: 6222
+  natsClusterName: ""             # defaults to the release fullname; must be identical on all nodes
   publicURL: ""
   raftDir: /data/raft
   resources:

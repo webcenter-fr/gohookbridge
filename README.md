@@ -436,6 +436,7 @@ Available when using the embedded NATS server for real-time webhook fan-out acro
 | `--nats-port` | `0` | Embedded NATS server client port. `0` = disabled (uses in-memory EventBroker) |
 | `--nats-cluster-port` | `6222` | NATS cluster route port for inter-node communication |
 | `--nats-routes` | | NATS cluster route URLs (`nats://host:6222`). Required for HA, same hosts as `--raft-peers` |
+| `--nats-cluster-name` | `gohookbridge` | NATS cluster name; must be identical on every HA node or routes are rejected with `Cluster Name Conflict` |
 | `--nats-buffer-ttl` | `1h` | How long webhook data is retained in the ring buffer for late subscribers |
 | `--nats-buffer-size` | `10000` | Max number of webhook entries kept in the ring buffer |
 

@@ -873,6 +873,7 @@ func serve(c *cli.Context) error {
 		ClusterPort: c.Int("nats-cluster-port"),
 		Routes:      c.StringSlice("nats-routes"),
 		BufferSize:  c.Int("nats-buffer-size"),
+		ClusterName: c.String("nats-cluster-name"),
 	}
 	broker, natsErr := nats.New(natsCfg)
 	if natsErr != nil {
