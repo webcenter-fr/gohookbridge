@@ -43,6 +43,45 @@ func raftTestConfig(id string) *raft.Config {
 	return config
 }
 
+// newClusterNode wires a raft node over an existing transport.
+func newClusterNode(t *testing.T, id string, trans raft.Transport, addr raft.ServerAddress) raftClusterNode {
+	t.Helper()
+	db, err := newBoltDB(t.TempDir(), id)
+	assert.NilError(t, err)
+	fsm := NewFSM(db)
+	r, err := raft.NewRaft(raftTestConfig(id), fsm, newBoltLogStore(db), newBoltStableStore(db), raft.NewInmemSnapshotStore(), trans)
+	assert.NilError(t, err)
+	return raftClusterNode{
+		store: &RaftStore{raft: r, fsm: fsm, db: db, transport: trans, nodeID: id},
+		r:     r,
+		trans: trans,
+		addr:  addr,
+		db:    db,
+	}
+}
+
+// newLoopbackTransport builds a network transport over a loopback stream layer.
+func newLoopbackTransport(layer raft.StreamLayer) raft.Transport {
+	return raft.NewNetworkTransportWithConfig(&raft.NetworkTransportConfig{
+		Stream:  layer,
+		Logger:  hclog.NewNullLogger(),
+		MaxPool: 10,
+		Timeout: time.Second,
+	})
+}
+
+// cleanupClusterNodes shuts down every node and closes its transport and DB.
+func cleanupClusterNodes(t *testing.T, nodes []raftClusterNode) {
+	t.Helper()
+	t.Cleanup(func() {
+		for i := range nodes {
+			_ = nodes[i].r.Shutdown().Error()
+			_ = closeRaftTransport(nodes[i].trans)
+			_ = nodes[i].db.Close()
+		}
+	})
+}
+
 // buildPlainClusterNodes builds n plaintext raft nodes over loopback TCP. The
 // nodes are NOT bootstrapped (callers choose the configuration).
 //
@@ -53,32 +92,10 @@ func buildPlainClusterNodes(t *testing.T, n int) []raftClusterNode {
 	for i := 0; i < n; i++ {
 		layer, err := newPlainStreamLayer("127.0.0.1:0", nil)
 		assert.NilError(t, err)
-		trans := raft.NewNetworkTransportWithConfig(&raft.NetworkTransportConfig{
-			Stream:  layer,
-			Logger:  hclog.NewNullLogger(),
-			MaxPool: 10,
-			Timeout: time.Second,
-		})
-		nodes[i] = raftClusterNode{layer: layer, trans: trans, addr: raft.ServerAddress(layer.Addr().String())}
+		nodes[i] = newClusterNode(t, fmt.Sprintf("node-%d", i), newLoopbackTransport(layer), raft.ServerAddress(layer.Addr().String()))
+		nodes[i].layer = layer
 	}
-	for i := 0; i < n; i++ {
-		id := fmt.Sprintf("node-%d", i)
-		db, err := newBoltDB(t.TempDir(), id)
-		assert.NilError(t, err)
-		fsm := NewFSM(db)
-		r, err := raft.NewRaft(raftTestConfig(id), fsm, newBoltLogStore(db), newBoltStableStore(db), raft.NewInmemSnapshotStore(), nodes[i].trans)
-		assert.NilError(t, err)
-		nodes[i].store = &RaftStore{raft: r, fsm: fsm, db: db, transport: nodes[i].trans, nodeID: id}
-		nodes[i].r = r
-		nodes[i].db = db
-	}
-	t.Cleanup(func() {
-		for i := range nodes {
-			_ = nodes[i].r.Shutdown().Error()
-			_ = closeRaftTransport(nodes[i].trans)
-			_ = nodes[i].db.Close()
-		}
-	})
+	cleanupClusterNodes(t, nodes)
 	return nodes
 }
 
@@ -109,32 +126,10 @@ func buildTLSClusterNodes(t *testing.T, n int) []raftClusterNode {
 		}
 		layer, err := newTLSStreamLayer("127.0.0.1:0", nil, tlsCfg)
 		assert.NilError(t, err)
-		trans := raft.NewNetworkTransportWithConfig(&raft.NetworkTransportConfig{
-			Stream:  layer,
-			Logger:  hclog.NewNullLogger(),
-			MaxPool: 10,
-			Timeout: time.Second,
-		})
-		nodes[i] = raftClusterNode{layer: layer, trans: trans, addr: raft.ServerAddress(layer.Addr().String())}
+		nodes[i] = newClusterNode(t, cn, newLoopbackTransport(layer), raft.ServerAddress(layer.Addr().String()))
+		nodes[i].layer = layer
 	}
-	for i := 0; i < n; i++ {
-		id := fmt.Sprintf("node-%d", i)
-		db, err := newBoltDB(t.TempDir(), id)
-		assert.NilError(t, err)
-		fsm := NewFSM(db)
-		r, err := raft.NewRaft(raftTestConfig(id), fsm, newBoltLogStore(db), newBoltStableStore(db), raft.NewInmemSnapshotStore(), nodes[i].trans)
-		assert.NilError(t, err)
-		nodes[i].store = &RaftStore{raft: r, fsm: fsm, db: db, transport: nodes[i].trans, nodeID: id}
-		nodes[i].r = r
-		nodes[i].db = db
-	}
-	t.Cleanup(func() {
-		for i := range nodes {
-			_ = nodes[i].r.Shutdown().Error()
-			_ = closeRaftTransport(nodes[i].trans)
-			_ = nodes[i].db.Close()
-		}
-	})
+	cleanupClusterNodes(t, nodes)
 	return nodes
 }
 
