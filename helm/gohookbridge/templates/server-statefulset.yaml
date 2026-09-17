@@ -1,0 +1,119 @@
+{{- if .Values.server.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "gohookbridge.fullname" . }}-server
+  labels:
+    {{- include "gohookbridge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  serviceName: {{ include "gohookbridge.fullname" . }}-server-headless
+  replicas: {{ .Values.server.replicas }}
+  podManagementPolicy: Parallel   # all pods start simultaneously for faster quorum
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "gohookbridge.name" . }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "gohookbridge.name" . }}
+        app.kubernetes.io/component: server
+    spec:
+      {{- if .Values.serviceAccount.create }}
+      serviceAccountName: {{ include "gohookbridge.fullname" . }}
+      {{- end }}
+      containers:
+      - name: server
+        image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+        imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        args:
+        - server
+        - --port
+        - "{{ .Values.server.port }}"
+        - --public-url
+        - {{ .Values.server.publicURL | quote }}
+        - --raft-dir
+        - {{ .Values.server.raftDir | quote }}
+        - --raft-node-id
+        - $(POD_NAME)
+        - --raft-bind-addr
+        - 0.0.0.0:{{ .Values.server.raftPort }}
+        - --raft-peers
+        - {{ include "gohookbridge.raftPeers" . | quote }}
+        - --nats-port
+        - "{{ .Values.server.natsPort }}"
+        - --nats-cluster-port
+        - "{{ .Values.server.natsClusterPort }}"
+        - --nats-routes
+        - {{ include "gohookbridge.natsRoutes" . | quote }}
+        {{- if .Values.server.bootstrap.enabled }}
+        - --bootstrap-config-file
+        - /etc/gohookbridge/bootstrap.yaml
+        {{- end }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.server.port }}
+          protocol: TCP
+        - name: raft
+          containerPort: {{ .Values.server.raftPort }}
+          protocol: TCP
+        - name: nats
+          containerPort: {{ .Values.server.natsPort }}
+          protocol: TCP
+        - name: nats-cluster
+          containerPort: {{ .Values.server.natsClusterPort }}
+          protocol: TCP
+        {{- with .Values.server.probes }}
+        livenessProbe:
+          httpGet:
+            path: {{ .liveness.httpGet.path }}
+            port: {{ .liveness.httpGet.port }}
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: {{ .readiness.httpGet.path }}
+            port: {{ .readiness.httpGet.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        {{- end }}
+        volumeMounts:
+        - name: raft-data
+          mountPath: {{ .Values.server.raftDir }}
+        {{- if .Values.server.bootstrap.enabled }}
+        - name: bootstrap
+          mountPath: /etc/gohookbridge
+          readOnly: true
+        {{- end }}
+        {{- with .Values.server.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      volumes:
+      {{- if .Values.server.bootstrap.enabled }}
+      - name: bootstrap
+        configMap:
+          name: {{ include "gohookbridge.fullname" . }}-bootstrap
+      {{- end }}
+  volumeClaimTemplates:
+  - metadata:
+      name: raft-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      {{- if .Values.server.storage.storageClass }}
+      storageClassName: {{ .Values.server.storage.storageClass }}
+      {{- end }}
+      resources:
+        requests:
+          storage: {{ .Values.server.storage.size }}
+{{- end }}

@@ -1,14 +1,29 @@
 server:
   enabled: true
-  replicas: 1
+  replicas: 3                      # HA default
   image:
     repository: ghcr.io/webcenter-fr/gohookbridge
     tag: main
     pullPolicy: IfNotPresent
   port: 3333
+  raftPort: 6001
+  natsPort: 4222
+  natsClusterPort: 6222
   publicURL: ""
   raftDir: /data/raft
-  resources: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  storage:
+    size: 1Gi
+    storageClass: ""                # leave "" for default; k3s local-path
+  bootstrap:
+    enabled: true
+    config: {}                      # bootstrap.yaml content (admin user + session secret) OR via ConfigMap
   ingress:
     enabled: false
     className: ""
@@ -17,6 +32,15 @@ server:
   service:
     type: ClusterIP
     port: 3333
+  probes:
+    liveness:
+      httpGet:
+        path: /livez
+        port: http
+    readiness:
+      httpGet:
+        path: /health
+        port: http
 
 client:
   enabled: false

@@ -1,0 +1,23 @@
+{{- if .Values.server.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gohookbridge.fullname" . }}-server-headless
+  labels:
+    {{- include "gohookbridge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  clusterIP: None
+  ports:
+  - name: raft
+    port: {{ .Values.server.raftPort }}
+    targetPort: {{ .Values.server.raftPort }}
+    protocol: TCP
+  - name: nats-cluster
+    port: {{ .Values.server.natsClusterPort }}
+    targetPort: {{ .Values.server.natsClusterPort }}
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ include "gohookbridge.name" . }}
+    app.kubernetes.io/component: server
+{{- end }}
