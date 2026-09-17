@@ -23,6 +23,7 @@ spec:
       {{- if .Values.serviceAccount.create }}
       serviceAccountName: {{ include "gohookbridge.fullname" . }}
       {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.server.terminationGracePeriodSeconds | default 60 }}
       containers:
       - name: server
         image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
@@ -48,13 +49,35 @@ spec:
         - {{ .Values.server.raftDir | quote }}
         - --raft-node-id
         - $(POD_NAME)
-        # The Raft transport uses this address both to bind and to advertise
-        # itself to peers, so it must be the pod's routable, stable DNS name
-        # (0.0.0.0 is rejected by hashicorp/raft as "not advertisable").
-        # The headless Service sets publishNotReadyAddresses so this name
-        # resolves before the pod is Ready.
+        # Bind on all interfaces; advertise the pod's stable DNS name. The
+        # headless Service sets publishNotReadyAddresses so this name resolves
+        # before the pod is Ready.
         - --raft-bind-addr
-        - $(POD_NAME).{{ include "gohookbridge.fullname" . }}-server-headless.{{ .Release.Namespace }}.svc:{{ .Values.server.raftPort }}
+        - 0.0.0.0:{{ .Values.server.raftPort }}
+        - --raft-advertise-addr
+        - {{ include "gohookbridge.raftAdvertise" . | quote }}
+        - --raft-replicas
+        - "{{ .Values.server.replicas }}"
+        - --raft-statefulset-name
+        - {{ include "gohookbridge.fullname" . }}-server
+        - --raft-headless-service
+        - {{ include "gohookbridge.fullname" . }}-server-headless
+        - --raft-namespace
+        - $(POD_NAMESPACE)
+        - --raft-cluster-domain
+        - {{ .Values.server.raft.clusterDomain | default "cluster.local" | quote }}
+        - --raft-leader-wait-timeout
+        - {{ .Values.server.raft.leaderWaitTimeout | default "60s" | quote }}
+        - --raft-performance-multiplier
+        - {{ .Values.server.raft.performanceMultiplier | default 5.0 | printf "%.1f" | quote }}
+        {{- if .Values.server.raft.tls.enabled }}
+        - --raft-tls-enabled
+        - --raft-tls-ca-secret
+        - {{ include "gohookbridge.raftCASecret" . | quote }}
+        {{- end }}
+        {{- if .Values.server.raft.recoveryMode }}
+        - --raft-recovery-mode
+        {{- end }}
         - --raft-peers
         - {{ include "gohookbridge.raftPeers" . | quote }}
         - --nats-port
@@ -85,19 +108,40 @@ spec:
         - name: nats-cluster
           containerPort: {{ .Values.server.natsClusterPort }}
           protocol: TCP
+        lifecycle:
+          preStop:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  kill -TERM 1
+                  sleep 2
         {{- with .Values.server.probes }}
-        livenessProbe:
+        startupProbe:
           httpGet:
-            path: {{ .liveness.httpGet.path }}
-            port: {{ .liveness.httpGet.port }}
+            path: {{ .startup.httpGet.path }}
+            port: {{ .startup.httpGet.port }}
           initialDelaySeconds: 10
-          periodSeconds: 10
+          periodSeconds: 5
+          failureThreshold: 60
+          timeoutSeconds: 5
         readinessProbe:
           httpGet:
             path: {{ .readiness.httpGet.path }}
             port: {{ .readiness.httpGet.port }}
           initialDelaySeconds: 5
           periodSeconds: 5
+          failureThreshold: 3
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: {{ .liveness.httpGet.path }}
+            port: {{ .liveness.httpGet.port }}
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 5
         {{- end }}
         volumeMounts:
         - name: raft-data

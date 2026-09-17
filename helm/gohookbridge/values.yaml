@@ -15,6 +15,26 @@ server:
   natsClusterName: ""             # defaults to the release fullname; must be identical on all nodes
   publicURL: ""
   raftDir: /data/raft
+  raft:
+    # Cluster DNS suffix appended to peer addresses
+    # (<pod>.<headless>.<ns>.svc.<clusterDomain>). FQDNs bypass CoreDNS
+    # negative-cache poisoning during bootstrap. Empty ends at .svc.
+    clusterDomain: "cluster.local"
+    # Budget for waiting for a leader and a clean Raft state at startup.
+    leaderWaitTimeout: "60s"
+    # Scale Raft election/heartbeat/lease timeouts (flag default stays 1.0).
+    performanceMultiplier: 5.0
+    # Clear stale Raft state and bootstrap a fresh cluster. Manual
+    # quorum-loss recovery only; leave false for steady state.
+    recoveryMode: false
+    tls:
+      # mTLS for the Raft transport (multi-node default).
+      enabled: true
+      # K8s Secret used to share the internal CA. Empty defaults to
+      # "<fullname>-raft-ca".
+      caSecret: ""
+      # Require and verify peer client certificates.
+      clientAuth: true
   resources:
     requests:
       cpu: 100m
@@ -37,14 +57,25 @@ server:
   service:
     type: ClusterIP
     port: 3333
+  # Pod termination grace period: allows the server to transfer Raft
+  # leadership before exiting.
+  terminationGracePeriodSeconds: 60
+  # PodDisruptionBudget keeps a quorum floor during voluntary disruptions.
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
   probes:
+    startup:
+      httpGet:
+        path: /startup
+        port: http
     liveness:
       httpGet:
         path: /livez
         port: http
     readiness:
       httpGet:
-        path: /health
+        path: /readyz
         port: http
 
 client:
@@ -78,7 +109,8 @@ encryption:
   existingSecret: ""
 
 serviceAccount:
-  create: false
+  # Required for the raft CA Secret RBAC when server.raft.tls.enabled.
+  create: true
   name: ""
 
 nameOverride: ""

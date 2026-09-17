@@ -141,6 +141,44 @@ sequenceDiagram
 
 **Important:** Webhook data does NOT go through Raft. Raft stays lightweight, handling only config mutations.
 
+#### Raft HA saga (Kubernetes)
+
+Multi-node deployments follow a bootstrap saga ported from the reference
+implementation:
+
+1. **Peer discovery** (`raft_discovery.go`) — `NewPeerResolver` selects a
+   `staticPeerResolver` (`--raft-peers`), a `dnsPeerResolver`
+   (`--raft-statefulset-name` + `--raft-headless-service`), or a
+   `singleNodeResolver` (local dev). DNS discovery derives the ordered voter
+   list `<sts>-<i>.<headless>.<ns>.svc.<clusterDomain>`.
+2. **Ordinal-0-only bootstrap** — only the first resolved peer (ordinal 0)
+   calls `raft.BootstrapCluster`, seeding **only itself**. Other nodes start
+   with an empty configuration and join via the leader's `AddVoter`. Seeding
+   all peers would require a majority to elect a leader while non-bootstrap
+   peers have no config — a deadlock.
+3. **Any-leader wait** — `WaitForLeader` waits for `raft.Leader() != ""` (not
+   self leadership), so followers do not CrashLoop. `WaitForCleanState` then
+   waits for a settled Leader/Follower with `commit_index == applied_index`,
+   `fsm_pending == 0`, and recent leader contact.
+4. **Bind/advertise separation** — pods bind `0.0.0.0:6001` and advertise
+   their pod FQDN. A custom `raft.StreamLayer` keeps the DNS name in the Raft
+   configuration (raft's `NewTCPTransport` type-asserts `*net.TCPAddr`) and
+   re-resolves it on every dial, so a pod restart with a new IP self-heals.
+5. **Membership reconciliation** — the leader's join loop reconciles the
+   desired voter list every 5s: add missing voters, remove+re-add changed
+   addresses, remove extra voters. `ShutdownOnRemove` is **false** so a peer
+   does not self-kill during an address update.
+6. **Bootstrap config once** — `bootstrap.yaml` is applied by the leader only,
+   after the clean-state barrier, and only while the FSM is empty.
+7. **Graceful step-down** — on SIGTERM the leader transfers leadership before
+   the HTTP server shuts down; the PDB keeps a quorum floor.
+8. **mTLS** (`raft_tls.go`) — ordinal 0 mints the internal CA via
+   `github.com/disaster37/goca` and shares it through a K8s Secret; each node
+   issues/reuses its own leaf cert, re-issuing when the CA or SAN set changes.
+
+`NoSnapshotRestoreOnStart` defaults to **false** so Raft restores from the
+latest snapshot on restart (required after log compaction).
+
 ---
 
 ### NATS — Real-time Webhook Fan-out
@@ -200,6 +238,19 @@ sequenceDiagram
     NC_B->>RB_B: Append("abc123", payload)
     NC_B->>NC_B: fan-out to local SSE clients
 ```
+
+**NATS route DNS re-resolution (no code change needed):**
+
+NATS routes are configured with DNS names
+(`nats://<pod>.<headless>.<ns>.svc:6222`, from the `gohookbridge.natsRoutes`
+helper). The embedded `nats-server` dials each route from its explicit route
+URL on every (re)connect attempt and does not cache resolved IPs across
+attempts, so a pod restart with a new IP is handled by NATS's built-in route
+reconnect/backoff plus re-resolution. The headless Service publishes the
+`nats-cluster` port and sets `publishNotReadyAddresses: true`, so route DNS
+resolves before readiness. Webhooks are ephemeral, so a brief route outage
+during a pod restart is acceptable (senders retry on non-202). The in-process
+client connects to `127.0.0.1:<nats-port>` and never involves DNS.
 
 **NATS embedded server configuration:**
 
@@ -679,36 +730,35 @@ flowchart TB
 ### Server flags (HA deployment example)
 
 ```bash
-# Instance 1
+# Kubernetes StatefulSet pod (all pods share the same args; POD_NAME and
+# POD_NAMESPACE come from the downward API).
 gohookbridge server \
   --address 0.0.0.0 --port 3333 \
   --public-url https://webhook.example.com \
   --raft-dir /data/raft \
-  --raft-node-id node1 \
-  --raft-bind-addr 10.0.0.1:6001 \
-  --raft-peers node2=10.0.0.2:6001,node3=10.0.0.3:6001 \
+  --raft-node-id $(POD_NAME) \
+  --raft-bind-addr 0.0.0.0:6001 \
+  --raft-advertise-addr $(POD_NAME).gohookbridge-server-headless.gohookbridge.svc.cluster.local:6001 \
+  --raft-replicas 3 \
+  --raft-statefulset-name gohookbridge-server \
+  --raft-headless-service gohookbridge-server-headless \
+  --raft-namespace $(POD_NAMESPACE) \
+  --raft-cluster-domain cluster.local \
+  --raft-leader-wait-timeout 60s \
+  --raft-performance-multiplier 5.0 \
+  --raft-tls-enabled \
+  --raft-tls-ca-secret gohookbridge-raft-ca \
+  --raft-peers gohookbridge-server-0=gohookbridge-server-0.gohookbridge-server-headless.gohookbridge.svc.cluster.local:6001,... \
   --nats-port 4222 \
   --nats-cluster-port 6222 \
-  --nats-routes nats://10.0.0.2:6222,nats://10.0.0.3:6222 \
+  --nats-routes nats://gohookbridge-server-0.gohookbridge-server-headless.gohookbridge.svc.cluster.local:6222,... \
   --nats-buffer-ttl 1h \
   --nats-buffer-size 10000 \
   --bootstrap-config-file /etc/gohookbridge/bootstrap.yaml
-
-# Instance 2
-gohookbridge server \
-  --address 0.0.0.0 --port 3333 \
-  --public-url https://webhook.example.com \
-  --raft-dir /data/raft \
-  --raft-node-id node2 \
-  --raft-bind-addr 10.0.0.2:6001 \
-  --raft-peers node1=10.0.0.1:6001,node3=10.0.0.3:6001 \
-  --nats-port 4222 \
-  --nats-cluster-port 6222 \
-  --nats-routes nats://10.0.0.1:6222,nats://10.0.0.3:6222 \
-  --bootstrap-config-file /etc/gohookbridge/bootstrap.yaml
-
-# Instance 3 — same pattern
 ```
+
+For non-Kubernetes HA, keep the static form: `--raft-bind-addr <ip>:6001`
+plus `--raft-peers node2=<ip>:6001,node3=<ip>:6001` on every node.
 
 ### Port layout
 
