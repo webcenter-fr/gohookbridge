@@ -38,6 +38,8 @@ spec:
               fieldPath: metadata.namespace
         args:
         - server
+        - --address
+        - {{ .Values.server.address | quote }}
         - --port
         - "{{ .Values.server.port }}"
         - --public-url

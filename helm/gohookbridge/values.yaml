@@ -5,6 +5,9 @@ server:
     repository: ghcr.io/webcenter-fr/gohookbridge
     tag: main
     pullPolicy: IfNotPresent
+  # Bind address inside the container. The server defaults to localhost, which
+  # is not reachable by kubelet probes or Services, so pods must bind 0.0.0.0.
+  address: "0.0.0.0"
   port: 3333
   raftPort: 6001
   natsPort: 4222
