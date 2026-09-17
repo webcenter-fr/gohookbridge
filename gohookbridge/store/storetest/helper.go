@@ -2,23 +2,17 @@
 package storetest
 
 import (
+	"context"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/webcenter-fr/gohookbridge/gohookbridge/store"
 )
 
 func NewRaftStore(t *testing.T) *store.RaftStore {
 	t.Helper()
-	rs, err := store.NewRaftStore(store.RaftConfig{
-		Dir:      t.TempDir(),
-		NodeID:   "test-node",
-		BindAddr: "127.0.0.1:0",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = rs.Shutdown() })
-	return rs
+	return NewRaftStoreWithConfig(t, store.RaftConfig{})
 }
 
 func NewRaftStoreWithConfig(t *testing.T, cfg store.RaftConfig) *store.RaftStore {
@@ -30,14 +24,34 @@ func NewRaftStoreWithConfig(t *testing.T, cfg store.RaftConfig) *store.RaftStore
 		cfg.NodeID = "test-node"
 	}
 	if cfg.BindAddr == "" {
-		cfg.BindAddr = "127.0.0.1:0"
+		cfg.BindAddr = freeTCPAddr(t)
 	}
 	rs, err := store.NewRaftStore(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = rs.Shutdown() })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := rs.WaitForLeader(ctx); err != nil {
+		t.Fatalf("wait for raft leader: %v", err)
+	}
 	return rs
+}
+
+// freeTCPAddr returns a currently-free loopback host:port.
+func freeTCPAddr(t *testing.T) string {
+	t.Helper()
+	var lc net.ListenConfig
+	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
 }
 
 func DefaultGlobalConfig() *store.GlobalConfig {
