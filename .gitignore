@@ -5,3 +5,10 @@ tmp
 raft-data/admin-password.txt
 node_modules/
 .kilo/
+AGENTS.local.md
+web/.nuxt/
+web/.output/
+web/.nuxtrc
+web/dist
+gohookbridge/web/static/
+helm/gohookbridge/values-home.yaml
