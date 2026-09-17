@@ -276,7 +276,9 @@ spec:
         - --public-url=https://webhook.example.com
         - --raft-dir=/data/raft
         - --raft-node-id=$(POD_NAME)
-        - --raft-bind-addr=0.0.0.0:6001
+        # Must be the pod's routable DNS name: hashicorp/raft uses this both to
+        # bind and to advertise itself, and rejects 0.0.0.0 as "not advertisable".
+        - --raft-bind-addr=$(POD_NAME).gohookbridge-server:6001
         - --raft-peers=gohookbridge-server-0=gohookbridge-server-0.gohookbridge-server:6001,gohookbridge-server-1=gohookbridge-server-1.gohookbridge-server:6001,gohookbridge-server-2=gohookbridge-server-2.gohookbridge-server:6001
         - --nats-port=4222
         - --nats-cluster-port=6222
@@ -320,6 +322,9 @@ metadata:
   name: gohookbridge-server
 spec:
   clusterIP: None
+  # Required so each pod's DNS name resolves before its readiness probe passes
+  # (Raft binds/advertises that name at startup).
+  publishNotReadyAddresses: true
   ports:
   - name: raft
     port: 6001

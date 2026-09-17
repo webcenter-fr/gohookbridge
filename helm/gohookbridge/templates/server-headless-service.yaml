@@ -8,6 +8,10 @@ metadata:
     app.kubernetes.io/component: server
 spec:
   clusterIP: None
+  # Publish DNS records for pods that are not yet Ready. Raft binds/advertises
+  # its own pod DNS name at startup, and peers resolve each other's names
+  # before the readiness probe passes, so this is required to form quorum.
+  publishNotReadyAddresses: true
   ports:
   - name: raft
     port: {{ .Values.server.raftPort }}

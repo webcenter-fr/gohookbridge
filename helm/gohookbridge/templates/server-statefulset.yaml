@@ -46,8 +46,13 @@ spec:
         - {{ .Values.server.raftDir | quote }}
         - --raft-node-id
         - $(POD_NAME)
+        # The Raft transport uses this address both to bind and to advertise
+        # itself to peers, so it must be the pod's routable, stable DNS name
+        # (0.0.0.0 is rejected by hashicorp/raft as "not advertisable").
+        # The headless Service sets publishNotReadyAddresses so this name
+        # resolves before the pod is Ready.
         - --raft-bind-addr
-        - 0.0.0.0:{{ .Values.server.raftPort }}
+        - $(POD_NAME).{{ include "gohookbridge.fullname" . }}-server-headless.{{ .Release.Namespace }}.svc:{{ .Values.server.raftPort }}
         - --raft-peers
         - {{ include "gohookbridge.raftPeers" . | quote }}
         - --nats-port
