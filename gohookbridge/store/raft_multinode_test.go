@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"net"
 	"testing"
 	"time"
 
@@ -49,6 +52,62 @@ func buildPlainClusterNodes(t *testing.T, n int) []raftClusterNode {
 	nodes := make([]raftClusterNode, n)
 	for i := 0; i < n; i++ {
 		layer, err := newPlainStreamLayer("127.0.0.1:0", nil)
+		assert.NilError(t, err)
+		trans := raft.NewNetworkTransportWithConfig(&raft.NetworkTransportConfig{
+			Stream:  layer,
+			Logger:  hclog.NewNullLogger(),
+			MaxPool: 10,
+			Timeout: time.Second,
+		})
+		nodes[i] = raftClusterNode{layer: layer, trans: trans, addr: raft.ServerAddress(layer.Addr().String())}
+	}
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("node-%d", i)
+		db, err := newBoltDB(t.TempDir(), id)
+		assert.NilError(t, err)
+		fsm := NewFSM(db)
+		r, err := raft.NewRaft(raftTestConfig(id), fsm, newBoltLogStore(db), newBoltStableStore(db), raft.NewInmemSnapshotStore(), nodes[i].trans)
+		assert.NilError(t, err)
+		nodes[i].store = &RaftStore{raft: r, fsm: fsm, db: db, transport: nodes[i].trans, nodeID: id}
+		nodes[i].r = r
+		nodes[i].db = db
+	}
+	t.Cleanup(func() {
+		for i := range nodes {
+			_ = nodes[i].r.Shutdown().Error()
+			_ = closeRaftTransport(nodes[i].trans)
+			_ = nodes[i].db.Close()
+		}
+	})
+	return nodes
+}
+
+// buildTLSClusterNodes builds n mTLS raft nodes over loopback TCP sharing a
+// goca CA. The nodes are NOT bootstrapped (callers choose the configuration).
+func buildTLSClusterNodes(t *testing.T, n int) []raftClusterNode {
+	t.Helper()
+	caCertPEM, caKeyPEM, err := createRaftCAWithGoca("test-raft-ca", "gohookbridge-raft")
+	assert.NilError(t, err)
+	ca, err := NewMintingCAFromPEM(caCertPEM, caKeyPEM, time.Hour)
+	assert.NilError(t, err)
+	pool := x509.NewCertPool()
+	assert.Assert(t, pool.AppendCertsFromPEM(caCertPEM))
+
+	nodes := make([]raftClusterNode, n)
+	for i := 0; i < n; i++ {
+		cn := fmt.Sprintf("node-%d", i)
+		leafCert, leafKey, err := ca.IssuePeerCertificate(cn, "gohookbridge-raft", []string{"localhost"}, []net.IP{net.ParseIP("127.0.0.1")}, time.Hour)
+		assert.NilError(t, err)
+		leaf, err := tls.X509KeyPair(leafCert, leafKey)
+		assert.NilError(t, err)
+		tlsCfg := &tls.Config{
+			Certificates: []tls.Certificate{leaf},
+			RootCAs:      pool,
+			ClientCAs:    pool,
+			ClientAuth:   tls.RequireAndVerifyClientCert,
+			MinVersion:   tls.VersionTLS12,
+		}
+		layer, err := newTLSStreamLayer("127.0.0.1:0", nil, tlsCfg)
 		assert.NilError(t, err)
 		trans := raft.NewNetworkTransportWithConfig(&raft.NetworkTransportConfig{
 			Stream:  layer,
@@ -222,6 +281,17 @@ func TestMultiNode_ScaleDownRemovesExtra(t *testing.T) {
 	assert.Equal(t, len(added), 0)
 	assert.Equal(t, len(updated), 0)
 	assert.Equal(t, len(removed), 2)
+}
+
+func TestMultiNode_TLSClusterReplication(t *testing.T) {
+	nodes := buildTLSClusterNodes(t, 3)
+	bootstrapSingle(t, nodes)
+	leader := joinAll(t, nodes)
+
+	assert.NilError(t, leader.CreateChannel(&Channel{ID: "tls-joined"}))
+	for i := 1; i < len(nodes); i++ {
+		waitForChannel(t, nodes[i].store, "tls-joined")
+	}
 }
 
 func TestMultiNode_FollowerCleanState(t *testing.T) {

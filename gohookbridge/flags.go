@@ -1,6 +1,8 @@
 package gohookbridge
 
 import (
+	"time"
+
 	"github.com/urfave/cli/v2"
 )
 
@@ -265,6 +267,107 @@ var ServerFlags = []cli.Flag{
 		Name:    "raft-peers",
 		Usage:   "Other Raft node IDs and addresses (node2=addr:port,node3=addr:port). Not needed for single-node",
 		EnvVars: []string{"GOSMEE_RAFT_PEERS"},
+	},
+	&cli.StringFlag{
+		Name:    "raft-advertise-addr",
+		Usage:   "Raft advertise host:port for peers. Empty derives the pod FQDN from the StatefulSet/headless Service flags",
+		EnvVars: []string{"GOSMEE_RAFT_ADVERTISE_ADDR"},
+	},
+	&cli.IntFlag{
+		Name:    "raft-replicas",
+		Usage:   "Number of Raft voters for DNS discovery",
+		Value:   1,
+		EnvVars: []string{"GOSMEE_RAFT_REPLICAS"},
+	},
+	&cli.StringFlag{
+		Name:    "raft-statefulset-name",
+		Usage:   "StatefulSet name for DNS peer discovery (<sts>-<i> pod names)",
+		EnvVars: []string{"GOSMEE_RAFT_STATEFULSET_NAME"},
+	},
+	&cli.StringFlag{
+		Name:    "raft-headless-service",
+		Usage:   "Headless Service name for DNS peer discovery",
+		EnvVars: []string{"GOSMEE_RAFT_HEADLESS_SERVICE"},
+	},
+	&cli.StringFlag{
+		Name:    "raft-namespace",
+		Usage:   "Namespace for DNS peer discovery. Empty uses the POD_NAMESPACE env var",
+		EnvVars: []string{"GOSMEE_RAFT_NAMESPACE"},
+	},
+	&cli.StringFlag{
+		Name:    "raft-cluster-domain",
+		Usage:   "Cluster DNS suffix appended to peer addresses. Empty ends at .svc",
+		Value:   "cluster.local",
+		EnvVars: []string{"GOSMEE_RAFT_CLUSTER_DOMAIN"},
+	},
+	&cli.DurationFlag{
+		Name:    "raft-leader-wait-timeout",
+		Usage:   "Budget for waiting for a leader and a clean Raft state at startup",
+		Value:   60 * time.Second,
+		EnvVars: []string{"GOSMEE_RAFT_LEADER_WAIT_TIMEOUT"},
+	},
+	&cli.BoolFlag{
+		Name:    "raft-recovery-mode",
+		Usage:   "Clear stale Raft state (BoltDB, snapshots) and bootstrap a fresh cluster. Manual quorum-loss recovery only",
+		EnvVars: []string{"GOSMEE_RAFT_RECOVERY_MODE"},
+	},
+	&cli.BoolFlag{
+		Name:    "raft-no-snapshot-restore",
+		Usage:   "Disable automatic snapshot restore on start (data loss after log compaction; leave false)",
+		EnvVars: []string{"GOSMEE_RAFT_NO_SNAPSHOT_RESTORE"},
+	},
+	&cli.Float64Flag{
+		Name:    "raft-performance-multiplier",
+		Usage:   "Scale Raft election/heartbeat/lease timeouts (Helm sets 5.0)",
+		Value:   1.0,
+		EnvVars: []string{"GOSMEE_RAFT_PERFORMANCE_MULTIPLIER"},
+	},
+	&cli.BoolFlag{
+		Name:    "raft-tls-enabled",
+		Usage:   "Enable mTLS for the Raft transport",
+		EnvVars: []string{"GOSMEE_RAFT_TLS_ENABLED"},
+	},
+	&cli.StringFlag{
+		Name:    "raft-tls-ca-secret",
+		Usage:   "Kubernetes Secret name used to share the internal Raft CA across nodes",
+		EnvVars: []string{"GOSMEE_RAFT_TLS_CA_SECRET"},
+	},
+	&cli.BoolFlag{
+		Name:    "raft-tls-ca-bootstrap",
+		Usage:   "Force this node to mint and share the Raft CA (else ordinal 0 does)",
+		EnvVars: []string{"GOSMEE_RAFT_TLS_CA_BOOTSTRAP"},
+	},
+	&cli.StringFlag{
+		Name:    "raft-tls-dir",
+		Usage:   "Directory for Raft TLS material. Default <raft-dir>/tls",
+		EnvVars: []string{"GOSMEE_RAFT_TLS_DIR"},
+	},
+	&cli.DurationFlag{
+		Name:    "raft-tls-validity",
+		Usage:   "Validity of the Raft leaf certificate",
+		Value:   8760 * time.Hour,
+		EnvVars: []string{"GOSMEE_RAFT_TLS_VALIDITY"},
+	},
+	&cli.BoolFlag{
+		Name:    "raft-tls-client-auth",
+		Usage:   "Require and verify peer client certificates (mTLS)",
+		Value:   true,
+		EnvVars: []string{"GOSMEE_RAFT_TLS_CLIENT_AUTH"},
+	},
+	&cli.StringFlag{
+		Name:    "raft-tls-ca-cert",
+		Usage:   "Manual CA certificate path (disables auto CA mode)",
+		EnvVars: []string{"GOSMEE_RAFT_TLS_CA_CERT"},
+	},
+	&cli.StringFlag{
+		Name:    "raft-tls-cert",
+		Usage:   "Manual leaf certificate path (disables auto CA mode)",
+		EnvVars: []string{"GOSMEE_RAFT_TLS_CERT"},
+	},
+	&cli.StringFlag{
+		Name:    "raft-tls-key",
+		Usage:   "Manual leaf key path (disables auto CA mode)",
+		EnvVars: []string{"GOSMEE_RAFT_TLS_KEY"},
 	},
 	&cli.StringFlag{
 		Name:    "bootstrap-config-file",
