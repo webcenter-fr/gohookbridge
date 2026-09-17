@@ -4,5 +4,6 @@
   "no-inline-html": false,
   "MD013": false,
   "MD025": false,
-  "MD060": false
+  "MD060": false,
+  "MD024": { "siblings_only": true }
 }

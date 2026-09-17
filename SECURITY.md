@@ -458,6 +458,7 @@ projects:
 ## Raft Cluster Security
 
 Raft inter-node communication uses TCP (not TLS in the current implementation).
+
 - Run Raft transport on private network interfaces only
 - Firewall the Raft port (`--raft-bind-addr`) to cluster nodes only
 - The Raft data directory (`--raft-dir`) contains all configuration including secrets — protect with filesystem permissions (`0700`)
@@ -466,6 +467,7 @@ Raft inter-node communication uses TCP (not TLS in the current implementation).
 ## NATS Cluster Security
 
 NATS inter-node cluster routes use TCP (not TLS in the current implementation).
+
 - The NATS client port (`--nats-port`, default `4222`) binds to `127.0.0.1` and is for in-process use only — do not expose it externally.
 - The NATS cluster port (`--nats-cluster-port`, default `6222`) binds to `0.0.0.0` for inter-node communication. Firewall this port to cluster peers only.
 - NATS cluster routes are unencrypted. In production HA deployments, use a secure overlay network (VPC, VXLAN, WireGuard) or configure NATS TLS.

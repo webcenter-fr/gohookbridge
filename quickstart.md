@@ -24,12 +24,14 @@ This guide covers two deployment modes:
 git clone https://github.com/webcenter-fr/gohookbridge
 cd gohookbridge
 
-# Build the binary
+# Build the binary (requires Node.js 22+ for the Nuxt web build)
 make build
 
 # Verify
 ./bin/gohookbridge --help
 ```
+
+`make build` runs `nuxt generate` for the admin UI, copies the static output into `gohookbridge/web/static/`, and embeds it into the Go binary. Node.js 22+ is required for this step.
 
 Or install directly:
 
@@ -124,6 +126,49 @@ helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
 kubectl get pods -n gohookbridge
 helm status gohookbridge -n gohookbridge
 ```
+
+### High Availability with Helm (3 replicas)
+
+The chart defaults to `server.replicas: 3` and deploys the server as a StatefulSet with a headless Service, per-pod Raft PVCs, and deterministic `--raft-peers` / `--nats-routes` derived from the replica count. For a home/lab cluster, keep the environment-specific values in a gitignored `helm/gohookbridge/values-home.yaml`:
+
+```yaml
+fullnameOverride: gohookbridge
+server:
+  replicas: 3
+  publicURL: "https://gohookbridge-test.home.webcenter.fr"
+  bootstrap:
+    enabled: true
+    config:
+      global:
+        server:
+          behind_reverse_proxy: true
+      users:
+        - username: admin
+          password: CHANGE_ME
+          roles: [admin]
+          channels: ["*"]
+  ingress:
+    enabled: true
+    className: traefik
+    hosts: ["gohookbridge-test.home.webcenter.fr"]
+    tls:
+      - hosts: ["gohookbridge-test.home.webcenter.fr"]
+        secretName: gohookbridge-test-tls
+```
+
+```shell
+helm upgrade --install gohookbridge ./helm/gohookbridge \
+  --namespace gohookbridge --create-namespace \
+  --values helm/gohookbridge/values-home.yaml
+
+# Verify the rendered peer/route strings before applying
+helm template gohookbridge ./helm/gohookbridge \
+  --namespace gohookbridge \
+  --values helm/gohookbridge/values-home.yaml \
+  | grep -A1 'raft-peers\|nats-routes'
+```
+
+Each pod gets its own Raft data volume via `volumeClaimTemplates`. If the cluster never forms quorum, delete the PVCs and bootstrap a single node first (`kubectl scale statefulset gohookbridge-server -n gohookbridge --replicas=1`), then scale back to 3.
 
 ### Server Deployment
 

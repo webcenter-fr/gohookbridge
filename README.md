@@ -448,6 +448,8 @@ The Admin UI at `/admin` provides a web interface for managing:
 - Global configuration
 - RBAC roles and bindings
 
+The UI is a Nuxt 4 static SPA (client-side rendered) that is embedded directly into the Go binary at build time — there is no Node.js runtime in production. The single binary serves the SPA plus all `/api`, `/events`, `/auth`, and OIDC routes.
+
 Access to the Admin UI requires a valid session (login via `/login`). On first boot with no users, create an admin user via `bootstrap.yaml`.
 
 #### Using Your Server
@@ -482,12 +484,12 @@ projects:
 For server-side encryption (AES-256-GCM), use `encryption_mode: server_side` with `encryption_key`.
 
 Key points:
+
 - Channels with `encryption_mode: e2e` are protected and require authentication to subscribe.
 - All events on an E2E channel are encrypted with the single shared channel public key.
 - The private key is distributed to authorized clients via the Admin UI or Kubernetes Secrets.
 - Standard webhook providers can POST plaintext directly — the server encrypts automatically.
 - For true E2E (server never sees plaintext), use `gohookbridge produce` or `gohookbridge proxy`.
-```
 
 Important:
 
@@ -547,6 +549,7 @@ For a full security reference — including webhook signature validation, IP res
 ## High Availability with NATS
 
 Gohookbridge uses a two-layer architecture for high availability:
+
 - **Raft** (ports 6001): replicates **configuration** (projects, users, global settings). Slow, durable, strongly consistent.
 - **NATS** (ports 4222/6222): distributes **webhook data** in real time. Fast, ephemeral, eventually consistent.
 

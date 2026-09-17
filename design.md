@@ -81,6 +81,7 @@ graph TB
 ```
 
 **Key insight:** Raft and NATS are two independent consensus/messaging layers with different purposes:
+
 - **Raft** (port 6001): replicates **configuration** (projects, users, global settings). Slow, durable, strongly consistent.
 - **NATS** (ports 4222/6222): distributes **webhook data** in real time. Fast, ephemeral, eventually consistent.
 
@@ -172,7 +173,7 @@ graph LR
 
 **NATS subject topology:**
 
-```
+```text
 webhook.>              ← wildcard subscription (feeds ring buffer on each instance)
 webhook.{channelID}    ← per-channel publish/subscribe
 webhook.abc123         ← example channel
@@ -219,6 +220,7 @@ server.Options{
 ```
 
 **Client connection (in-process, no network):**
+
 ```go
 nc, _ := nats.Connect("nats://localhost:4222")
 nc.Subscribe("webhook.>", func(msg *nats.Msg) {
@@ -308,6 +310,7 @@ sequenceDiagram
 ```
 
 **Memory estimation:**
+
 - 10000 entries × ~16KB average payload = ~160MB max
 - With TTL of 1h and typical webhook rate of 100/min: ~6000 entries, ~96MB typical
 - Configurable via `--nats-buffer-size` and `--nats-buffer-ttl`
@@ -469,6 +472,7 @@ sequenceDiagram
 ```
 
 **Validation chain (unchanged from current):**
+
 1. `Content-Type: application/json` check
 2. `MaxBytesReader` limit (project-level or global default)
 3. Webhook signature validation (GitHub HMAC-SHA256, GitLab token, Bitbucket HMAC, Gitea)
@@ -556,6 +560,7 @@ flowchart TD
 ```
 
 **Eviction is dual-threshold:**
+
 1. **Size-based**: When `len(entries) > maxSize`, oldest entry removed on append (instant)
 2. **Time-based**: Cleanup goroutine removes entries older than `maxAge` every 30 seconds
 
@@ -629,6 +634,7 @@ sequenceDiagram
 ```
 
 **Ring buffer Get logic:**
+
 - `since` defaults to `now - maxAge` (1 hour)
 - Returns entries in chronological order (appended order)
 - Limits to `limit` entries (default 100)
@@ -658,6 +664,7 @@ flowchart TB
 ```
 
 **Recovery when Instance B comes back:**
+
 1. Raft: catches up via AppendEntries from leader
 2. NATS: reconnects to cluster, syncs routes
 3. Ring buffer: starts fresh (empty)
@@ -758,7 +765,7 @@ Rate limiting restricts the number of HTTP requests a single IP address can make
 
 Rate limiting runs after the ban check but before in-process business middleware:
 
-```
+```text
 mainRouter:
   1. RequestID
   2. safeLogger
@@ -832,21 +839,25 @@ The `recordFailure` → `banIfSuspicious` pipeline is called at each auth failur
 ## Error Handling
 
 ### NATS unavailable at publish time
+
 - NATS client has built-in reconnect with backoff
 - If NATS is down, publish returns error → HTTP handler returns 503
 - Sender (GitHub) will retry the webhook
 
 ### NATS server crash
+
 - Embedded server process is the same as gohookbridge → crash kills gohookbridge
 - Systemd/Kubernetes restarts the pod
 - Raft and NATS both recover from their persisted state
 
 ### Ring buffer full
+
 - Oldest entries evicted on append (FIFO)
 - SSE client may not receive all historical messages
 - Acceptable: webhooks are best-effort, sender retries
 
 ### SSE client disconnect during live stream
+
 - `r.Context().Done()` fires → handler calls `broker.Unsubscribe()`
 - Channel closed, goroutine exits
 - No resource leak
