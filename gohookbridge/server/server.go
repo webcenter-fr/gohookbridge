@@ -10,15 +10,18 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -856,15 +859,77 @@ func serve(c *cli.Context) error {
 
 	explicitPublicURL := c.String("public-url")
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	hostname, _ := os.Hostname()
+	discovery := store.RaftDiscoveryConfig{
+		NodeID:          c.String("raft-node-id"),
+		AdvertiseAddr:   c.String("raft-advertise-addr"),
+		BindAddr:        c.String("raft-bind-addr"),
+		Peers:           toRaftPeers(c.StringSlice("raft-peers")),
+		Replicas:        c.Int("raft-replicas"),
+		StatefulSetName: c.String("raft-statefulset-name"),
+		HeadlessService: c.String("raft-headless-service"),
+		Namespace:       effectiveNamespace(c),
+		ClusterDomain:   c.String("raft-cluster-domain"),
+	}
+	resolver := store.NewPeerResolver(&discovery)
+	advertise, err := store.DeriveAdvertiseAddr(&discovery, hostname)
+	if err != nil {
+		return fmt.Errorf("derive raft advertise addr: %w", err)
+	}
+	raftTLS, err := buildRaftTLSConfig(c, discovery, hostname)
+	if err != nil {
+		return fmt.Errorf("build raft TLS config: %w", err)
+	}
+
+	leaderWaitTimeout := c.Duration("raft-leader-wait-timeout")
 	rs, err := store.NewRaftStore(store.RaftConfig{
-		Dir:           c.String("raft-dir"),
-		NodeID:        c.String("raft-node-id"),
-		BindAddr:      c.String("raft-bind-addr"),
-		Peers:         c.StringSlice("raft-peers"),
-		BootstrapPath: c.String("bootstrap-config-file"),
+		Dir:                   c.String("raft-dir"),
+		NodeID:                c.String("raft-node-id"),
+		BindAddr:              c.String("raft-bind-addr"),
+		AdvertiseAddr:         advertise,
+		Peers:                 c.StringSlice("raft-peers"),
+		BootstrapPath:         c.String("bootstrap-config-file"),
+		Replicas:              c.Int("raft-replicas"),
+		StatefulSetName:       c.String("raft-statefulset-name"),
+		HeadlessService:       c.String("raft-headless-service"),
+		Namespace:             effectiveNamespace(c),
+		ClusterDomain:         c.String("raft-cluster-domain"),
+		RecoveryMode:          c.Bool("raft-recovery-mode"),
+		NoSnapshotRestore:     c.Bool("raft-no-snapshot-restore"),
+		PerformanceMultiplier: c.Float64("raft-performance-multiplier"),
+		ApplyTimeout:          10 * time.Second,
+		Resolver:              resolver,
+		TLS:                   raftTLS,
 	})
 	if err != nil {
 		return fmt.Errorf("init raft store: %w", err)
+	}
+	defer func() { _ = rs.Shutdown() }()
+
+	// Wait for ANY leader (followers must not CrashLoop waiting for self
+	// leadership), then start the leader-only membership join loop.
+	leaderCtx, cancelLeader := context.WithTimeout(ctx, leaderWaitTimeout)
+	defer cancelLeader()
+	if err := rs.WaitForLeader(leaderCtx); err != nil {
+		return fmt.Errorf("wait for raft leader: %w", err)
+	}
+	go rs.StartJoinLoop(ctx)
+	if err := rs.WaitForCleanState(leaderCtx); err != nil {
+		return fmt.Errorf("wait for raft clean state: %w", err)
+	}
+
+	// Apply bootstrap.yaml exactly once, on the leader, when the FSM is empty.
+	if err := applyBootstrapOnce(rs, c.String("bootstrap-config-file")); err != nil {
+		return err
+	}
+
+	if rs.IsLeader() {
+		if err := store.MigrateRBAC(rs); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: rbac migration error (server will continue): %v\n", err)
+		}
 	}
 
 	natsCfg := nats.Config{
@@ -921,7 +986,8 @@ func serve(c *cli.Context) error {
 	restrictedRouter.Use(rateLimitMiddleware(rateLimiterInst, rs))
 	restrictedRouter.Use(ipRestrictMiddleware(rs))
 
-	// Always set up session secret if not already configured
+	// Session secret: the leader generates and replicates it; followers poll
+	// for the replicated value before requiring it.
 	secret := rs.SessionSecret()
 	if secret == "" {
 		if rs.IsLeader() {
@@ -935,11 +1001,18 @@ func serve(c *cli.Context) error {
 			}
 			fmt.Fprintf(os.Stderr, "WARNING: Generated random session secret and stored in Raft\n")
 		} else {
-			// Check if there are any users — if so, session secret is required
-			users, _ := rs.ListUsers()
-			providers, _ := rs.OIDCProviders()
-			if len(users) > 0 || len(providers) > 0 {
-				return fmt.Errorf("no session secret configured and node is not the leader: set session_secret via bootstrap.yaml or on the leader node")
+			deadline := time.Now().Add(leaderWaitTimeout)
+			for secret == "" && time.Now().Before(deadline) {
+				time.Sleep(100 * time.Millisecond)
+				secret = rs.SessionSecret()
+			}
+			if secret == "" {
+				// Check if there are any users — if so, session secret is required
+				users, _ := rs.ListUsers()
+				providers, _ := rs.OIDCProviders()
+				if len(users) > 0 || len(providers) > 0 {
+					return fmt.Errorf("no session secret configured and node is not the leader: set session_secret via bootstrap.yaml or on the leader node")
+				}
 			}
 		}
 	}
@@ -955,6 +1028,8 @@ func serve(c *cli.Context) error {
 	mainRouter.Get("/version", retVersion)
 	mainRouter.Get("/health", retVersion)
 	mainRouter.Get("/livez", retVersion)
+	mainRouter.Get("/readyz", retReadyz(rs))
+	mainRouter.Get("/startup", retStartup(rs))
 
 	mainRouter.Get(eventsPath, channelAccessMiddleware(rs, "consume", banTrackerInst)(handleEventsGet(broker, rs)).ServeHTTP)
 
@@ -1013,16 +1088,106 @@ func serve(c *cli.Context) error {
 
 	fmt.Fprintf(os.Stdout, "Serving for webhooks on %s\n", publicURL)
 
-	//nolint:gosec
-	if sslEnabled {
-		//nolint:gosec
-		return http.ListenAndServeTLS(portAddr, certFile, certKey, finalRouter)
-	} else if autoCert {
-		//nolint:gosec
-		return http.Serve(autocert.NewListener(publicURL), finalRouter)
+	srv := &http.Server{
+		Addr:              portAddr,
+		Handler:           finalRouter,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
-	//nolint:gosec
-	return http.ListenAndServe(portAddr, finalRouter)
+
+	// Graceful leave: on SIGTERM transfer Raft leadership before shutting the
+	// HTTP server down, so a rolling restart re-elects a leader promptly.
+	go func() {
+		<-ctx.Done()
+		stepDownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := rs.StepDown(stepDownCtx); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: raft step down: %v\n", err)
+		}
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelShutdown()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	var serveErr error
+	switch {
+	case sslEnabled:
+		serveErr = srv.ListenAndServeTLS(certFile, certKey)
+	case autoCert:
+		serveErr = srv.Serve(autocert.NewListener(publicURL))
+	default:
+		serveErr = srv.ListenAndServe()
+	}
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		return serveErr
+	}
+	return nil
+}
+
+// applyBootstrapOnce applies bootstrap.yaml exactly once: only on the leader,
+// and only while the FSM is still empty. ApplyBootstrap also guards HasData
+// internally; the leader-only + once semantics guarantee a single application.
+func applyBootstrapOnce(rs *store.RaftStore, path string) error {
+	if path == "" || !rs.IsLeader() {
+		return nil
+	}
+	hasData, err := rs.HasData()
+	if err != nil {
+		return err
+	}
+	if hasData {
+		return nil
+	}
+	cfg, err := store.LoadBootstrap(path)
+	if err != nil {
+		return fmt.Errorf("load bootstrap: %w", err)
+	}
+	if err := rs.ApplyBootstrap(cfg); err != nil {
+		return fmt.Errorf("apply bootstrap: %w", err)
+	}
+	return nil
+}
+
+// toRaftPeers parses legacy "id=addr" peer entries into discovery peers.
+func toRaftPeers(entries []string) []store.RaftPeer {
+	peers := make([]store.RaftPeer, 0, len(entries))
+	for _, e := range entries {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			continue
+		}
+		peers = append(peers, store.RaftPeer{ID: parts[0], Address: parts[1]})
+	}
+	return peers
+}
+
+// retReadyz reports readiness: the Raft layer must be a settled Leader/Follower
+// with no un-applied committed entries.
+func retReadyz(rs *store.RaftStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		if rs.IsCleanState() {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "not ready"})
+	}
+}
+
+// retStartup reports whether this node has joined the Raft cluster (voter or
+// leader). Used by the Kubernetes startupProbe.
+func retStartup(rs *store.RaftStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		if rs.IsStarted() {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "started"})
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "starting"})
+	}
 }
 
 type brokerTTLNotifier struct {
