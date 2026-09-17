@@ -107,8 +107,8 @@ spec:
       volumes:
       {{- if .Values.server.bootstrap.enabled }}
       - name: bootstrap
-        configMap:
-          name: {{ include "gohookbridge.fullname" . }}-bootstrap
+        secret:
+          secretName: {{ include "gohookbridge.fullname" . }}-bootstrap
       {{- end }}
   volumeClaimTemplates:
   - metadata:

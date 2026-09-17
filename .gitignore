@@ -2,7 +2,7 @@ bin/*
 .envrc
 result
 tmp
-raft-data/admin-password.txt
+raft-data/
 node_modules/
 .kilo/
 AGENTS.local.md

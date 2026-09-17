@@ -23,7 +23,7 @@ server:
     storageClass: ""                # leave "" for default; k3s local-path
   bootstrap:
     enabled: true
-    config: {}                      # bootstrap.yaml content (admin user + session secret) OR via ConfigMap
+    config: {}                      # bootstrap.yaml content (admin user + session secret), stored in a Secret
   ingress:
     enabled: false
     className: ""
