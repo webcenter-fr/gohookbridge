@@ -27,6 +27,7 @@ server:
   ingress:
     enabled: false
     className: ""
+    annotations: {}                 # e.g. cert-manager.io/cluster-issuer: letsencrypt-prod
     hosts: []
     tls: []
   service:
