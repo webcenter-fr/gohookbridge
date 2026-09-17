@@ -3,8 +3,51 @@ package store
 import (
 	"testing"
 
+	"github.com/hashicorp/raft"
 	"gotest.tools/v3/assert"
 )
+
+func TestBootstrapConfiguration_SkipsSelf(t *testing.T) {
+	cfg := RaftConfig{
+		NodeID:   "node1",
+		BindAddr: "node1.example:6001",
+		Peers: []string{
+			"node1=node1.example:6001",
+			"node2=node2.example:6001",
+			"node3=node3.example:6001",
+		},
+	}
+
+	conf := bootstrapConfiguration(cfg)
+
+	assert.Equal(t, len(conf.Servers), 3)
+	seen := map[raft.ServerID]bool{}
+	for _, s := range conf.Servers {
+		assert.Assert(t, !seen[s.ID], "duplicate server ID %q", s.ID)
+		seen[s.ID] = true
+	}
+	assert.Assert(t, seen["node1"])
+	assert.Assert(t, seen["node2"])
+	assert.Assert(t, seen["node3"])
+}
+
+func TestBootstrapConfiguration_NoPeers(t *testing.T) {
+	conf := bootstrapConfiguration(RaftConfig{NodeID: "solo", BindAddr: "127.0.0.1:6001"})
+
+	assert.Equal(t, len(conf.Servers), 1)
+	assert.Equal(t, string(conf.Servers[0].ID), "solo")
+	assert.Equal(t, string(conf.Servers[0].Address), "127.0.0.1:6001")
+}
+
+func TestBootstrapConfiguration_IgnoresMalformedPeers(t *testing.T) {
+	conf := bootstrapConfiguration(RaftConfig{
+		NodeID:   "node1",
+		BindAddr: "node1.example:6001",
+		Peers:    []string{"malformed", "node2=node2.example:6001"},
+	})
+
+	assert.Equal(t, len(conf.Servers), 2)
+}
 
 func newTestRaftStore(t *testing.T) *RaftStore {
 	t.Helper()
