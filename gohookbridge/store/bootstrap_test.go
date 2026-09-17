@@ -14,8 +14,13 @@ func TestLoadBootstrap_YAML(t *testing.T) {
 	path := filepath.Join(dir, "bootstrap.yaml")
 	content := `global:
   server:
-    maxbodysize: 100
-    behindreverseproxy: true
+    max_body_size: 100
+    behind_reverse_proxy: true
+    session_secret: "0123456789abcdef0123456789abcdef"
+  defaults:
+    webhook_secret: global-secret
+    allowed_ips: ["10.0.0.0/8"]
+    message_ttl_seconds: 3600
 users:
   - username: alice
     password: secret123
@@ -33,6 +38,10 @@ channels:
 	assert.Assert(t, cfg.Global != nil)
 	assert.Equal(t, cfg.Global.Server.MaxBodySize, 100)
 	assert.Assert(t, cfg.Global.Server.BehindReverseProxy)
+	assert.Equal(t, cfg.Global.Server.SessionSecret, "0123456789abcdef0123456789abcdef")
+	assert.Equal(t, cfg.Global.Defaults.WebhookSecret, "global-secret")
+	assert.DeepEqual(t, cfg.Global.Defaults.AllowedIPs, []string{"10.0.0.0/8"})
+	assert.Equal(t, cfg.Global.Defaults.MessageTTLSeconds, 3600)
 
 	assert.Equal(t, len(cfg.Users), 1)
 	assert.Equal(t, cfg.Users[0].Username, "alice")
@@ -50,8 +59,8 @@ func TestLoadBootstrap_JSON(t *testing.T) {
 	content := `{
 		"global": {
 			"server": {
-				"maxbodysize": 200,
-				"corsorigin": "https://example.com"
+				"max_body_size": 200,
+				"cors_origin": "https://example.com"
 			}
 		},
 		"users": [
