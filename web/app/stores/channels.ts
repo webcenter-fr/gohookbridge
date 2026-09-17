@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { api, type Channel } from '../api/client'
+import { api, type Channel } from '~/utils/api'
 
 export const useChannelsStore = defineStore('channels', () => {
   const channels = ref<Channel[]>([])

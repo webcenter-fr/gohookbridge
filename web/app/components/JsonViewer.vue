@@ -1,15 +1,14 @@
 <template>
-  <div class="json-viewer">
-    <div class="toggle-bar" @click="toggleExpanded">
-      <span class="toggle-icon">{{ expanded ? '▼' : '▶' }}</span>
+  <div class="w-full">
+    <div class="cursor-pointer select-none py-0.5" @click="toggleExpanded">
+      <span class="text-xs text-(--ui-text-muted)">{{ expanded ? '▼' : '▶' }}</span>
     </div>
-    <n-code :code="displayText" language="json" />
+    <AppCodeBlock :code="displayText" language="json" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { NCode } from 'naive-ui'
 
 const props = defineProps<{
   data: any
@@ -61,18 +60,3 @@ const displayText = computed(() => {
   }
 })
 </script>
-
-<style scoped>
-.json-viewer {
-  width: 100%;
-}
-.toggle-bar {
-  cursor: pointer;
-  user-select: none;
-  padding: 2px 0;
-}
-.toggle-icon {
-  font-size: 12px;
-  color: #888;
-}
-</style>

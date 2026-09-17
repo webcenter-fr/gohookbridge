@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef } from 'vue'
-import { isE2EEncrypted, decryptE2E } from '../utils/crypto'
+import { isE2EEncrypted, decryptE2E } from '~/utils/crypto'
 
 export interface SSHEvent {
   id: number
