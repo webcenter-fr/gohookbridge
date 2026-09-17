@@ -984,6 +984,9 @@ func serve(c *cli.Context) error {
 
 	// API routes — dynamic auth handles setup mode and authentication
 	apiRouter := chi.NewRouter()
+	// Mutating requests must reach the Raft leader; in an HA deployment the
+	// Service load-balances over all replicas, so followers forward writes.
+	apiRouter.Use(leaderForwardMiddleware(rs, c.Int("port")))
 	apiRouter.Use(RequireAuthDynamic(rs))
 	notifier := &brokerTTLNotifier{broker: broker, rs: rs}
 	store.RegisterAPIHandlers(apiRouter, rs, notifier)

@@ -172,6 +172,14 @@ func (rs *RaftStore) IsLeader() bool {
 	return rs.raft.State() == raft.Leader
 }
 
+// LeaderAddress returns the Raft transport address of the current cluster
+// leader, or an empty string when no leader has been elected yet. The address
+// is the one advertised in the Raft configuration (e.g. a pod DNS name).
+func (rs *RaftStore) LeaderAddress() string {
+	address, _ := rs.raft.LeaderWithID()
+	return string(address)
+}
+
 func (rs *RaftStore) WaitForLeader(timeout time.Duration) error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
