@@ -61,6 +61,8 @@ server:
   # leadership before exiting.
   terminationGracePeriodSeconds: 60
   # PodDisruptionBudget keeps a quorum floor during voluntary disruptions.
+  # Rendered only when replicas > 1 (a minAvailable of 2 with a single replica
+  # would block all voluntary evictions).
   podDisruptionBudget:
     enabled: true
     minAvailable: 2
