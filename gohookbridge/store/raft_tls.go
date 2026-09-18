@@ -79,15 +79,16 @@ func LoadOrBuildRaftTLS(
 		return loadManualRaftTLS(cfg)
 	}
 
+	// Local-only mode cannot form a multi-node cluster: there is no way to
+	// share the CA across pods. Check before generating a local CA so we do
+	// not write throwaway material to disk.
+	if (clientset == nil || cfg.CASecret == "") && isMultiNode {
+		return nil, fmt.Errorf("raft TLS auto-mode requires K8s or manual CA files for multi-node")
+	}
+
 	caCertPEM, caKeyPEM, err := ensureRaftCA(cfg, clientset, namespace, logger)
 	if err != nil {
 		return nil, err
-	}
-
-	// Local-only mode cannot form a multi-node cluster: there is no way to
-	// share the CA across pods.
-	if (clientset == nil || cfg.CASecret == "") && isMultiNode {
-		return nil, fmt.Errorf("raft TLS auto-mode requires K8s or manual CA files for multi-node")
 	}
 
 	ca, err := NewMintingCAFromPEM(caCertPEM, caKeyPEM, cfg.Validity)

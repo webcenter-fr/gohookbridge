@@ -16,7 +16,11 @@ import (
 // shared via a K8s Secret; the bootstrap node is ordinal 0 of the StatefulSet
 // (or forced with --raft-tls-ca-bootstrap).
 func buildRaftTLSConfig(c *cli.Context, discovery store.RaftDiscoveryConfig, hostname string) (*tls.Config, error) {
+	isMultiNode := c.Int("raft-replicas") > 1 || len(c.StringSlice("raft-peers")) > 1
 	if !c.Bool("raft-tls-enabled") {
+		if isMultiNode {
+			log.Printf("WARNING: raft TLS is disabled on a multi-node deployment; Raft traffic (password hashes, session secret, encryption keys) is sent in cleartext (CWE-319/311)")
+		}
 		return nil, nil
 	}
 
@@ -25,7 +29,6 @@ func buildRaftTLSConfig(c *cli.Context, discovery store.RaftDiscoveryConfig, hos
 		tlsDir = filepath.Join(c.String("raft-dir"), "tls")
 	}
 
-	isMultiNode := c.Int("raft-replicas") > 1 || len(c.StringSlice("raft-peers")) > 1
 	caBootstrap := c.Bool("raft-tls-ca-bootstrap") || (isMultiNode && strings.HasSuffix(hostname, "-0")) || !isMultiNode
 
 	commonName := c.String("raft-node-id")
