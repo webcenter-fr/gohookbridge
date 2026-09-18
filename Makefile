@@ -1,5 +1,5 @@
 NAME  := gohookbridge
-MD_FILES := $(shell git ls-files '*.md' ':(exclude).vale/*')
+MD_FILES := $(shell git ls-files '*.md' ':(exclude).vale/*' ':(exclude).opencode/*')
 
 LDFLAGS := -s -w
 FLAGS += -ldflags "$(LDFLAGS)" -buildvcs=true

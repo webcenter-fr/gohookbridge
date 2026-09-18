@@ -556,3 +556,37 @@ Notes on possibly-missing local tools:
 - [ ] `make web-build`, `make lint`, `make test`, `make build`, `make build-all` all pass locally.
 - [ ] `git status` shows only the intended changes; no behavior-affecting code changed.
 - [ ] Branch `fix/remove-orphan-files` pushed; PR opened against `main` (or PR title/body reported if `gh` unavailable).
+
+## 12. Addendum — corrections applied during review
+
+This plan predates three corrections that were applied in the same commit
+(`29e9cab`) or during its review. They are recorded here so the archive matches
+the actual change:
+
+- **`gohookbridge/templates/favicon.svg` — DELETED** (the plan's §2/§3 listed it
+  as KEEP). It is a byte-identical duplicate of the live, embedded
+  `gohookbridge/server/templates/favicon.svg` (`server/server.go:47`). The plan
+  mis-attributed the `//go:embed templates/favicon.svg` directive to the root
+  copy; `go:embed` is package-relative, so the root copy was dead.
+- **`gohookbridge/client/templates/version` — DELETED** (omitted from the plan).
+  It is a byte-identical duplicate of the live, embedded
+  `gohookbridge/templates/version` (`app.go:19`). The client package does not
+  embed a `version` file.
+
+Both deletions are covered by the same verification as the rest of the cleanup
+(`make build`/`make test` prove no `//go:embed` target was lost).
+
+- **`web/dist` — KEEP the `.gitignore`/`.dockerignore` entries** (the plan's
+  §6.1/§6.2 removed them). `web/dist` is not a dead Vite artifact: Nuxt's
+  `symlinkDist()` (`@nuxt/nitro-server`) recreates it as a symlink to
+  `.output/public` on every `nuxt generate` when `nitro.options.static` is set
+  (which `nuxt.config.ts` does). Removing the ignore entries made `git status`
+  dirty after every `make web-build` and let the symlink leak into the Docker
+  build context. The entries were restored; the stale symlink itself was still
+  deleted (it regenerates).
+- **`Makefile` — exclude `.opencode/*` from `MD_FILES`** (the plan removed the
+  `.kilo/*` exclusion). The committed plan file
+  `.opencode/plans/remove-orphan-files.md` is tracked and failed markdownlint,
+  breaking `make lint` and the pre-commit `lint-markdown` hook. The exclusion
+  mirrors the removed `.kilo/*` one, since `.opencode/` is agent tooling rather
+  than project documentation.

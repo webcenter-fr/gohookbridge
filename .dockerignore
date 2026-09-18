@@ -6,4 +6,5 @@ raft-data
 web/node_modules
 web/.nuxt
 web/.output
+web/dist
 gohookbridge/web/static
