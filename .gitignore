@@ -4,11 +4,9 @@ result
 tmp
 raft-data/
 node_modules/
-.kilo/
 AGENTS.local.md
 web/.nuxt/
 web/.output/
 web/.nuxtrc
-web/dist
 gohookbridge/web/static/
 helm/gohookbridge/values-home.yaml

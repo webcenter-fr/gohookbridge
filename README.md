@@ -164,45 +164,20 @@ helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
 
 For full Helm configuration options, see [`helm/gohookbridge/values.yaml`](./helm/gohookbridge/values.yaml).
 
-#### Raw YAML manifests
+The Helm chart is the only supported Kubernetes deployment path; raw manifests
+were removed. It renders the server as a StatefulSet with Raft HA, mTLS,
+per-pod PVCs, and a headless Service. Key values:
 
-Two deployment configurations are available:
+- `server.publicURL` — the public webhook endpoint
+- `server.ingress` — Ingress with TLS (`hosts` / `tls`)
+- `server.bootstrap.config` — admin user + session secret (bootstrap.yaml content)
+- `server.storage.size` — per-pod Raft data PVC size
+- `client.channelURL` / `client.targetURL` — client forwarding source/target
 
-- [gohookbridge-server-deployment.yaml](./misc/gohookbridge-server-deployment.yaml) - For deploying the public-facing server component
-- [gohookbridge-client-deployment.yaml](./misc/gohookbridge-client-deployment.yaml) - For deploying the client component that forwards to internal services
-
-#### Server Deployment
-
-The server deployment exposes a public webhook endpoint to receive incoming webhook events:
-
-```shell
-kubectl apply -f misc/gohookbridge-server-deployment.yaml
-```
-
-Key configuration:
-
-- Set `--public-url` to your actual domain where the service will be exposed
-- Configure an Ingress with TLS or use a service mesh for production use
-- Set `--raft-dir` to a persistent volume for Raft data durability
-- Add `--bootstrap-config-file` pointing to a ConfigMap or Secret with your bootstrap configuration
-- For security, configure webhook signatures, allowed IPs, and auth via `bootstrap.yaml` or Admin UI
-- Configure `behind_reverse_proxy` in global config when your Ingress is the sole path to gohookbridge and overwrites `X-Forwarded-For` / `X-Real-IP`; otherwise the allowlist can be bypassed by spoofed headers (see [SECURITY.md](./SECURITY.md#behind-a-reverse-proxy-safely))
-
-#### Client Deployment
-
-The client deployment connects to a gohookbridge server (either your own or smee.io) and forwards webhook events to internal services:
-
-```shell
-kubectl apply -f misc/gohookbridge-client-deployment.yaml
-```
-
-Key configuration:
-
-- Adjust the first argument to your gohookbridge server URL or smee.io channel
-- Change the second argument to your internal service URL (e.g., `http://service.namespace:8080`)
-- The `--saveDir` flag enables saving webhook payloads to `/tmp/save` for later inspection
-
-For detailed configuration options, please refer to the documentation comments in each deployment file.
+When your Ingress is the sole path to gohookbridge and overwrites
+`X-Forwarded-For` / `X-Real-IP`, configure `behind_reverse_proxy` in the global
+config; otherwise the allowlist can be bypassed by spoofed headers (see
+[SECURITY.md](./SECURITY.md#behind-a-reverse-proxy-safely)).
 
 ### Shell completion
 
