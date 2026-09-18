@@ -559,7 +559,7 @@ Notes on possibly-missing local tools:
 
 ## 12. Addendum — corrections applied during review
 
-This plan predates three corrections that were applied in the same commit
+This plan predates four corrections that were applied in the same commit
 (`29e9cab`) or during its review. They are recorded here so the archive matches
 the actual change:
 
