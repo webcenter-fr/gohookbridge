@@ -219,6 +219,12 @@ The Raft layer supports multi-node HA on Kubernetes:
   `github.com/disaster37/goca` and shared through a K8s Secret; each node
   issues/reuses its own leaf cert. Requires `k8s.io/client-go` and
   `k8s.io/apimachinery`.
+- **Single-replica recovery** (`server/k8s.go`, `store/raft.go`) — when the
+  StatefulSet is scaled to 1, the leaderless survivor waits
+  `--raft-leader-wait-timeout`, confirms `spec.replicas == 1` through the K8s
+  API (RBAC-scoped `get`), restarts itself, and forces a single-voter
+  configuration with `raft.RecoverCluster` (FSM preserved). `replicas > 1`
+  never triggers it; manual quorum loss still uses `--raft-recovery-mode`.
 
 New server flags (all optional; single-node local dev needs none):
 

@@ -624,7 +624,16 @@ reconciles membership as pods scale up/down or restart with a new IP.
 Enable mTLS with `--raft-tls-enabled` and `--raft-tls-ca-secret <secret>`.
 Ordinal 0 mints the internal CA and shares it through the Secret; every node
 issues/reuses its own leaf certificate. The Helm chart enables this by default
-and grants the server ServiceAccount `create`/`get` on Secrets.
+and grants the server ServiceAccount `create`/`get` on Secrets, plus `get` on
+its StatefulSet.
+
+Scaling the StatefulSet to one replica is recovered automatically: without
+quorum the survivor cannot commit the removal of the lost voters, so after
+`--raft-leader-wait-timeout` it confirms `spec.replicas == 1` via the
+Kubernetes API and restarts into a forced single-voter configuration
+(`RecoverCluster`, FSM data preserved). Multi-replica deployments never take
+this path; a genuine quorum loss with `replicas > 1` still requires
+`--raft-recovery-mode`.
 
 Health endpoints:
 

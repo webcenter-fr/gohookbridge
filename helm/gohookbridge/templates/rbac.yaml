@@ -15,6 +15,12 @@ rules:
   resources: ["secrets"]
   resourceNames: ["{{ include "gohookbridge.raftCASecret" . }}"]
   verbs: ["get"]
+# The bootstrap node reads spec.replicas to authorize collapsing the Raft
+# configuration to a single voter after an explicit scale-down to 1 replica.
+- apiGroups: ["apps"]
+  resources: ["statefulsets"]
+  resourceNames: ["{{ include "gohookbridge.fullname" . }}-server"]
+  verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

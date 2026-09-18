@@ -25,7 +25,9 @@ server:
     # Scale Raft election/heartbeat/lease timeouts (flag default stays 1.0).
     performanceMultiplier: 5.0
     # Clear stale Raft state and bootstrap a fresh cluster. Manual
-    # quorum-loss recovery only; leave false for steady state.
+    # quorum-loss recovery only; leave false for steady state. An explicit
+    # scale-down to one replica is recovered automatically (RecoverCluster,
+    # keyed off the StatefulSet's spec.replicas) and does not need this.
     recoveryMode: false
     tls:
       # mTLS for the Raft transport (multi-node default).
@@ -111,7 +113,8 @@ encryption:
   existingSecret: ""
 
 serviceAccount:
-  # Required for the raft CA Secret RBAC when server.raft.tls.enabled.
+  # Required for the raft CA Secret RBAC (and the StatefulSet read used by
+  # single-replica recovery) when server.raft.tls.enabled.
   create: true
   name: ""
 

@@ -885,6 +885,23 @@ func serve(c *cli.Context) error {
 	}
 
 	leaderWaitTimeout := c.Duration("raft-leader-wait-timeout")
+
+	// Automatic single-node collapse: when the operator scales the StatefulSet
+	// down to one replica, Raft cannot commit the membership change that
+	// removes the lost voters (no quorum). The surviving bootstrap node forces
+	// the configuration instead, which is only authorized by an explicit
+	// spec.replicas == 1 on the StatefulSet. Multi-voter deployments are
+	// unaffected and still require --raft-recovery-mode for manual quorum loss.
+	singleNodeRecovery := false
+	var replicaReader *statefulSetReplicaReader
+	if discovery.StatefulSetName != "" && discovery.Namespace != "" && c.Int("raft-replicas") > 1 {
+		replicaReader = newStatefulSetReplicaReader(discovery.Namespace, discovery.StatefulSetName)
+		if replicas, ok := replicaReader.replicas(ctx); ok && replicas == 1 {
+			singleNodeRecovery = true
+			log.Printf("WARNING: StatefulSet %s/%s has 1 replica; enabling single-node Raft recovery", discovery.Namespace, discovery.StatefulSetName)
+		}
+	}
+
 	rs, err := store.NewRaftStore(store.RaftConfig{
 		Dir:                   c.String("raft-dir"),
 		NodeID:                c.String("raft-node-id"),
@@ -898,6 +915,7 @@ func serve(c *cli.Context) error {
 		Namespace:             effectiveNamespace(c),
 		ClusterDomain:         c.String("raft-cluster-domain"),
 		RecoveryMode:          c.Bool("raft-recovery-mode"),
+		SingleNodeRecovery:    singleNodeRecovery,
 		NoSnapshotRestore:     c.Bool("raft-no-snapshot-restore"),
 		PerformanceMultiplier: c.Float64("raft-performance-multiplier"),
 		ApplyTimeout:          10 * time.Second,
@@ -917,6 +935,9 @@ func serve(c *cli.Context) error {
 		return fmt.Errorf("wait for raft leader: %w", err)
 	}
 	go rs.StartJoinLoop(ctx)
+	if replicaReader != nil && strings.HasSuffix(hostname, "-0") {
+		go watchSingleNodeRecovery(ctx, replicaReader, rs, leaderWaitTimeout)
+	}
 	if err := rs.WaitForCleanState(leaderCtx); err != nil {
 		return fmt.Errorf("wait for raft clean state: %w", err)
 	}
@@ -1187,6 +1208,46 @@ func retStartup(rs *store.RaftStore) http.HandlerFunc {
 		}
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "starting"})
+	}
+}
+
+// watchSingleNodeRecovery restarts the bootstrap node when the Raft cluster
+// has been leaderless for leaderWaitTimeout while the StatefulSet is scaled to
+// a single replica. A 3-voter cluster whose other two pods were removed cannot
+// elect a leader or commit a membership change; the restart re-enters serve(),
+// which sees spec.replicas == 1 and collapses the configuration to this node
+// via RecoverCluster. The Kubernetes replica count is the authorization: a
+// multi-replica deployment (e.g. two pods temporarily down) never triggers
+// this path.
+func watchSingleNodeRecovery(ctx context.Context, reader *statefulSetReplicaReader, rs *store.RaftStore, leaderWaitTimeout time.Duration) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	var leaderlessSince time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if rs.IsLeader() || rs.LeaderAddress() != "" {
+				leaderlessSince = time.Time{}
+				continue
+			}
+			if leaderlessSince.IsZero() {
+				leaderlessSince = time.Now()
+				continue
+			}
+			if time.Since(leaderlessSince) < leaderWaitTimeout {
+				continue
+			}
+			replicas, ok := reader.replicas(ctx)
+			if !ok || replicas != 1 {
+				continue
+			}
+			log.Printf("WARNING: no Raft leader for %s while the StatefulSet has 1 replica; restarting to force single-node recovery", leaderWaitTimeout)
+			_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+			return
+		}
 	}
 }
 

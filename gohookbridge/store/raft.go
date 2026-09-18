@@ -33,18 +33,25 @@ type RaftStore struct {
 }
 
 type RaftConfig struct {
-	Dir                   string
-	NodeID                string
-	BindAddr              string
-	AdvertiseAddr         string // "" = derive from hostname+headless+port / bind host
-	Peers                 []string
-	BootstrapPath         string
-	Replicas              int
-	StatefulSetName       string
-	HeadlessService       string
-	Namespace             string
-	ClusterDomain         string
-	RecoveryMode          bool
+	Dir             string
+	NodeID          string
+	BindAddr        string
+	AdvertiseAddr   string // "" = derive from hostname+headless+port / bind host
+	Peers           []string
+	BootstrapPath   string
+	Replicas        int
+	StatefulSetName string
+	HeadlessService string
+	Namespace       string
+	ClusterDomain   string
+	RecoveryMode    bool
+	// SingleNodeRecovery collapses an existing multi-voter configuration to
+	// this node when the StatefulSet is intentionally scaled to one replica.
+	// Raft cannot commit the configuration change that removes the missing
+	// voters without their quorum, so the surviving node must force the new
+	// configuration with RecoverCluster. Set by the server from the
+	// StatefulSet's spec.replicas; never active for steady-state replicas > 1.
+	SingleNodeRecovery    bool
 	NoSnapshotRestore     bool // default false (snapshot restore on restart)
 	PerformanceMultiplier float64
 	ApplyTimeout          time.Duration
@@ -164,9 +171,33 @@ func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
 	}
 	ApplyPerformanceMultiplier(raftCfg, cfg.PerformanceMultiplier)
 
-	if shouldBootstrap {
-		configuration := raftConfigurationFromPeers([]RaftPeer{{ID: nodeID, Address: advertise}})
-		if err := raft.BootstrapCluster(raftCfg, logStore, stableStore, snapStore, transport, configuration); err != nil && !errors.Is(err, raft.ErrCantBootstrap) {
+	singleVoterConfig := raftConfigurationFromPeers([]RaftPeer{{ID: nodeID, Address: advertise}})
+	recovered := false
+	if cfg.SingleNodeRecovery && shouldBootstrap && !cfg.RecoveryMode {
+		hasState, stateErr := raft.HasExistingState(logStore, stableStore, snapStore)
+		if stateErr != nil {
+			_ = closeRaftTransport(transport)
+			_ = db.Close()
+			return nil, fmt.Errorf("check existing raft state: %w", stateErr)
+		}
+		if hasState {
+			// The StatefulSet is scaled to one replica, so the other voters are
+			// gone and their removal can never reach quorum. Force the
+			// configuration to this single voter; RecoverCluster replays the
+			// existing log into the FSM and snapshots it, so replicated config
+			// survives.
+			if err := raft.RecoverCluster(raftCfg, fsm, logStore, stableStore, snapStore, transport, singleVoterConfig); err != nil {
+				_ = closeRaftTransport(transport)
+				_ = db.Close()
+				return nil, fmt.Errorf("single-node raft recovery: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "WARNING: single-node recovery: forced Raft configuration to %q (StatefulSet scaled to 1 replica)\n", nodeID)
+			recovered = true
+		}
+	}
+
+	if shouldBootstrap && !recovered {
+		if err := raft.BootstrapCluster(raftCfg, logStore, stableStore, snapStore, transport, singleVoterConfig); err != nil && !errors.Is(err, raft.ErrCantBootstrap) {
 			_ = closeRaftTransport(transport)
 			_ = db.Close()
 			return nil, fmt.Errorf("bootstrap raft cluster: %w", err)

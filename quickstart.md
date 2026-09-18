@@ -168,7 +168,7 @@ helm template gohookbridge ./helm/gohookbridge \
   | grep -A1 'raft-advertise-addr\|raft-peers\|raft-replicas\|raft-tls-ca-secret\|nats-routes\|path: /readyz\|path: /startup'
 ```
 
-Each pod gets its own Raft data volume via `volumeClaimTemplates`. If the cluster never forms quorum, delete the PVCs and bootstrap a single node first (`kubectl scale statefulset gohookbridge-server -n gohookbridge --replicas=1`), then scale back to 3.
+Each pod gets its own Raft data volume via `volumeClaimTemplates`. Scaling the StatefulSet up or down (for example 3→2 or back) is reconciled by the leader's join loop. Scaling all the way down to **one** replica is special: Raft can never commit the membership change that removes the two lost voters (no quorum), so the surviving ordinal-0 pod waits for `--raft-leader-wait-timeout`, verifies `spec.replicas == 1` through the Kubernetes API, restarts once, and forces the configuration to itself with `RecoverCluster` (replicated config is preserved). It then serves as a single-voter cluster, and scaling back to 3 re-adds the other voters automatically. The chart grants the server ServiceAccount `get` on its StatefulSet for this check (`server.raft.tls.enabled`). If the cluster instead loses quorum *without* an explicit scale-down (for example two PVCs are deleted at once), delete the PVCs and use `--set server.raft.recoveryMode=true` as described below.
 
 #### Migrating an existing cluster to DNS discovery
 

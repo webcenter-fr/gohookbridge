@@ -175,6 +175,15 @@ implementation:
 8. **mTLS** (`raft_tls.go`) — ordinal 0 mints the internal CA via
    `github.com/disaster37/goca` and shares it through a K8s Secret; each node
    issues/reuses its own leaf cert, re-issuing when the CA or SAN set changes.
+9. **Scale-down to one replica** — a 3-voter configuration cannot commit the
+   removal of two lost voters (no quorum), and the survivor cannot elect
+   itself. When `spec.replicas == 1` is confirmed through the Kubernetes API
+   (RBAC-scoped `get` on the StatefulSet), the watchdog restarts the
+   ordinal-0 pod; startup then calls `raft.RecoverCluster` to force a
+   single-voter configuration, replaying the existing log into the FSM and
+   snapshotting it (config preserved). Scaling back to 3 re-adds the other
+   voters through the join loop. Without the explicit scale-down signal,
+   quorum loss still requires `--raft-recovery-mode`.
 
 `NoSnapshotRestoreOnStart` defaults to **false** so Raft restores from the
 latest snapshot on restart (required after log compaction).
