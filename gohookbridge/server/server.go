@@ -951,7 +951,7 @@ func serve(c *cli.Context) error {
 		return fmt.Errorf("init raft store: %w", err)
 	}
 	defer func() { _ = rs.Shutdown() }()
-	if generationStore != nil && localGeneration != clusterGeneration {
+	if generationStore != nil {
 		if err := writeLocalGeneration(c.String("raft-dir"), clusterGeneration); err != nil {
 			log.Printf("WARNING: persist raft generation: %v", err)
 		}
