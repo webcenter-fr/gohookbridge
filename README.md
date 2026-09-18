@@ -631,8 +631,11 @@ Scaling the StatefulSet to one replica is recovered automatically: without
 quorum the survivor cannot commit the removal of the lost voters, so after
 `--raft-leader-wait-timeout` it confirms `spec.replicas == 1` via the
 Kubernetes API and restarts into a forced single-voter configuration
-(`RecoverCluster`, FSM data preserved). Multi-replica deployments never take
-this path; a genuine quorum loss with `replicas > 1` still requires
+(`RecoverCluster`, FSM data preserved). Recoveries bump a cluster generation
+stored in the CA Secret; nodes that restart with an older generation clear
+their stale configuration and rejoin, so scaling back up is safe. The join
+loop only adds peers whose pod DNS resolves. Multi-replica deployments never
+take this path; a genuine quorum loss with `replicas > 1` still requires
 `--raft-recovery-mode`.
 
 Health endpoints:

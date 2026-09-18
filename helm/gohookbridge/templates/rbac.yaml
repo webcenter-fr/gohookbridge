@@ -14,7 +14,9 @@ rules:
 - apiGroups: [""]
   resources: ["secrets"]
   resourceNames: ["{{ include "gohookbridge.raftCASecret" . }}"]
-  verbs: ["get"]
+  # get: read the shared CA; update: bump the recovery generation on the
+  # bootstrap node so stale nodes fence themselves off and rejoin.
+  verbs: ["get", "update"]
 # The bootstrap node reads spec.replicas to authorize collapsing the Raft
 # configuration to a single voter after an explicit scale-down to 1 replica.
 - apiGroups: ["apps"]

@@ -181,9 +181,16 @@ implementation:
    (RBAC-scoped `get` on the StatefulSet), the watchdog restarts the
    ordinal-0 pod; startup then calls `raft.RecoverCluster` to force a
    single-voter configuration, replaying the existing log into the FSM and
-   snapshotting it (config preserved). Scaling back to 3 re-adds the other
-   voters through the join loop. Without the explicit scale-down signal,
-   quorum loss still requires `--raft-recovery-mode`.
+   snapshotting it (config preserved). The join loop only adds peers whose
+   pod FQDN currently resolves, so the deleted voters are not resurrected.
+10. **Generation fencing** — a recovery (single-node collapse or
+    `--raft-recovery-mode`) bumps a generation stored in the raft CA Secret.
+    A node that starts with an older generation still holds the pre-recovery
+    configuration and could form a separate quorum with other stale nodes;
+    it clears its Raft state (the FSM is rebuilt by the bootstrap node's
+    snapshot) and rejoins through the join loop. Scaling back to 3 therefore
+    re-adds the other voters automatically. Without the explicit scale-down
+    signal, quorum loss still requires `--raft-recovery-mode`.
 
 `NoSnapshotRestoreOnStart` defaults to **false** so Raft restores from the
 latest snapshot on restart (required after log compaction).

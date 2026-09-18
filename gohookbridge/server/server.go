@@ -902,6 +902,31 @@ func serve(c *cli.Context) error {
 		}
 	}
 
+	// Generation fencing: a recovery bumps the cluster generation shared
+	// through the CA Secret (bootstrap node only). A node that starts with an
+	// older generation still holds a pre-recovery configuration and could form
+	// a separate quorum with other stale nodes; it clears its Raft state and
+	// rejoins the bootstrap node instead.
+	generationStore := newRaftGenerationStore(effectiveNamespace(c), c.String("raft-tls-ca-secret"))
+	bootstrapNode := strings.HasSuffix(hostname, "-0") || c.Int("raft-replicas") <= 1
+	var clusterGeneration uint64
+	if generationStore != nil {
+		clusterGeneration, _ = generationStore.read(ctx)
+	}
+	localGeneration, _ := readLocalGeneration(c.String("raft-dir"))
+	if generationStore != nil && bootstrapNode && (singleNodeRecovery || c.Bool("raft-recovery-mode")) {
+		if next, genErr := generationStore.bump(ctx); genErr != nil {
+			log.Printf("WARNING: raft generation bump failed (%v); stale nodes may not rejoin cleanly", genErr)
+		} else {
+			clusterGeneration = next
+			localGeneration = next
+		}
+	}
+	staleGeneration := !bootstrapNode && clusterGeneration > localGeneration
+	if staleGeneration {
+		log.Printf("WARNING: raft generation %d supersedes local %d; clearing stale Raft state to rejoin", clusterGeneration, localGeneration)
+	}
+
 	rs, err := store.NewRaftStore(store.RaftConfig{
 		Dir:                   c.String("raft-dir"),
 		NodeID:                c.String("raft-node-id"),
@@ -914,7 +939,7 @@ func serve(c *cli.Context) error {
 		HeadlessService:       c.String("raft-headless-service"),
 		Namespace:             effectiveNamespace(c),
 		ClusterDomain:         c.String("raft-cluster-domain"),
-		RecoveryMode:          c.Bool("raft-recovery-mode"),
+		RecoveryMode:          c.Bool("raft-recovery-mode") || staleGeneration,
 		SingleNodeRecovery:    singleNodeRecovery,
 		NoSnapshotRestore:     c.Bool("raft-no-snapshot-restore"),
 		PerformanceMultiplier: c.Float64("raft-performance-multiplier"),
@@ -926,6 +951,11 @@ func serve(c *cli.Context) error {
 		return fmt.Errorf("init raft store: %w", err)
 	}
 	defer func() { _ = rs.Shutdown() }()
+	if generationStore != nil && localGeneration != clusterGeneration {
+		if err := writeLocalGeneration(c.String("raft-dir"), clusterGeneration); err != nil {
+			log.Printf("WARNING: persist raft generation: %v", err)
+		}
+	}
 
 	// Wait for ANY leader (followers must not CrashLoop waiting for self
 	// leadership), then start the leader-only membership join loop.
