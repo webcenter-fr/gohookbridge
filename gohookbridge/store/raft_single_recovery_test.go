@@ -73,6 +73,35 @@ func TestSingleNodeRecovery_CollapsesToSelfAndPreservesData(t *testing.T) {
 	assert.Equal(t, global.Server.MaxBodySize, 4242)
 }
 
+func TestPeerResolvable(t *testing.T) {
+	assert.Assert(t, peerResolvable(RaftPeer{ID: "ip", Address: "127.0.0.1:6001"}))
+	assert.Assert(t, peerResolvable(RaftPeer{ID: "localhost", Address: "localhost:6001"}))
+	assert.Assert(t, peerResolvable(RaftPeer{ID: "unparseable", Address: "no-port"}))
+	assert.Assert(t, !peerResolvable(RaftPeer{ID: "gone", Address: "gohookbridge-gone.invalid:6001"}))
+}
+
+func TestReconcileMembership_SkipsUnresolvableAdds(t *testing.T) {
+	rs := newTestRaftStore(t)
+
+	current, err := rs.GetConfiguration()
+	assert.NilError(t, err)
+	desired := make([]RaftPeer, 0, len(current.Servers)+1)
+	for _, srv := range current.Servers {
+		desired = append(desired, RaftPeer{ID: string(srv.ID), Address: string(srv.Address)})
+	}
+	desired = append(desired, RaftPeer{ID: "gone", Address: "gohookbridge-gone.invalid:6001"})
+
+	added, updated, removed, err := rs.ReconcileMembership(desired, 3*time.Second)
+	assert.NilError(t, err)
+	assert.Equal(t, len(added), 0)
+	assert.Equal(t, len(updated), 0)
+	assert.Equal(t, len(removed), 0)
+
+	after, err := rs.GetConfiguration()
+	assert.NilError(t, err)
+	assert.Equal(t, len(after.Servers), len(current.Servers))
+}
+
 func TestSingleNodeRecovery_DisabledKeepsQuorumRequirement(t *testing.T) {
 	dir := t.TempDir()
 	seedMultiVoterState(t, dir, "node-a")

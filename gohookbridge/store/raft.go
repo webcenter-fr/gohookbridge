@@ -493,9 +493,16 @@ func (rs *RaftStore) ReconcileMembership(desired []RaftPeer, timeout time.Durati
 		}
 	}
 
-	// Add missing voters.
+	// Add missing voters. A voter whose pod does not exist must not be added:
+	// adding a voter to a small cluster can commit through the current
+	// configuration even when the new peer is unreachable, which raises the
+	// quorum requirement and stalls the cluster (e.g. the join loop re-adding
+	// the two deleted pods right after a single-replica recovery).
 	for id, p := range desiredByID {
 		if _, ok := currentByID[id]; !ok {
+			if !peerResolvable(p) {
+				continue
+			}
 			if err := rs.AddVoter(id, p.Address, timeout); err != nil {
 				return added, updated, removed, err
 			}
@@ -514,6 +521,12 @@ func (rs *RaftStore) ReconcileMembership(desired []RaftPeer, timeout time.Durati
 			continue
 		}
 		if addrChanged(string(srv.Address), p.Address) {
+			// Skip a peer that is currently down: removing it would drop the
+			// quorum, and its address only needs updating once its pod exists
+			// again (the stream layer re-resolves DNS on every dial).
+			if !peerResolvable(p) {
+				continue
+			}
 			// Remove and re-add to update the address: raft.AddVoter is a no-op
 			// for existing voters with unchanged addresses.
 			if err := rs.RemoveServer(id, timeout); err != nil {
@@ -536,6 +549,25 @@ func (rs *RaftStore) ReconcileMembership(desired []RaftPeer, timeout time.Durati
 		}
 	}
 	return added, updated, removed, nil
+}
+
+// peerResolvable reports whether a desired peer currently exists, i.e. its
+// address resolves. StatefulSet peers use pod FQDNs that return NXDOMAIN once
+// the pod is deleted; those must never be added to the Raft configuration
+// while absent. IP addresses cannot be probed and are always accepted (the
+// caller's AddVoter then fails or times out exactly as before).
+func peerResolvable(p RaftPeer) bool {
+	host, _, err := net.SplitHostPort(p.Address)
+	if err != nil {
+		return true
+	}
+	if host == "" || net.ParseIP(host) != nil {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
+	return err == nil && len(addrs) > 0
 }
 
 // addrChanged reports whether two server addresses differ. When the desired
