@@ -423,9 +423,25 @@ The bootstrap file is read **once** on the very first boot when the Raft store i
 | `--raft-dir` | `./raft-data` | Raft data directory (BoltDB stores) |
 | `--raft-node-id` | `node1` | Unique Raft node ID |
 | `--raft-bind-addr` | `127.0.0.1:6001` | Raft TCP bind address for inter-node communication |
-| `--raft-peers` | | Other Raft node IDs and addresses (node2=addr:port,node3=addr:port) |
+| `--raft-advertise-addr` | | Advertise host:port for peers; empty derives the pod FQDN |
+| `--raft-peers` | | Raft voter IDs and addresses (`id=addr`); include this node. The first peer bootstraps |
+| `--raft-replicas` | `1` | Number of Raft voters for DNS discovery |
+| `--raft-statefulset-name` | | StatefulSet name for DNS peer discovery (`<sts>-<i>` pod names) |
+| `--raft-headless-service` | | Headless Service name for DNS peer discovery |
+| `--raft-namespace` | | Namespace for DNS discovery; empty uses `POD_NAMESPACE` |
+| `--raft-cluster-domain` | `cluster.local` | Cluster DNS suffix; empty ends at `.svc` |
+| `--raft-leader-wait-timeout` | `60s` | Budget for waiting for a leader and a clean Raft state |
+| `--raft-recovery-mode` | `false` | Clear stale Raft state and bootstrap a fresh cluster |
+| `--raft-no-snapshot-restore` | `false` | Disable snapshot restore on start (leave false) |
+| `--raft-performance-multiplier` | `1.0` | Scale Raft election/heartbeat/lease timeouts |
+| `--raft-tls-enabled` | `false` | Enable mTLS for the Raft transport |
+| `--raft-tls-ca-secret` | | K8s Secret used to share the internal Raft CA |
+| `--raft-tls-ca-bootstrap` | `false` | Force this node to mint and share the Raft CA |
+| `--raft-tls-dir` | `<raft-dir>/tls` | Directory for Raft TLS material |
+| `--raft-tls-validity` | `8760h` | Validity of the Raft leaf certificate |
+| `--raft-tls-client-auth` | `true` | Require and verify peer client certificates |
+| `--raft-tls-ca-cert` / `--raft-tls-cert` / `--raft-tls-key` | | Manual CA/leaf certificate files |
 | `--bootstrap-config-file` | | Path to bootstrap YAML/JSON config file (read once when FSM is empty) |
-|---|---|---|
 
 #### NATS Flags
 
@@ -436,6 +452,7 @@ Available when using the embedded NATS server for real-time webhook fan-out acro
 | `--nats-port` | `0` | Embedded NATS server client port. `0` = disabled (uses in-memory EventBroker) |
 | `--nats-cluster-port` | `6222` | NATS cluster route port for inter-node communication |
 | `--nats-routes` | | NATS cluster route URLs (`nats://host:6222`). Required for HA, same hosts as `--raft-peers` |
+| `--nats-cluster-name` | `gohookbridge` | NATS cluster name; must be identical on every HA node or routes are rejected with `Cluster Name Conflict` |
 | `--nats-buffer-ttl` | `1h` | How long webhook data is retained in the ring buffer for late subscribers |
 | `--nats-buffer-size` | `10000` | Max number of webhook entries kept in the ring buffer |
 
@@ -447,6 +464,8 @@ The Admin UI at `/admin` provides a web interface for managing:
 - Users and their roles
 - Global configuration
 - RBAC roles and bindings
+
+The UI is a Nuxt 4 static SPA (client-side rendered) that is embedded directly into the Go binary at build time — there is no Node.js runtime in production. The single binary serves the SPA plus all `/api`, `/events`, `/auth`, and OIDC routes.
 
 Access to the Admin UI requires a valid session (login via `/login`). On first boot with no users, create an admin user via `bootstrap.yaml`.
 
@@ -482,12 +501,12 @@ projects:
 For server-side encryption (AES-256-GCM), use `encryption_mode: server_side` with `encryption_key`.
 
 Key points:
+
 - Channels with `encryption_mode: e2e` are protected and require authentication to subscribe.
 - All events on an E2E channel are encrypted with the single shared channel public key.
 - The private key is distributed to authorized clients via the Admin UI or Kubernetes Secrets.
 - Standard webhook providers can POST plaintext directly — the server encrypts automatically.
 - For true E2E (server never sees plaintext), use `gohookbridge produce` or `gohookbridge proxy`.
-```
 
 Important:
 
@@ -547,6 +566,7 @@ For a full security reference — including webhook signature validation, IP res
 ## High Availability with NATS
 
 Gohookbridge uses a two-layer architecture for high availability:
+
 - **Raft** (ports 6001): replicates **configuration** (projects, users, global settings). Slow, durable, strongly consistent.
 - **NATS** (ports 4222/6222): distributes **webhook data** in real time. Fast, ephemeral, eventually consistent.
 
@@ -592,6 +612,40 @@ gohookbridge server \
   --nats-routes nats://10.0.0.1:6222,nats://10.0.0.3:6222 \
   --bootstrap-config-file /etc/gohookbridge/bootstrap.yaml
 ```
+
+### Raft HA and mTLS
+
+On Kubernetes, prefer DNS discovery over static peer addresses: pass
+`--raft-statefulset-name`, `--raft-headless-service`, `--raft-replicas`, and
+`--raft-namespace` (or `POD_NAMESPACE`). Each pod binds `0.0.0.0:6001` and
+advertises its stable pod FQDN; only ordinal 0 bootstraps, and the leader
+reconciles membership as pods scale up/down or restart with a new IP.
+
+Enable mTLS with `--raft-tls-enabled` and `--raft-tls-ca-secret <secret>`.
+Ordinal 0 mints the internal CA and shares it through the Secret; every node
+issues/reuses its own leaf certificate. The Helm chart enables this by default
+and grants the server ServiceAccount `create`/`get` on Secrets, plus `get` on
+its StatefulSet.
+
+Scaling the StatefulSet to one replica is recovered automatically: without
+quorum the survivor cannot commit the removal of the lost voters, so after
+`--raft-leader-wait-timeout` it confirms `spec.replicas == 1` via the
+Kubernetes API and restarts into a forced single-voter configuration
+(`RecoverCluster`, FSM data preserved). Recoveries bump a cluster generation
+stored in the CA Secret; nodes that restart with an older generation clear
+their stale configuration and rejoin, so scaling back up is safe. The join
+loop only adds peers whose pod DNS resolves. Multi-replica deployments never
+take this path; a genuine quorum loss with `replicas > 1` still requires
+`--raft-recovery-mode`.
+
+Health endpoints:
+
+| Endpoint | Meaning |
+|---|---|
+| `/livez` | Process liveness (always 200) |
+| `/health` | Backward-compatible alias of `/livez` |
+| `/readyz` | 200 when the Raft layer is a settled Leader/Follower with no un-applied entries |
+| `/startup` | 200 once this node has joined the Raft cluster (voter or leader) |
 
 See [design.md](./design.md) for the full architecture document with data flow diagrams and HA scenario details.
 
@@ -677,8 +731,8 @@ Gohookbridge is webhook-specific. For other tunnelling solutions, check <https:/
 ## Caveats
 
 - Auth and RBAC are now production-grade features. The Admin UI at `/admin` provides session-based authentication, OIDC support, and role-based access control.
-- Raft provides a multi-node consensus layer for high availability, but there is no built-in TLS for Raft inter-node communication. Run Raft on private network interfaces and protect the Raft port with firewalls.
-- Recovery from a full cluster failure requires operator intervention (restore from snapshot or re-initialize the Raft cluster).
+- Raft provides a multi-node consensus layer for high availability. Multi-node deployments should enable mTLS (`--raft-tls-enabled`); without it, Raft traffic (including password hashes, the session secret, and encryption keys) is sent in cleartext. Run Raft on private network interfaces and protect the Raft port with firewalls.
+- Recovery from a full cluster failure requires operator intervention (restore from snapshot or re-initialize the Raft cluster with `--raft-recovery-mode`).
 - Protected channels with encryption are only available when using gohookbridge's own server (not smee.io).
 - This tool is primarily intended for development and testing environments. It hasn't undergone thorough security and performance reviews for all production deployment scenarios.
 

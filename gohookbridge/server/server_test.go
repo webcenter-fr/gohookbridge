@@ -1177,3 +1177,33 @@ func TestChannelTTLPropagation(t *testing.T) {
 	assert.Assert(t, len(historical) >= 1, "expected at least 1 historical message")
 	broker.Unsubscribe("ttl-test", live)
 }
+
+func TestLivezEndpoint(t *testing.T) {
+	w := httptest.NewRecorder()
+	retVersion(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/livez", nil))
+	assert.Equal(t, w.Code, http.StatusOK)
+}
+
+func TestReadyzEndpoint(t *testing.T) {
+	rs := storetest.NewRaftStore(t)
+
+	w := httptest.NewRecorder()
+	retReadyz(rs)(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil))
+	assert.Equal(t, w.Code, http.StatusOK)
+	assert.Assert(t, strings.Contains(w.Body.String(), "ready"))
+
+	// A shut-down node is not clean → 503.
+	assert.NilError(t, rs.Shutdown())
+	w = httptest.NewRecorder()
+	retReadyz(rs)(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil))
+	assert.Equal(t, w.Code, http.StatusServiceUnavailable)
+}
+
+func TestStartupEndpoint(t *testing.T) {
+	rs := storetest.NewRaftStore(t)
+
+	w := httptest.NewRecorder()
+	retStartup(rs)(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/startup", nil))
+	assert.Equal(t, w.Code, http.StatusOK)
+	assert.Assert(t, strings.Contains(w.Body.String(), "started"))
+}

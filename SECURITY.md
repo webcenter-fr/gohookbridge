@@ -457,15 +457,25 @@ projects:
 
 ## Raft Cluster Security
 
-Raft inter-node communication uses TCP (not TLS in the current implementation).
+Multi-node Raft now defaults to **mTLS** (`--raft-tls-enabled`): the internal
+CA is minted by ordinal 0 and shared through a Kubernetes Secret, and every
+node presents a leaf certificate signed by that CA. The Helm chart enables
+this by default and grants the server ServiceAccount `create`/`get` on
+Secrets.
+
+- Enable `--raft-tls-enabled` on every node. Without it, Raft traffic
+  (password hashes, the session secret, and encryption keys) is sent in
+  cleartext (CWE-319/311) — a `WARN` is logged for multi-node cleartext.
 - Run Raft transport on private network interfaces only
 - Firewall the Raft port (`--raft-bind-addr`) to cluster nodes only
 - The Raft data directory (`--raft-dir`) contains all configuration including secrets — protect with filesystem permissions (`0700`)
-- In multi-node clusters, ensure Raft peers are specified via `--raft-peers` on all nodes
+- In multi-node clusters, prefer DNS discovery (`--raft-statefulset-name` / `--raft-headless-service`) or specify Raft peers via `--raft-peers` on all nodes
+- The CA Secret (`--raft-tls-ca-secret`) contains the internal CA private key — restrict access with RBAC and do not export it
 
 ## NATS Cluster Security
 
 NATS inter-node cluster routes use TCP (not TLS in the current implementation).
+
 - The NATS client port (`--nats-port`, default `4222`) binds to `127.0.0.1` and is for in-process use only — do not expose it externally.
 - The NATS cluster port (`--nats-cluster-port`, default `6222`) binds to `0.0.0.0` for inter-node communication. Firewall this port to cluster peers only.
 - NATS cluster routes are unencrypted. In production HA deployments, use a secure overlay network (VPC, VXLAN, WireGuard) or configure NATS TLS.

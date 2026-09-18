@@ -17,6 +17,11 @@ type Config struct {
 	ClusterPort int
 	Routes      []string
 	BufferSize  int
+	// ClusterName is the NATS cluster name shared by all nodes of an HA
+	// deployment. Without it every server generates a random name, route
+	// connections between nodes are rejected with "Cluster Name Conflict",
+	// and webhook fan-out only reaches subscribers on the same node.
+	ClusterName string
 }
 
 type Broker struct {
@@ -56,6 +61,9 @@ func New(cfg Config) (*Broker, error) {
 			Port: cfg.ClusterPort,
 		},
 		Routes: routes,
+	}
+	if cfg.ClusterName != "" {
+		opts.Cluster.Name = cfg.ClusterName
 	}
 
 	ns, err := server.NewServer(opts)

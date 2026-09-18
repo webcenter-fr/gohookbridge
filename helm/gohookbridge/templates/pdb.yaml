@@ -1,0 +1,17 @@
+{{- if and .Values.server.enabled .Values.server.podDisruptionBudget.enabled (gt (int .Values.server.replicas) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "gohookbridge.fullname" . }}-server
+  labels: {{- include "gohookbridge.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.server.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ .Values.server.podDisruptionBudget.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ .Values.server.podDisruptionBudget.maxUnavailable | default 1 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "gohookbridge.name" . }}
+      app.kubernetes.io/component: server
+{{- end }}

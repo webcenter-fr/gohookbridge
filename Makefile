@@ -2,7 +2,7 @@ NAME  := gohookbridge
 TARGET_URL ?= http://localhost:8080
 SMEE_URL ?= https://smee.io/new
 IMAGE_VERSION ?= latest
-MD_FILES := $(shell find . -type f -regex ".*md"  -not -regex '^./vendor/.*' -not -regex '^./.vale/.*' -not -regex "^./.git/.*" -print)
+MD_FILES := $(shell git ls-files '*.md' ':(exclude).vale/*' ':(exclude).kilo/*')
 
 LDFLAGS := -s -w
 FLAGS += -ldflags "$(LDFLAGS)" -buildvcs=true
@@ -36,7 +36,17 @@ $(OUTPUT_DIR)/gohookbridge-proxy-aarch64-linux: FORCE
 web-build:
 	cd web && npm ci && npm run build
 
-test:
+.PHONY: web-typecheck
+web-typecheck:
+	cd web && npm run typecheck
+
+.PHONY: web-test
+web-test:
+	cd web && npm test
+
+# web-build is required before `go test` because gohookbridge/web embeds
+# static/* and the directory is gitignored (absent on a fresh checkout).
+test: web-build web-test
 	@go test $(TEST_FLAGS) ./... 
 
 .PHONY: html-coverage
@@ -48,6 +58,7 @@ clean:
 	@rm -rf $(OUTPUT_DIR)/$(NAME) $(OUTPUT_DIR)/gohookbridge-client $(OUTPUT_DIR)/gohookbridge-proxy $(OUTPUT_DIR)/$(NAME)-aarch64-linux
 
 build: web-build clean
+	@test -f gohookbridge/web/static/index.html || (echo "ERROR: gohookbridge/web/static/index.html missing after web-build. Check nuxt generate output." && exit 1)
 	@echo "building."
 	@mkdir -p $(OUTPUT_DIR)/
 	@go build  $(FLAGS)  -o $(OUTPUT_DIR)/$(NAME) ./cmd/gohookbridge
@@ -60,7 +71,7 @@ build-proxy:
 
 build-all: build build-client build-proxy
 
-lint: lint-go lint-md
+lint: lint-go lint-md web-typecheck
 
 lint-go:
 	@echo "linting."
@@ -71,8 +82,10 @@ lint-go:
 lint-md: ${MD_FILES} ## runs markdownlint and vale on all markdown files
 	@echo "Linting markdown files..."
 	@markdownlint $(MD_FILES)
-	@echo "Grammar check with vale of documentation..."
-	@vale docs/content --minAlertLevel=error --output=line
+	@if [ -d docs/content ] && command -v vale >/dev/null 2>&1; then \
+		echo "Grammar check with vale of documentation..."; \
+		vale docs/content --minAlertLevel=error --output=line; \
+	fi
 
 dev-server:
 	reflex -r '.*\.(tmpl|go)' -s go run ./cmd/gohookbridge -- server --footer "Contact: <a href=\"https://twitter.com/me\">Me</a> - use it at your own risk"

@@ -1,22 +1,86 @@
 server:
   enabled: true
-  replicas: 1
+  replicas: 3                      # HA default
   image:
     repository: ghcr.io/webcenter-fr/gohookbridge
     tag: main
     pullPolicy: IfNotPresent
+  # Bind address inside the container. The server defaults to localhost, which
+  # is not reachable by kubelet probes or Services, so pods must bind 0.0.0.0.
+  address: "0.0.0.0"
   port: 3333
+  raftPort: 6001
+  natsPort: 4222
+  natsClusterPort: 6222
+  natsClusterName: ""             # defaults to the release fullname; must be identical on all nodes
   publicURL: ""
   raftDir: /data/raft
-  resources: {}
+  raft:
+    # Cluster DNS suffix appended to peer addresses
+    # (<pod>.<headless>.<ns>.svc.<clusterDomain>). FQDNs bypass CoreDNS
+    # negative-cache poisoning during bootstrap. Empty ends at .svc.
+    clusterDomain: "cluster.local"
+    # Budget for waiting for a leader and a clean Raft state at startup.
+    leaderWaitTimeout: "60s"
+    # Scale Raft election/heartbeat/lease timeouts (flag default stays 1.0).
+    performanceMultiplier: 5.0
+    # Clear stale Raft state and bootstrap a fresh cluster. Manual
+    # quorum-loss recovery only; leave false for steady state. An explicit
+    # scale-down to one replica is recovered automatically (RecoverCluster,
+    # keyed off the StatefulSet's spec.replicas) and does not need this.
+    recoveryMode: false
+    tls:
+      # mTLS for the Raft transport (multi-node default).
+      enabled: true
+      # K8s Secret used to share the internal CA. Empty defaults to
+      # "<fullname>-raft-ca".
+      caSecret: ""
+      # Require and verify peer client certificates.
+      clientAuth: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  storage:
+    size: 1Gi
+    storageClass: ""                # leave "" for default; k3s local-path
+  bootstrap:
+    enabled: true
+    config: {}                      # bootstrap.yaml content (admin user + session secret), stored in a Secret
   ingress:
     enabled: false
     className: ""
+    annotations: {}                 # e.g. cert-manager.io/cluster-issuer: letsencrypt-prod
     hosts: []
     tls: []
   service:
     type: ClusterIP
     port: 3333
+  # Pod termination grace period: allows the server to transfer Raft
+  # leadership before exiting.
+  terminationGracePeriodSeconds: 60
+  # PodDisruptionBudget keeps a quorum floor during voluntary disruptions.
+  # Rendered only when replicas > 1 (a minAvailable of 2 with a single replica
+  # would block all voluntary evictions).
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  probes:
+    startup:
+      httpGet:
+        path: /startup
+        port: http
+    liveness:
+      httpGet:
+        path: /livez
+        port: http
+    readiness:
+      httpGet:
+        path: /readyz
+        port: http
 
 client:
   enabled: false
@@ -49,7 +113,9 @@ encryption:
   existingSecret: ""
 
 serviceAccount:
-  create: false
+  # Required for the raft CA Secret RBAC (and the StatefulSet read used by
+  # single-replica recovery) when server.raft.tls.enabled.
+  create: true
   name: ""
 
 nameOverride: ""

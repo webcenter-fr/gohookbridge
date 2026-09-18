@@ -24,12 +24,14 @@ This guide covers two deployment modes:
 git clone https://github.com/webcenter-fr/gohookbridge
 cd gohookbridge
 
-# Build the binary
+# Build the binary (requires Node.js 22+ for the Nuxt web build)
 make build
 
 # Verify
 ./bin/gohookbridge --help
 ```
+
+`make build` runs `nuxt generate` for the admin UI, copies the static output into `gohookbridge/web/static/`, and embeds it into the Go binary. Node.js 22+ is required for this step.
 
 Or install directly:
 
@@ -124,6 +126,76 @@ helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
 kubectl get pods -n gohookbridge
 helm status gohookbridge -n gohookbridge
 ```
+
+### High Availability with Helm (3 replicas)
+
+The chart defaults to `server.replicas: 3` and deploys the server as a StatefulSet with a headless Service, per-pod Raft PVCs, and deterministic `--raft-peers` / `--nats-routes` derived from the replica count. Each pod binds `0.0.0.0:6001` and advertises its pod FQDN (`--raft-advertise-addr`), with DNS discovery driven by `--raft-replicas` / `--raft-statefulset-name` / `--raft-headless-service` / `--raft-namespace`. Raft mTLS is enabled by default (`server.raft.tls.enabled: true`), with the internal CA shared through the `<fullname>-raft-ca` Secret. For a home/lab cluster, keep the environment-specific values in a gitignored `helm/gohookbridge/values-home.yaml`:
+
+```yaml
+fullnameOverride: gohookbridge
+server:
+  replicas: 3
+  publicURL: "https://gohookbridge-test.home.webcenter.fr"
+  bootstrap:
+    enabled: true
+    config:
+      global:
+        server:
+          behind_reverse_proxy: true
+      users:
+        - username: admin
+          password: CHANGE_ME
+          roles: [admin]
+          channels: ["*"]
+  ingress:
+    enabled: true
+    className: traefik
+    hosts: ["gohookbridge-test.home.webcenter.fr"]
+    tls:
+      - hosts: ["gohookbridge-test.home.webcenter.fr"]
+        secretName: gohookbridge-test-tls
+```
+
+```shell
+helm upgrade --install gohookbridge ./helm/gohookbridge \
+  --namespace gohookbridge --create-namespace \
+  --values helm/gohookbridge/values-home.yaml
+
+# Verify the rendered peer/route strings before applying
+helm template gohookbridge ./helm/gohookbridge \
+  --namespace gohookbridge \
+  --values helm/gohookbridge/values-home.yaml \
+  | grep -A1 'raft-advertise-addr\|raft-peers\|raft-replicas\|raft-tls-ca-secret\|nats-routes\|path: /readyz\|path: /startup'
+```
+
+Each pod gets its own Raft data volume via `volumeClaimTemplates`. Scaling the StatefulSet up or down (for example 3→2 or back) is reconciled by the leader's join loop, which only adds peers whose pod DNS currently resolves. Scaling all the way down to **one** replica is special: Raft can never commit the membership change that removes the two lost voters (no quorum), so the surviving ordinal-0 pod waits for `--raft-leader-wait-timeout`, verifies `spec.replicas == 1` through the Kubernetes API, restarts once, and forces the configuration to itself with `RecoverCluster` (replicated config is preserved). A recovery bumps a cluster *generation* kept in the raft CA Secret; when the other pods return they notice the new generation, clear their now-stale configuration, and rejoin, so scaling back to 3 re-adds them automatically. The chart grants the server ServiceAccount `get`/`update` on the CA Secret and `get` on its StatefulSet for these checks (`server.raft.tls.enabled`). If the cluster instead loses quorum *without* an explicit scale-down (for example two PVCs are deleted at once), delete the PVCs and use `--set server.raft.recoveryMode=true` as described below.
+
+#### Migrating an existing cluster to DNS discovery
+
+Older deployments stored resolved pod IPs in the Raft configuration, which
+cannot be rewritten without quorum. Migrate once with a fresh bootstrap
+(config data is re-created from `bootstrap.yaml`; webhooks are ephemeral):
+
+```shell
+export KUBECONFIG=/home/user/.kube/home
+# 1. Stop the old cluster to prevent split-brain while resetting.
+kubectl scale statefulset gohookbridge-server -n gohookbridge --replicas=0
+# 2. Delete per-pod PVCs to clear the stale all-peers/IP config.
+kubectl delete pvc -n gohookbridge -l app.kubernetes.io/component=server
+# 3. Re-deploy with recovery mode (clears any residual raft state on first boot).
+helm upgrade --install gohookbridge ./helm/gohookbridge \
+  --namespace gohookbridge --values helm/gohookbridge/values-home.yaml \
+  --set server.raft.recoveryMode=true
+# 4. Verify leader election on ordinal 0 and followers joining.
+kubectl logs -n gohookbridge gohookbridge-server-0 | grep -i 'raft'
+# 5. Remove recovery mode for steady state (config now stores DNS names).
+helm upgrade --install gohookbridge ./helm/gohookbridge \
+  --namespace gohookbridge --values helm/gohookbridge/values-home.yaml \
+  --set server.raft.recoveryMode=false
+```
+
+After migration, pod restarts self-heal via DNS re-resolution and membership
+reconciliation — no further recovery mode is needed.
 
 ### Server Deployment
 
@@ -231,7 +303,18 @@ spec:
         - --public-url=https://webhook.example.com
         - --raft-dir=/data/raft
         - --raft-node-id=$(POD_NAME)
+        # Bind on all interfaces; advertise the pod's stable DNS name.
         - --raft-bind-addr=0.0.0.0:6001
+        - --raft-advertise-addr=$(POD_NAME).gohookbridge-server:6001
+        - --raft-replicas=3
+        - --raft-statefulset-name=gohookbridge-server
+        - --raft-headless-service=gohookbridge-server
+        - --raft-namespace=$(POD_NAMESPACE)
+        - --raft-cluster-domain=cluster.local
+        - --raft-leader-wait-timeout=60s
+        - --raft-performance-multiplier=5.0
+        - --raft-tls-enabled
+        - --raft-tls-ca-secret=gohookbridge-raft-ca
         - --raft-peers=gohookbridge-server-0=gohookbridge-server-0.gohookbridge-server:6001,gohookbridge-server-1=gohookbridge-server-1.gohookbridge-server:6001,gohookbridge-server-2=gohookbridge-server-2.gohookbridge-server:6001
         - --nats-port=4222
         - --nats-cluster-port=6222
@@ -242,6 +325,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         ports:
         - containerPort: 3333
           name: http
@@ -275,6 +362,9 @@ metadata:
   name: gohookbridge-server
 spec:
   clusterIP: None
+  # Required so each pod's DNS name resolves before its readiness probe passes
+  # (Raft binds/advertises that name at startup).
+  publishNotReadyAddresses: true
   ports:
   - name: raft
     port: 6001
@@ -302,6 +392,11 @@ Apply the HA deployment:
 ```shell
 kubectl apply -f ha-server.yaml
 ```
+
+> The raw manifest above enables Raft mTLS, so the pod's ServiceAccount needs
+> `create`/`get` on Secrets in the release namespace (the Helm chart creates
+> this Role/RoleBinding automatically). Without it, ordinal 0 cannot share the
+> internal CA and the cluster will not form.
 
 **Port layout for HA deployments:**
 

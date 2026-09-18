@@ -1,4 +1,58 @@
 {{/*
+Raft peers string: "server-0=server-0.<headless>.<ns>.svc.<domain>:6001,..."
+(DNS names, cluster-domain aware). Static fallback; the dnsPeerResolver is
+authoritative when the StatefulSet/headless flags are set.
+*/}}
+{{- define "gohookbridge.raftPeers" -}}
+{{- $name := include "gohookbridge.fullname" . -}}
+{{- $ns := .Release.Namespace -}}
+{{- $replicas := int .Values.server.replicas -}}
+{{- $domain := .Values.server.raft.clusterDomain | default "cluster.local" -}}
+{{- range $i := until $replicas -}}
+{{- if $i }},{{ end -}}
+{{- $host := printf "%s-server-%d.%s-server-headless.%s.svc" $name $i $name $ns -}}
+{{- if $domain }}{{- $host = printf "%s.%s" $host $domain }}{{ end -}}
+{{ $name }}-server-{{ $i }}={{ $host }}:{{ $.Values.server.raftPort }}
+{{- end -}}
+{{- end }}
+
+{{/*
+NATS routes string: "nats://server-0.<headless>.<ns>.svc.<domain>:6222,..."
+(cluster-domain aware).
+*/}}
+{{- define "gohookbridge.natsRoutes" -}}
+{{- $name := include "gohookbridge.fullname" . -}}
+{{- $ns := .Release.Namespace -}}
+{{- $replicas := int .Values.server.replicas -}}
+{{- $domain := .Values.server.raft.clusterDomain | default "cluster.local" -}}
+{{- range $i := until $replicas -}}
+{{- if $i }},{{ end -}}
+{{- $host := printf "%s-server-%d.%s-server-headless.%s.svc" $name $i $name $ns -}}
+{{- if $domain }}{{- $host = printf "%s.%s" $host $domain }}{{ end -}}
+nats://{{ $host }}:{{ $.Values.server.natsClusterPort }}
+{{- end -}}
+{{- end }}
+
+{{/*
+Raft advertise FQDN for the pod hostname (POD_NAME is expanded by the shell).
+*/}}
+{{- define "gohookbridge.raftAdvertise" -}}
+{{- $name := include "gohookbridge.fullname" . -}}
+{{- $ns := .Release.Namespace -}}
+{{- $domain := .Values.server.raft.clusterDomain | default "cluster.local" -}}
+{{- $host := printf "%s-server-headless.%s.svc" $name $ns -}}
+{{- if $domain }}{{- $host = printf "%s.%s" $host $domain }}{{ end -}}
+{{- printf "$(POD_NAME).%s:%v" $host .Values.server.raftPort -}}
+{{- end }}
+
+{{/*
+Raft CA Secret name.
+*/}}
+{{- define "gohookbridge.raftCASecret" -}}
+{{- .Values.server.raft.tls.caSecret | default (printf "%s-raft-ca" (include "gohookbridge.fullname" .)) -}}
+{{- end }}
+
+{{/*
 Expand the name of the chart.
 */}}
 {{- define "gohookbridge.name" -}}

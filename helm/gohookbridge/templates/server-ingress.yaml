@@ -5,6 +5,10 @@ metadata:
   name: {{ include "gohookbridge.fullname" . }}-server
   labels:
     {{- include "gohookbridge.labels" . | nindent 4 }}
+  {{- with .Values.server.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   {{- if .Values.server.ingress.className }}
   ingressClassName: {{ .Values.server.ingress.className }}

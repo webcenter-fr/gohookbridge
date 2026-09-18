@@ -81,6 +81,7 @@ graph TB
 ```
 
 **Key insight:** Raft and NATS are two independent consensus/messaging layers with different purposes:
+
 - **Raft** (port 6001): replicates **configuration** (projects, users, global settings). Slow, durable, strongly consistent.
 - **NATS** (ports 4222/6222): distributes **webhook data** in real time. Fast, ephemeral, eventually consistent.
 
@@ -140,6 +141,60 @@ sequenceDiagram
 
 **Important:** Webhook data does NOT go through Raft. Raft stays lightweight, handling only config mutations.
 
+#### Raft HA saga (Kubernetes)
+
+Multi-node deployments follow a bootstrap saga ported from the reference
+implementation:
+
+1. **Peer discovery** (`raft_discovery.go`) — `NewPeerResolver` selects a
+   `staticPeerResolver` (`--raft-peers`), a `dnsPeerResolver`
+   (`--raft-statefulset-name` + `--raft-headless-service`), or a
+   `singleNodeResolver` (local dev). DNS discovery derives the ordered voter
+   list `<sts>-<i>.<headless>.<ns>.svc.<clusterDomain>`.
+2. **Ordinal-0-only bootstrap** — only the first resolved peer (ordinal 0)
+   calls `raft.BootstrapCluster`, seeding **only itself**. Other nodes start
+   with an empty configuration and join via the leader's `AddVoter`. Seeding
+   all peers would require a majority to elect a leader while non-bootstrap
+   peers have no config — a deadlock.
+3. **Any-leader wait** — `WaitForLeader` waits for `raft.Leader() != ""` (not
+   self leadership), so followers do not CrashLoop. `WaitForCleanState` then
+   waits for a settled Leader/Follower with `commit_index == applied_index`,
+   `fsm_pending == 0`, and recent leader contact.
+4. **Bind/advertise separation** — pods bind `0.0.0.0:6001` and advertise
+   their pod FQDN. A custom `raft.StreamLayer` keeps the DNS name in the Raft
+   configuration (raft's `NewTCPTransport` type-asserts `*net.TCPAddr`) and
+   re-resolves it on every dial, so a pod restart with a new IP self-heals.
+5. **Membership reconciliation** — the leader's join loop reconciles the
+   desired voter list every 5s: add missing voters, remove+re-add changed
+   addresses, remove extra voters. `ShutdownOnRemove` is **false** so a peer
+   does not self-kill during an address update.
+6. **Bootstrap config once** — `bootstrap.yaml` is applied by the leader only,
+   after the clean-state barrier, and only while the FSM is empty.
+7. **Graceful step-down** — on SIGTERM the leader transfers leadership before
+   the HTTP server shuts down; the PDB keeps a quorum floor.
+8. **mTLS** (`raft_tls.go`) — ordinal 0 mints the internal CA via
+   `github.com/disaster37/goca` and shares it through a K8s Secret; each node
+   issues/reuses its own leaf cert, re-issuing when the CA or SAN set changes.
+9. **Scale-down to one replica** — a 3-voter configuration cannot commit the
+   removal of two lost voters (no quorum), and the survivor cannot elect
+   itself. When `spec.replicas == 1` is confirmed through the Kubernetes API
+   (RBAC-scoped `get` on the StatefulSet), the watchdog restarts the
+   ordinal-0 pod; startup then calls `raft.RecoverCluster` to force a
+   single-voter configuration, replaying the existing log into the FSM and
+   snapshotting it (config preserved). The join loop only adds peers whose
+   pod FQDN currently resolves, so the deleted voters are not resurrected.
+10. **Generation fencing** — a recovery (single-node collapse or
+    `--raft-recovery-mode`) bumps a generation stored in the raft CA Secret.
+    A node that starts with an older generation still holds the pre-recovery
+    configuration and could form a separate quorum with other stale nodes;
+    it clears its Raft state (the FSM is rebuilt by the bootstrap node's
+    snapshot) and rejoins through the join loop. Scaling back to 3 therefore
+    re-adds the other voters automatically. Without the explicit scale-down
+    signal, quorum loss still requires `--raft-recovery-mode`.
+
+`NoSnapshotRestoreOnStart` defaults to **false** so Raft restores from the
+latest snapshot on restart (required after log compaction).
+
 ---
 
 ### NATS — Real-time Webhook Fan-out
@@ -172,7 +227,7 @@ graph LR
 
 **NATS subject topology:**
 
-```
+```text
 webhook.>              ← wildcard subscription (feeds ring buffer on each instance)
 webhook.{channelID}    ← per-channel publish/subscribe
 webhook.abc123         ← example channel
@@ -200,6 +255,19 @@ sequenceDiagram
     NC_B->>NC_B: fan-out to local SSE clients
 ```
 
+**NATS route DNS re-resolution (no code change needed):**
+
+NATS routes are configured with DNS names
+(`nats://<pod>.<headless>.<ns>.svc:6222`, from the `gohookbridge.natsRoutes`
+helper). The embedded `nats-server` dials each route from its explicit route
+URL on every (re)connect attempt and does not cache resolved IPs across
+attempts, so a pod restart with a new IP is handled by NATS's built-in route
+reconnect/backoff plus re-resolution. The headless Service publishes the
+`nats-cluster` port and sets `publishNotReadyAddresses: true`, so route DNS
+resolves before readiness. Webhooks are ephemeral, so a brief route outage
+during a pod restart is acceptable (senders retry on non-202). The in-process
+client connects to `127.0.0.1:<nats-port>` and never involves DNS.
+
 **NATS embedded server configuration:**
 
 ```go
@@ -219,6 +287,7 @@ server.Options{
 ```
 
 **Client connection (in-process, no network):**
+
 ```go
 nc, _ := nats.Connect("nats://localhost:4222")
 nc.Subscribe("webhook.>", func(msg *nats.Msg) {
@@ -308,6 +377,7 @@ sequenceDiagram
 ```
 
 **Memory estimation:**
+
 - 10000 entries × ~16KB average payload = ~160MB max
 - With TTL of 1h and typical webhook rate of 100/min: ~6000 entries, ~96MB typical
 - Configurable via `--nats-buffer-size` and `--nats-buffer-ttl`
@@ -469,6 +539,7 @@ sequenceDiagram
 ```
 
 **Validation chain (unchanged from current):**
+
 1. `Content-Type: application/json` check
 2. `MaxBytesReader` limit (project-level or global default)
 3. Webhook signature validation (GitHub HMAC-SHA256, GitLab token, Bitbucket HMAC, Gitea)
@@ -556,6 +627,7 @@ flowchart TD
 ```
 
 **Eviction is dual-threshold:**
+
 1. **Size-based**: When `len(entries) > maxSize`, oldest entry removed on append (instant)
 2. **Time-based**: Cleanup goroutine removes entries older than `maxAge` every 30 seconds
 
@@ -629,6 +701,7 @@ sequenceDiagram
 ```
 
 **Ring buffer Get logic:**
+
 - `since` defaults to `now - maxAge` (1 hour)
 - Returns entries in chronological order (appended order)
 - Limits to `limit` entries (default 100)
@@ -658,6 +731,7 @@ flowchart TB
 ```
 
 **Recovery when Instance B comes back:**
+
 1. Raft: catches up via AppendEntries from leader
 2. NATS: reconnects to cluster, syncs routes
 3. Ring buffer: starts fresh (empty)
@@ -672,36 +746,38 @@ flowchart TB
 ### Server flags (HA deployment example)
 
 ```bash
-# Instance 1
+# Kubernetes StatefulSet pod (all pods share the same args; POD_NAME and
+# POD_NAMESPACE come from the downward API).
 gohookbridge server \
   --address 0.0.0.0 --port 3333 \
   --public-url https://webhook.example.com \
   --raft-dir /data/raft \
-  --raft-node-id node1 \
-  --raft-bind-addr 10.0.0.1:6001 \
-  --raft-peers node2=10.0.0.2:6001,node3=10.0.0.3:6001 \
+  --raft-node-id $(POD_NAME) \
+  --raft-bind-addr 0.0.0.0:6001 \
+  --raft-advertise-addr $(POD_NAME).gohookbridge-server-headless.gohookbridge.svc.cluster.local:6001 \
+  --raft-replicas 3 \
+  --raft-statefulset-name gohookbridge-server \
+  --raft-headless-service gohookbridge-server-headless \
+  --raft-namespace $(POD_NAMESPACE) \
+  --raft-cluster-domain cluster.local \
+  --raft-leader-wait-timeout 60s \
+  --raft-performance-multiplier 5.0 \
+  --raft-tls-enabled \
+  --raft-tls-ca-secret gohookbridge-raft-ca \
+  --raft-peers gohookbridge-server-0=gohookbridge-server-0.gohookbridge-server-headless.gohookbridge.svc.cluster.local:6001,... \
   --nats-port 4222 \
   --nats-cluster-port 6222 \
-  --nats-routes nats://10.0.0.2:6222,nats://10.0.0.3:6222 \
+  --nats-routes nats://gohookbridge-server-0.gohookbridge-server-headless.gohookbridge.svc.cluster.local:6222,... \
   --nats-buffer-ttl 1h \
   --nats-buffer-size 10000 \
   --bootstrap-config-file /etc/gohookbridge/bootstrap.yaml
-
-# Instance 2
-gohookbridge server \
-  --address 0.0.0.0 --port 3333 \
-  --public-url https://webhook.example.com \
-  --raft-dir /data/raft \
-  --raft-node-id node2 \
-  --raft-bind-addr 10.0.0.2:6001 \
-  --raft-peers node1=10.0.0.1:6001,node3=10.0.0.3:6001 \
-  --nats-port 4222 \
-  --nats-cluster-port 6222 \
-  --nats-routes nats://10.0.0.1:6222,nats://10.0.0.3:6222 \
-  --bootstrap-config-file /etc/gohookbridge/bootstrap.yaml
-
-# Instance 3 — same pattern
 ```
+
+For non-Kubernetes HA, keep the static form: `--raft-bind-addr <ip>:6001`
+plus `--raft-peers node1=<ip>:6001,node2=<ip>:6001,node3=<ip>:6001` on every
+node (include this node; the first peer bootstraps). The legacy form that
+lists only the *other* nodes is also accepted: the resolver inserts self and
+sorts by ID so every node agrees on the same bootstrap node.
 
 ### Port layout
 
@@ -758,7 +834,7 @@ Rate limiting restricts the number of HTTP requests a single IP address can make
 
 Rate limiting runs after the ban check but before in-process business middleware:
 
-```
+```text
 mainRouter:
   1. RequestID
   2. safeLogger
@@ -832,21 +908,25 @@ The `recordFailure` → `banIfSuspicious` pipeline is called at each auth failur
 ## Error Handling
 
 ### NATS unavailable at publish time
+
 - NATS client has built-in reconnect with backoff
 - If NATS is down, publish returns error → HTTP handler returns 503
 - Sender (GitHub) will retry the webhook
 
 ### NATS server crash
+
 - Embedded server process is the same as gohookbridge → crash kills gohookbridge
 - Systemd/Kubernetes restarts the pod
 - Raft and NATS both recover from their persisted state
 
 ### Ring buffer full
+
 - Oldest entries evicted on append (FIFO)
 - SSE client may not receive all historical messages
 - Acceptable: webhooks are best-effort, sender retries
 
 ### SSE client disconnect during live stream
+
 - `r.Context().Done()` fires → handler calls `broker.Unsubscribe()`
 - Channel closed, goroutine exits
 - No resource leak
