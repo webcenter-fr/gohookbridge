@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -200,7 +201,14 @@ func (r *staticPeerResolver) Resolve() ([]RaftPeer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append([]RaftPeer{self}, peers...), nil
+	// Self is not in the explicit list (the legacy "other nodes" form). Insert
+	// it and sort by ID so every node computes the SAME first peer and exactly
+	// one node bootstraps. Prepending self would make every node its own
+	// bootstrap node, producing a split-brain cluster (each node seeds a
+	// single-voter configuration and then tries to add the others).
+	peers = append(peers, self)
+	sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
+	return peers, nil
 }
 
 func (r *staticPeerResolver) Self() (RaftPeer, error) {

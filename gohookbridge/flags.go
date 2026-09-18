@@ -265,7 +265,7 @@ var ServerFlags = []cli.Flag{
 	},
 	&cli.StringSliceFlag{
 		Name:    "raft-peers",
-		Usage:   "Other Raft node IDs and addresses (node2=addr:port,node3=addr:port). Not needed for single-node",
+		Usage:   "Raft voter IDs and addresses (id=addr,id=addr). Include this node; the first peer bootstraps. Not needed for single-node",
 		EnvVars: []string{"GOSMEE_RAFT_PEERS"},
 	},
 	&cli.StringFlag{

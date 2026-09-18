@@ -424,7 +424,7 @@ The bootstrap file is read **once** on the very first boot when the Raft store i
 | `--raft-node-id` | `node1` | Unique Raft node ID |
 | `--raft-bind-addr` | `127.0.0.1:6001` | Raft TCP bind address for inter-node communication |
 | `--raft-advertise-addr` | | Advertise host:port for peers; empty derives the pod FQDN |
-| `--raft-peers` | | Other Raft node IDs and addresses (node2=addr:port,node3=addr:port) |
+| `--raft-peers` | | Raft voter IDs and addresses (`id=addr`); include this node. The first peer bootstraps |
 | `--raft-replicas` | `1` | Number of Raft voters for DNS discovery |
 | `--raft-statefulset-name` | | StatefulSet name for DNS peer discovery (`<sts>-<i>` pod names) |
 | `--raft-headless-service` | | Headless Service name for DNS peer discovery |

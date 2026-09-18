@@ -236,12 +236,18 @@ func TestStaticResolver_SynthesizeSelf(t *testing.T) {
 		{ID: "node-2", Address: "node-2.example:6001"},
 	}
 
-	t.Run("prepends synthesized self", func(t *testing.T) {
+	t.Run("inserts synthesized self deterministically", func(t *testing.T) {
 		r := &staticPeerResolver{cfg: RaftDiscoveryConfig{Peers: peers, NodeID: "node-3", AdvertiseAddr: "node-3.example:6001"}}
 		resolved, err := r.Resolve()
 		assert.NilError(t, err)
 		assert.Equal(t, len(resolved), 3)
-		assert.DeepEqual(t, resolved[0], RaftPeer{ID: "node-3", Address: "node-3.example:6001"})
+		// Sorted by ID so every node agrees on the bootstrap node (the first
+		// peer). Prepending self would make every node bootstrap itself.
+		assert.DeepEqual(t, resolved, []RaftPeer{
+			{ID: "node-1", Address: "node-1.example:6001"},
+			{ID: "node-2", Address: "node-2.example:6001"},
+			{ID: "node-3", Address: "node-3.example:6001"},
+		})
 	})
 
 	t.Run("falls back to bind host", func(t *testing.T) {
@@ -263,6 +269,34 @@ func TestSingleNodeResolver(t *testing.T) {
 	peers, err := r.Resolve()
 	assert.NilError(t, err)
 	assert.DeepEqual(t, peers, []RaftPeer{{ID: "solo", Address: "127.0.0.1:6001"}})
+}
+
+// TestStaticResolver_OtherNodesFormBootstrapsOnce guards the legacy
+// "--raft-peers lists the OTHER nodes" form: every node must agree on the same
+// bootstrap node, otherwise each seeds its own single-voter cluster
+// (split-brain).
+func TestStaticResolver_OtherNodesFormBootstrapsOnce(t *testing.T) {
+	resolvers := map[string]*staticPeerResolver{
+		"node1": {cfg: RaftDiscoveryConfig{NodeID: "node1", BindAddr: "10.0.0.1:6001", Peers: []RaftPeer{
+			{ID: "node2", Address: "10.0.0.2:6001"}, {ID: "node3", Address: "10.0.0.3:6001"},
+		}}},
+		"node2": {cfg: RaftDiscoveryConfig{NodeID: "node2", BindAddr: "10.0.0.2:6001", Peers: []RaftPeer{
+			{ID: "node1", Address: "10.0.0.1:6001"}, {ID: "node3", Address: "10.0.0.3:6001"},
+		}}},
+		"node3": {cfg: RaftDiscoveryConfig{NodeID: "node3", BindAddr: "10.0.0.3:6001", Peers: []RaftPeer{
+			{ID: "node1", Address: "10.0.0.1:6001"}, {ID: "node2", Address: "10.0.0.2:6001"},
+		}}},
+	}
+
+	bootstrappers := 0
+	for name, r := range resolvers {
+		_, shouldBootstrap, err := resolveBootstrapState(&RaftConfig{NodeID: name}, r)
+		assert.NilError(t, err)
+		if shouldBootstrap {
+			bootstrappers++
+		}
+	}
+	assert.Equal(t, bootstrappers, 1, "exactly one node must bootstrap")
 }
 
 func TestDeriveAdvertiseAddr(t *testing.T) {

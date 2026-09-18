@@ -758,7 +758,10 @@ gohookbridge server \
 ```
 
 For non-Kubernetes HA, keep the static form: `--raft-bind-addr <ip>:6001`
-plus `--raft-peers node2=<ip>:6001,node3=<ip>:6001` on every node.
+plus `--raft-peers node1=<ip>:6001,node2=<ip>:6001,node3=<ip>:6001` on every
+node (include this node; the first peer bootstraps). The legacy form that
+lists only the *other* nodes is also accepted: the resolver inserts self and
+sorts by ID so every node agrees on the same bootstrap node.
 
 ### Port layout
 
