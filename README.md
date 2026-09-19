@@ -164,45 +164,20 @@ helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
 
 For full Helm configuration options, see [`helm/gohookbridge/values.yaml`](./helm/gohookbridge/values.yaml).
 
-#### Raw YAML manifests
+The Helm chart is the only supported Kubernetes deployment path; raw manifests
+were removed. It renders the server as a StatefulSet with Raft HA, mTLS,
+per-pod PVCs, and a headless Service. Key values:
 
-Two deployment configurations are available:
+- `server.publicURL` — the public webhook endpoint
+- `server.ingress` — Ingress with TLS (`hosts` / `tls`)
+- `server.bootstrap.config` — admin user + session secret (bootstrap.yaml content)
+- `server.storage.size` — per-pod Raft data PVC size
+- `client.channelURL` / `client.targetURL` — client forwarding source/target
 
-- [gohookbridge-server-deployment.yaml](./misc/gohookbridge-server-deployment.yaml) - For deploying the public-facing server component
-- [gohookbridge-client-deployment.yaml](./misc/gohookbridge-client-deployment.yaml) - For deploying the client component that forwards to internal services
-
-#### Server Deployment
-
-The server deployment exposes a public webhook endpoint to receive incoming webhook events:
-
-```shell
-kubectl apply -f misc/gohookbridge-server-deployment.yaml
-```
-
-Key configuration:
-
-- Set `--public-url` to your actual domain where the service will be exposed
-- Configure an Ingress with TLS or use a service mesh for production use
-- Set `--raft-dir` to a persistent volume for Raft data durability
-- Add `--bootstrap-config-file` pointing to a ConfigMap or Secret with your bootstrap configuration
-- For security, configure webhook signatures, allowed IPs, and auth via `bootstrap.yaml` or Admin UI
-- Configure `behind_reverse_proxy` in global config when your Ingress is the sole path to gohookbridge and overwrites `X-Forwarded-For` / `X-Real-IP`; otherwise the allowlist can be bypassed by spoofed headers (see [SECURITY.md](./SECURITY.md#behind-a-reverse-proxy-safely))
-
-#### Client Deployment
-
-The client deployment connects to a gohookbridge server (either your own or smee.io) and forwards webhook events to internal services:
-
-```shell
-kubectl apply -f misc/gohookbridge-client-deployment.yaml
-```
-
-Key configuration:
-
-- Adjust the first argument to your gohookbridge server URL or smee.io channel
-- Change the second argument to your internal service URL (e.g., `http://service.namespace:8080`)
-- The `--saveDir` flag enables saving webhook payloads to `/tmp/save` for later inspection
-
-For detailed configuration options, please refer to the documentation comments in each deployment file.
+When your Ingress is the sole path to gohookbridge and overwrites
+`X-Forwarded-For` / `X-Real-IP`, configure `behind_reverse_proxy` in the global
+config; otherwise the allowlist can be bypassed by spoofed headers (see
+[SECURITY.md](./SECURITY.md#behind-a-reverse-proxy-safely)).
 
 ### Shell completion
 
@@ -308,19 +283,19 @@ Output logs as JSON with `--output json` (which implies `--nocolor`).
 You can execute a shell command whenever a webhook event is received using `--exec`:
 
 ```shell
-gohookbridge client --exec 'jq . $GOSMEE_PAYLOAD_FILE' https://smee.io/aBcDeF http://localhost:8080
+gohookbridge client --exec 'jq . $GOHOOKBRIDGE_PAYLOAD_FILE' https://smee.io/aBcDeF http://localhost:8080
 ```
 
 The payload and headers are written to temporary files (automatically cleaned up after the command finishes). The following environment variables are set:
 
 | Variable | Description |
 |---|---|
-| `GOSMEE_EVENT_TYPE` | The event type (e.g., `push`, `pull_request`) |
-| `GOSMEE_EVENT_ID` | The delivery ID |
-| `GOSMEE_CONTENT_TYPE` | The content type of the payload |
-| `GOSMEE_TIMESTAMP` | The timestamp of the event |
-| `GOSMEE_PAYLOAD_FILE` | Path to a temporary file containing the JSON payload body |
-| `GOSMEE_HEADERS_FILE` | Path to a temporary file containing the webhook headers as JSON |
+| `GOHOOKBRIDGE_EVENT_TYPE` | The event type (e.g., `push`, `pull_request`) |
+| `GOHOOKBRIDGE_EVENT_ID` | The delivery ID |
+| `GOHOOKBRIDGE_CONTENT_TYPE` | The content type of the payload |
+| `GOHOOKBRIDGE_TIMESTAMP` | The timestamp of the event |
+| `GOHOOKBRIDGE_PAYLOAD_FILE` | Path to a temporary file containing the JSON payload body |
+| `GOHOOKBRIDGE_HEADERS_FILE` | Path to a temporary file containing the webhook headers as JSON |
 
 To only run the command for specific event types, use `--exec-on-events`:
 
@@ -328,14 +303,14 @@ To only run the command for specific event types, use `--exec-on-events`:
 gohookbridge client --exec './handle-push.sh' --exec-on-events push --exec-on-events pull_request https://smee.io/aBcDeF http://localhost:8080
 ```
 
-By default, `--exec` runs with a minimal, safe environment (for example `PATH`, `HOME`, and locale-related variables), not the full gohookbridge process environment. To pass additional variables through, use `--exec-env-vars VAR_NAME` (repeat the flag for multiple names), or set `GOSMEE_EXEC_ENV_VARS` as a comma-separated list.
+By default, `--exec` runs with a minimal, safe environment (for example `PATH`, `HOME`, and locale-related variables), not the full gohookbridge process environment. To pass additional variables through, use `--exec-env-vars VAR_NAME` (repeat the flag for multiple names), or set `GOHOOKBRIDGE_EXEC_ENV_VARS` as a comma-separated list.
 
 The `--exec` command runs **synchronously** after the webhook is forwarded to the target URL (if replay is enabled). A slow command will delay processing of subsequent events. If you need asynchronous execution, background your command (e.g., `--exec './my-script.sh &'`). A non-zero exit code is logged as an error but does not stop processing further events.
 
 Both `--exec` and `--exec-on-events` also work with the `replay` command.
 
 > **Security Warning**: The `--exec` flag runs arbitrary shell commands with
-> the webhook payload available via `$GOSMEE_PAYLOAD_FILE`. When receiving
+> the webhook payload available via `$GOHOOKBRIDGE_PAYLOAD_FILE`. When receiving
 > webhooks from untrusted sources, a malicious payload could exploit a
 > naively written script (e.g., one that passes unsanitized fields to shell
 > commands). Always validate and sanitize webhook payloads in your exec
@@ -367,7 +342,7 @@ Both cURL and HTTPie replay scripts include these command-line options:
 ./timestamp.sh -h
 ```
 
-Scripts also respect the `GOSMEE_DEBUG_SERVICE` environment variable for alternative target URLs.
+Scripts also respect the `GOHOOKBRIDGE_DEBUG_SERVICE` environment variable for alternative target URLs.
 
 ### Server
 

@@ -1,6 +1,6 @@
 #! /bin/bash
 
-PROG=gosmee
+PROG=gohookbridge
 
 _cli_bash_autocomplete() {
   if [[ "${COMP_WORDS[0]}" != "source" ]]; then

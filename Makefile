@@ -1,8 +1,5 @@
 NAME  := gohookbridge
-TARGET_URL ?= http://localhost:8080
-SMEE_URL ?= https://smee.io/new
-IMAGE_VERSION ?= latest
-MD_FILES := $(shell git ls-files '*.md' ':(exclude).vale/*' ':(exclude).kilo/*')
+MD_FILES := $(shell git ls-files '*.md' ':(exclude).vale/*' ':(exclude).opencode/*')
 
 LDFLAGS := -s -w
 FLAGS += -ldflags "$(LDFLAGS)" -buildvcs=true

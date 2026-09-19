@@ -177,8 +177,8 @@ func replay(c *cli.Context) error {
 		return ropt.listDeliveries(ctx, hookID)
 	}
 	var targetURL string
-	if os.Getenv("GOSMEE_TARGET_URL") != "" {
-		targetURL = os.Getenv("GOSMEE_TARGET_URL")
+	if os.Getenv("GOHOOKBRIDGE_TARGET_URL") != "" {
+		targetURL = os.Getenv("GOHOOKBRIDGE_TARGET_URL")
 	} else {
 		if c.NArg() != 3 {
 			return fmt.Errorf("missing the target url where to forward the webhook, ie: http://localhost:8080")

@@ -1,6 +1,6 @@
 # System services
 
-Somne system integrations, make sure to edit the downloaded file and adjust the target URL before applying it directly on your system/cluster
+Some system integrations, make sure to edit the downloaded file and adjust the target URL before applying it directly on your system/cluster
 
 ## macOS
 

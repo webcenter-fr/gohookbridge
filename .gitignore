@@ -4,7 +4,6 @@ result
 tmp
 raft-data/
 node_modules/
-.kilo/
 AGENTS.local.md
 web/.nuxt/
 web/.output/

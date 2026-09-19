@@ -37,7 +37,7 @@ import (
 const (
 	timeFormat        = "2006-01-02T15.04.01.000"
 	contentType       = "application/json"
-	versionHeaderName = "X-Gosmee-Version"
+	versionHeaderName = "X-Gohookbridge-Version"
 	maxChannelLength  = 64
 	channelIDPattern  = "[a-zA-Z0-9_-]{1,64}"
 	channelPath       = "/{channel:" + channelIDPattern + "}"

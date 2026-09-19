@@ -33,8 +33,8 @@ var simpleJSON = `{
 }
 `
 
-func TestGoSmeeGood(t *testing.T) {
-	p := goSmee{
+func TestHookBridgeGood(t *testing.T) {
+	p := hookBridge{
 		replayDataOpts: &replayDataOpts{},
 		logger:         slog.New(slog.DiscardHandler),
 	}
@@ -50,8 +50,8 @@ func TestGoSmeeGood(t *testing.T) {
 	assert.Assert(t, !ok)
 }
 
-func TestGoSmeeBad(t *testing.T) {
-	p := goSmee{
+func TestHookBridgeBad(t *testing.T) {
+	p := hookBridge{
 		replayDataOpts: &replayDataOpts{},
 		logger:         slog.New(slog.DiscardHandler),
 	}
@@ -59,8 +59,8 @@ func TestGoSmeeBad(t *testing.T) {
 	assert.Equal(t, string(pm.body), "")
 }
 
-func TestGoSmeeBodyB(t *testing.T) {
-	p := goSmee{
+func TestHookBridgeBodyB(t *testing.T) {
+	p := hookBridge{
 		replayDataOpts: &replayDataOpts{},
 		logger:         slog.New(slog.DiscardHandler),
 	}
@@ -70,8 +70,8 @@ func TestGoSmeeBodyB(t *testing.T) {
 	assert.Assert(t, strings.Contains(string(m.body), "hello"))
 }
 
-func TestGoSmeeBadTimestamp(t *testing.T) {
-	p := goSmee{
+func TestHookBridgeBadTimestamp(t *testing.T) {
+	p := hookBridge{
 		replayDataOpts: &replayDataOpts{},
 		logger:         slog.New(slog.DiscardHandler),
 	}
@@ -80,8 +80,8 @@ func TestGoSmeeBadTimestamp(t *testing.T) {
 	assert.NilError(t, err)
 }
 
-func TestGoSmeeMissingHeaders(t *testing.T) {
-	p := goSmee{
+func TestHookBridgeMissingHeaders(t *testing.T) {
+	p := hookBridge{
 		replayDataOpts: &replayDataOpts{},
 		logger:         slog.New(slog.DiscardHandler),
 	}
@@ -91,8 +91,8 @@ func TestGoSmeeMissingHeaders(t *testing.T) {
 	assert.Equal(t, len(m.headers), 0)
 }
 
-func TestGoSmeeEventID(t *testing.T) {
-	p := goSmee{
+func TestHookBridgeEventID(t *testing.T) {
+	p := hookBridge{
 		replayDataOpts: &replayDataOpts{},
 		logger:         slog.New(slog.DiscardHandler),
 	}
@@ -148,7 +148,7 @@ const shellScriptTmplContent = `#!/usr/bin/env bash
 #
 # You can switch the targetURL with the first command line argument and you can
 # the -l switch, which defaults to http://localhost:8080.
-# Same goes for the variable GOSMEE_DEBUG_SERVICE.
+# Same goes for the variable GOHOOKBRIDGE_DEBUG_SERVICE.
 #
 set -euxfo pipefail
 cd $(dirname $(readlink -f $0))
@@ -158,8 +158,8 @@ if [[ ${1:-""} == -l ]]; then
   targetURL="{{ .LocalDebugURL }}"
 elif [[ -n ${1:-""} ]]; then
   targetURL=${1}
-elif [[ -n ${GOSMEE_DEBUG_SERVICE:-""} ]]; then
-  targetURL=${GOSMEE_DEBUG_SERVICE}
+elif [[ -n ${GOHOOKBRIDGE_DEBUG_SERVICE:-""} ]]; then
+  targetURL=${GOHOOKBRIDGE_DEBUG_SERVICE}
 fi
 
 curl -sSi -H "Content-Type: {{.ContentType}}" {{ .Headers }} -X POST -d @./{{ .FileBase }}.json ${targetURL}
@@ -785,7 +785,7 @@ func TestCheckServerVersion(t *testing.T) {
 		serverVersion := "1.0.0"
 		server := newTestServer(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, r.URL.Path, "/version")
-			w.Header().Set("X-Gosmee-Version", serverVersion)
+			w.Header().Set("X-Gohookbridge-Version", serverVersion)
 			w.WriteHeader(http.StatusOK)
 		})
 		defer server.Close()
@@ -798,7 +798,7 @@ func TestCheckServerVersion(t *testing.T) {
 		serverVersion := "1.1.0"
 		clientVersion := "1.0.0"
 		server := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("X-Gosmee-Version", serverVersion)
+			w.Header().Set("X-Gohookbridge-Version", serverVersion)
 			w.WriteHeader(http.StatusOK)
 		})
 		defer server.Close()
@@ -814,7 +814,7 @@ func TestCheckServerVersion(t *testing.T) {
 		serverVersion := "1.0.0"
 		clientVersion := "1.1.0"
 		server := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("X-Gosmee-Version", serverVersion)
+			w.Header().Set("X-Gohookbridge-Version", serverVersion)
 			w.WriteHeader(http.StatusOK)
 		})
 		defer server.Close()
@@ -837,7 +837,7 @@ func TestCheckServerVersion(t *testing.T) {
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
 				server := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
-					w.Header().Set("X-Gosmee-Version", tc.serverVersion)
+					w.Header().Set("X-Gohookbridge-Version", tc.serverVersion)
 					w.WriteHeader(http.StatusOK)
 				})
 				defer server.Close()
@@ -893,7 +893,7 @@ func TestCheckServerVersion(t *testing.T) {
 			serverVersion := "1.0.0"
 			server := newTestServer(func(w http.ResponseWriter, r *http.Request) {
 				assert.Equal(t, r.URL.Path, "/version")
-				w.Header().Set("X-Gosmee-Version", serverVersion)
+				w.Header().Set("X-Gohookbridge-Version", serverVersion)
 				w.WriteHeader(http.StatusOK)
 			})
 			defer server.Close()
@@ -920,7 +920,7 @@ func TestCheckServerVersion(t *testing.T) {
 			currentClientVersion := "1.0.0"
 
 			server := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("X-Gosmee-Version", headerVersion)
+				w.Header().Set("X-Gohookbridge-Version", headerVersion)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				_, _ = fmt.Fprintf(w, `{"version": "%s"}`, jsonVersion)
@@ -962,7 +962,7 @@ func TestCheckServerVersion(t *testing.T) {
 		serverVersion := "1.0.0"
 		malformedClientVersion := "totally-invalid-version"
 		server := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("X-Gosmee-Version", serverVersion)
+			w.Header().Set("X-Gohookbridge-Version", serverVersion)
 			w.WriteHeader(http.StatusOK)
 		})
 		defer server.Close()
@@ -975,7 +975,7 @@ func TestCheckServerVersion(t *testing.T) {
 	})
 }
 
-func processTestEvent(t *testing.T, gs *goSmee, now time.Time, msg *sse.Event, privateKey *[32]byte, targetServer *httptest.Server) (saveCalled bool, replayCalled bool, errResult error) {
+func processTestEvent(t *testing.T, gs *hookBridge, now time.Time, msg *sse.Event, privateKey *[32]byte, targetServer *httptest.Server) (saveCalled bool, replayCalled bool, errResult error) {
 	t.Helper()
 
 	if string(msg.Event) == "ready" || string(msg.Data) == "ready" ||
@@ -1093,7 +1093,7 @@ func TestClientSetupEventCallback(t *testing.T) {
 		}))
 		defer replayServer.Close()
 
-		gs := &goSmee{replayDataOpts: opts, logger: logger}
+		gs := &hookBridge{replayDataOpts: opts, logger: logger}
 		event := &sse.Event{
 			Data: []byte(defaultPayloadJSON),
 		}
@@ -1117,7 +1117,7 @@ func TestClientSetupEventCallback(t *testing.T) {
 		opts.noReplay = true
 		opts.saveDir = tmpDir
 
-		gs := &goSmee{replayDataOpts: opts, logger: logger}
+		gs := &hookBridge{replayDataOpts: opts, logger: logger}
 
 		testCases := []struct {
 			name  string
@@ -1160,7 +1160,7 @@ func TestClientSetupEventCallback(t *testing.T) {
 	t.Run("Parse Failure", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		opts := defaultOpts(tmpDir)
-		gs := &goSmee{replayDataOpts: opts, logger: logger}
+		gs := &hookBridge{replayDataOpts: opts, logger: logger}
 
 		event := &sse.Event{
 			Data: []byte(`this is not valid json, and will cause parse to error`),
@@ -1185,7 +1185,7 @@ func TestClientSetupEventCallback(t *testing.T) {
 		}))
 		defer replayServer.Close()
 
-		gs := &goSmee{replayDataOpts: opts, logger: logger}
+		gs := &hookBridge{replayDataOpts: opts, logger: logger}
 
 		t.Run("event type is ignored", func(t *testing.T) {
 			eventIgnored := &sse.Event{
@@ -1245,7 +1245,7 @@ func TestClientSetupEventCallback(t *testing.T) {
 	t.Run("No Headers after Parse", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		opts := defaultOpts(tmpDir)
-		gs := &goSmee{replayDataOpts: opts, logger: logger}
+		gs := &hookBridge{replayDataOpts: opts, logger: logger}
 
 		event := &sse.Event{
 			Data: []byte(`{"body":"test"}`),
@@ -1278,7 +1278,7 @@ func TestClientSetupEventCallback(t *testing.T) {
 		encryptedPayload, err := gohookbridge.Encrypt([]byte(defaultPayloadJSON), publicKey)
 		assert.NilError(t, err)
 
-		gs := &goSmee{replayDataOpts: opts, logger: logger}
+		gs := &hookBridge{replayDataOpts: opts, logger: logger}
 		event := &sse.Event{Data: encryptedPayload}
 
 		saveCalled, replayCalled, err := processTestEvent(t, gs, baseTime, event, privateKey, replayServer)
@@ -1295,7 +1295,7 @@ func TestClientSetupKeyFileWithSmeeIOFails(t *testing.T) {
 	assert.NilError(t, err)
 	assert.NilError(t, gohookbridge.SaveKeyPair(keyPath, publicKey, privateKey))
 
-	gs := goSmee{
+	gs := hookBridge{
 		replayDataOpts: &replayDataOpts{
 			smeeURL:           "https://smee.io/test-channel",
 			targetURL:         "http://localhost:8080",
@@ -1407,7 +1407,7 @@ func TestRunExecCommand(t *testing.T) {
 	t.Run("successful exec receives payload via file", func(t *testing.T) {
 		tmpFile := filepath.Join(t.TempDir(), "output.txt")
 		opts := &replayDataOpts{
-			execCommand: fmt.Sprintf("cp $GOSMEE_PAYLOAD_FILE %s", tmpFile),
+			execCommand: fmt.Sprintf("cp $GOHOOKBRIDGE_PAYLOAD_FILE %s", tmpFile),
 			decorate:    false,
 		}
 		err := runExecCommand(context.Background(), opts, logger, basePM)
@@ -1420,7 +1420,7 @@ func TestRunExecCommand(t *testing.T) {
 	t.Run("environment variables are set", func(t *testing.T) {
 		tmpFile := filepath.Join(t.TempDir(), "env.txt")
 		opts := &replayDataOpts{
-			execCommand: fmt.Sprintf("env | grep GOSMEE_ > %s", tmpFile),
+			execCommand: fmt.Sprintf("env | grep GOHOOKBRIDGE_ > %s", tmpFile),
 			decorate:    false,
 		}
 		err := runExecCommand(context.Background(), opts, logger, basePM)
@@ -1428,12 +1428,12 @@ func TestRunExecCommand(t *testing.T) {
 		data, err := os.ReadFile(tmpFile)
 		assert.NilError(t, err)
 		envOutput := string(data)
-		assert.Assert(t, strings.Contains(envOutput, "GOSMEE_EVENT_TYPE=push"))
-		assert.Assert(t, strings.Contains(envOutput, "GOSMEE_EVENT_ID=delivery-123"))
-		assert.Assert(t, strings.Contains(envOutput, "GOSMEE_CONTENT_TYPE=application/json"))
-		assert.Assert(t, strings.Contains(envOutput, "GOSMEE_TIMESTAMP=2023-10-27T10.00.01.000"))
-		assert.Assert(t, strings.Contains(envOutput, "GOSMEE_PAYLOAD_FILE="))
-		assert.Assert(t, strings.Contains(envOutput, "GOSMEE_HEADERS_FILE="))
+		assert.Assert(t, strings.Contains(envOutput, "GOHOOKBRIDGE_EVENT_TYPE=push"))
+		assert.Assert(t, strings.Contains(envOutput, "GOHOOKBRIDGE_EVENT_ID=delivery-123"))
+		assert.Assert(t, strings.Contains(envOutput, "GOHOOKBRIDGE_CONTENT_TYPE=application/json"))
+		assert.Assert(t, strings.Contains(envOutput, "GOHOOKBRIDGE_TIMESTAMP=2023-10-27T10.00.01.000"))
+		assert.Assert(t, strings.Contains(envOutput, "GOHOOKBRIDGE_PAYLOAD_FILE="))
+		assert.Assert(t, strings.Contains(envOutput, "GOHOOKBRIDGE_HEADERS_FILE="))
 	})
 
 	t.Run("parent secret env vars are not leaked and PATH is present", func(t *testing.T) {
@@ -1456,7 +1456,7 @@ func TestRunExecCommand(t *testing.T) {
 	t.Run("payload file contains body", func(t *testing.T) {
 		tmpFile := filepath.Join(t.TempDir(), "payload_path.txt")
 		opts := &replayDataOpts{
-			execCommand: fmt.Sprintf("cp $GOSMEE_PAYLOAD_FILE %s", tmpFile),
+			execCommand: fmt.Sprintf("cp $GOHOOKBRIDGE_PAYLOAD_FILE %s", tmpFile),
 			decorate:    false,
 		}
 		err := runExecCommand(context.Background(), opts, logger, basePM)
@@ -1469,7 +1469,7 @@ func TestRunExecCommand(t *testing.T) {
 	t.Run("headers file contains headers as JSON", func(t *testing.T) {
 		tmpFile := filepath.Join(t.TempDir(), "headers_path.txt")
 		opts := &replayDataOpts{
-			execCommand: fmt.Sprintf("cp $GOSMEE_HEADERS_FILE %s", tmpFile),
+			execCommand: fmt.Sprintf("cp $GOHOOKBRIDGE_HEADERS_FILE %s", tmpFile),
 			decorate:    false,
 		}
 		err := runExecCommand(context.Background(), opts, logger, basePM)
@@ -1484,7 +1484,7 @@ func TestRunExecCommand(t *testing.T) {
 	t.Run("temp files are cleaned up after exec", func(t *testing.T) {
 		pathFile := filepath.Join(t.TempDir(), "paths.txt")
 		opts := &replayDataOpts{
-			execCommand: fmt.Sprintf("echo $GOSMEE_PAYLOAD_FILE $GOSMEE_HEADERS_FILE > %s", pathFile),
+			execCommand: fmt.Sprintf("echo $GOHOOKBRIDGE_PAYLOAD_FILE $GOHOOKBRIDGE_HEADERS_FILE > %s", pathFile),
 			decorate:    false,
 		}
 		err := runExecCommand(context.Background(), opts, logger, basePM)
@@ -1512,7 +1512,7 @@ func TestRunExecCommand(t *testing.T) {
 	t.Run("exec-on-events matching event runs command", func(t *testing.T) {
 		tmpFile := filepath.Join(t.TempDir(), "output.txt")
 		opts := &replayDataOpts{
-			execCommand:  fmt.Sprintf("cp $GOSMEE_PAYLOAD_FILE %s", tmpFile),
+			execCommand:  fmt.Sprintf("cp $GOHOOKBRIDGE_PAYLOAD_FILE %s", tmpFile),
 			execOnEvents: []string{"push"},
 			decorate:     false,
 		}
@@ -1547,7 +1547,7 @@ func TestRunExecCommand(t *testing.T) {
 	t.Run("no exec-on-events runs on all events", func(t *testing.T) {
 		tmpFile := filepath.Join(t.TempDir(), "output.txt")
 		opts := &replayDataOpts{
-			execCommand: fmt.Sprintf("cp $GOSMEE_PAYLOAD_FILE %s", tmpFile),
+			execCommand: fmt.Sprintf("cp $GOHOOKBRIDGE_PAYLOAD_FILE %s", tmpFile),
 			decorate:    false,
 		}
 		err := runExecCommand(context.Background(), opts, logger, basePM)
@@ -1568,7 +1568,7 @@ func TestRunExecCommand(t *testing.T) {
 	t.Run("multiple exec-on-events filters", func(t *testing.T) {
 		tmpFile := filepath.Join(t.TempDir(), "output.txt")
 		opts := &replayDataOpts{
-			execCommand:  fmt.Sprintf("cp $GOSMEE_PAYLOAD_FILE %s", tmpFile),
+			execCommand:  fmt.Sprintf("cp $GOHOOKBRIDGE_PAYLOAD_FILE %s", tmpFile),
 			execOnEvents: []string{"pull_request", "push", "issues"},
 			decorate:     false,
 		}
