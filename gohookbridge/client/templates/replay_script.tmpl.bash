@@ -50,7 +50,7 @@ while true; do
             echo "  -v, --verbose   Enable verbose output"
             echo ""
             echo "Environment variables:"
-            echo "  GOSMEE_DEBUG_SERVICE  Alternative target URL"
+            echo "  GOHOOKBRIDGE_DEBUG_SERVICE  Alternative target URL"
             echo ""
             echo "Examples:"
             echo "  $(basename "$0")                           # Use default target URL"
@@ -87,8 +87,8 @@ fi
 # Apply local flag or environment variable
 if [[ "$use_local" == "true" ]]; then
     targetURL="{{ .LocalDebugURL }}"
-elif [[ -n "${GOSMEE_DEBUG_SERVICE:-}" ]]; then
-    targetURL="${GOSMEE_DEBUG_SERVICE}"
+elif [[ -n "${GOHOOKBRIDGE_DEBUG_SERVICE:-}" ]]; then
+    targetURL="${GOHOOKBRIDGE_DEBUG_SERVICE}"
 fi
 
 # Set verbose flag for curl if requested

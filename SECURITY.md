@@ -130,7 +130,7 @@ gohookbridge automatically detects the provider from the request headers and val
 
 Requests with a missing or invalid signature are rejected with HTTP 401. When multiple secrets are configured, each is tried in turn — useful when migrating secrets or receiving webhooks from multiple sources. The overhead is negligible (~2 μs per request).
 
-Secrets can also be set via `GOSMEE_WEBHOOK_SIGNATURE` (comma-separated).
+Secrets can also be migrated from the deprecated `GOSMEE_WEBHOOK_SIGNATURE` environment variable (comma-separated) with `gohookbridge server migrate-config`; setting it directly on the server now fails fast with migration instructions.
 
 ---
 
@@ -267,7 +267,7 @@ Channel names are capped at 64 characters across all endpoints. This guards agai
 
 ## Safe Command Execution
 
-The `--exec` flag runs a shell command for each incoming webhook, with the payload written to `$GOSMEE_PAYLOAD_FILE` and headers to `$GOSMEE_HEADERS_FILE`. If you've already enabled signature validation and IP allowlisting, the scripts are much safer — but the payload content itself is still untrusted until your script validates it.
+The `--exec` flag runs a shell command for each incoming webhook, with the payload written to `$GOHOOKBRIDGE_PAYLOAD_FILE` and headers to `$GOHOOKBRIDGE_HEADERS_FILE`. If you've already enabled signature validation and IP allowlisting, the scripts are much safer — but the payload content itself is still untrusted until your script validates it.
 
 **The risk:** if your server accepts webhooks from untrusted sources and your exec script passes payload fields directly to shell commands (e.g. `$(jq -r .field)`), an attacker can craft a payload that executes arbitrary code.
 

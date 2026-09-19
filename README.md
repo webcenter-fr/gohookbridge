@@ -283,19 +283,19 @@ Output logs as JSON with `--output json` (which implies `--nocolor`).
 You can execute a shell command whenever a webhook event is received using `--exec`:
 
 ```shell
-gohookbridge client --exec 'jq . $GOSMEE_PAYLOAD_FILE' https://smee.io/aBcDeF http://localhost:8080
+gohookbridge client --exec 'jq . $GOHOOKBRIDGE_PAYLOAD_FILE' https://smee.io/aBcDeF http://localhost:8080
 ```
 
 The payload and headers are written to temporary files (automatically cleaned up after the command finishes). The following environment variables are set:
 
 | Variable | Description |
 |---|---|
-| `GOSMEE_EVENT_TYPE` | The event type (e.g., `push`, `pull_request`) |
-| `GOSMEE_EVENT_ID` | The delivery ID |
-| `GOSMEE_CONTENT_TYPE` | The content type of the payload |
-| `GOSMEE_TIMESTAMP` | The timestamp of the event |
-| `GOSMEE_PAYLOAD_FILE` | Path to a temporary file containing the JSON payload body |
-| `GOSMEE_HEADERS_FILE` | Path to a temporary file containing the webhook headers as JSON |
+| `GOHOOKBRIDGE_EVENT_TYPE` | The event type (e.g., `push`, `pull_request`) |
+| `GOHOOKBRIDGE_EVENT_ID` | The delivery ID |
+| `GOHOOKBRIDGE_CONTENT_TYPE` | The content type of the payload |
+| `GOHOOKBRIDGE_TIMESTAMP` | The timestamp of the event |
+| `GOHOOKBRIDGE_PAYLOAD_FILE` | Path to a temporary file containing the JSON payload body |
+| `GOHOOKBRIDGE_HEADERS_FILE` | Path to a temporary file containing the webhook headers as JSON |
 
 To only run the command for specific event types, use `--exec-on-events`:
 
@@ -303,14 +303,14 @@ To only run the command for specific event types, use `--exec-on-events`:
 gohookbridge client --exec './handle-push.sh' --exec-on-events push --exec-on-events pull_request https://smee.io/aBcDeF http://localhost:8080
 ```
 
-By default, `--exec` runs with a minimal, safe environment (for example `PATH`, `HOME`, and locale-related variables), not the full gohookbridge process environment. To pass additional variables through, use `--exec-env-vars VAR_NAME` (repeat the flag for multiple names), or set `GOSMEE_EXEC_ENV_VARS` as a comma-separated list.
+By default, `--exec` runs with a minimal, safe environment (for example `PATH`, `HOME`, and locale-related variables), not the full gohookbridge process environment. To pass additional variables through, use `--exec-env-vars VAR_NAME` (repeat the flag for multiple names), or set `GOHOOKBRIDGE_EXEC_ENV_VARS` as a comma-separated list.
 
 The `--exec` command runs **synchronously** after the webhook is forwarded to the target URL (if replay is enabled). A slow command will delay processing of subsequent events. If you need asynchronous execution, background your command (e.g., `--exec './my-script.sh &'`). A non-zero exit code is logged as an error but does not stop processing further events.
 
 Both `--exec` and `--exec-on-events` also work with the `replay` command.
 
 > **Security Warning**: The `--exec` flag runs arbitrary shell commands with
-> the webhook payload available via `$GOSMEE_PAYLOAD_FILE`. When receiving
+> the webhook payload available via `$GOHOOKBRIDGE_PAYLOAD_FILE`. When receiving
 > webhooks from untrusted sources, a malicious payload could exploit a
 > naively written script (e.g., one that passes unsanitized fields to shell
 > commands). Always validate and sanitize webhook payloads in your exec
@@ -342,7 +342,7 @@ Both cURL and HTTPie replay scripts include these command-line options:
 ./timestamp.sh -h
 ```
 
-Scripts also respect the `GOSMEE_DEBUG_SERVICE` environment variable for alternative target URLs.
+Scripts also respect the `GOHOOKBRIDGE_DEBUG_SERVICE` environment variable for alternative target URLs.
 
 ### Server
 

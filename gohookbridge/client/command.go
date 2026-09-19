@@ -52,9 +52,9 @@ func clientAction(c *cli.Context) error {
 	var smeeURL, targetURL string
 	noReplay := c.Bool("noReplay")
 	switch {
-	case os.Getenv("GOSMEE_URL") != "" && os.Getenv("GOSMEE_TARGET_URL") != "":
-		smeeURL = os.Getenv("GOSMEE_URL")
-		targetURL = os.Getenv("GOSMEE_TARGET_URL")
+	case os.Getenv("GOHOOKBRIDGE_URL") != "" && os.Getenv("GOHOOKBRIDGE_TARGET_URL") != "":
+		smeeURL = os.Getenv("GOHOOKBRIDGE_URL")
+		targetURL = os.Getenv("GOHOOKBRIDGE_TARGET_URL")
 	case c.String("exec") != "" && c.NArg() == 1:
 		smeeURL = c.Args().Get(0)
 		noReplay = true
@@ -92,7 +92,7 @@ func clientAction(c *cli.Context) error {
 		serveHealthEndpoint(healthPort, logger, decorate)
 	}
 
-	cfg := goSmee{
+	cfg := hookBridge{
 		replayDataOpts: &replayDataOpts{
 			smeeURL:           smeeURL,
 			targetURL:         targetURL,
