@@ -431,7 +431,8 @@ Facts: kubeconfig `/home/user/.kube/home` (context `home`), namespace
 `gohookbridge`, release name `gohookbridge`, chart `./helm/gohookbridge`,
 gitignored values `helm/gohookbridge/values-home.yaml`, public URL
 `https://gohookbridge-test.home.webcenter.fr`, admin `admin` /
-`6283ccf322b69dfa6777de71abaeab3e`, HA 3 replicas, k3s single node `kube-00`.
+`<admin-password>` (stored in the gitignored `AGENTS.local.md`), HA 3 replicas,
+k3s single node `kube-00`.
 Current values-home image: `gohookbridge:raft-ha-5` (local containerd import).
 
 ### 8.1 Pre-flight
@@ -513,7 +514,7 @@ curl -sSI https://gohookbridge-test.home.webcenter.fr/version | grep -i 'x-gohoo
 # 4. Admin login (expect {"ok":true} + Set-Cookie: gohookbridge_session=...)
 curl -sS -c /tmp/gohb-cookies.txt -D - -X POST https://gohookbridge-test.home.webcenter.fr/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"6283ccf322b69dfa6777de71abaeab3e"}'
+  -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}"
 ```
 
 **Local echo target** (run once per port in a separate terminal) — prints the
