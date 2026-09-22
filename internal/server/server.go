@@ -44,11 +44,11 @@ type Server struct {
 	banTracker    *service.BanTracker
 	sessionSecret [32]byte
 	httpServer    *http.Server
-	httpPort      int
 	certFile      string
 	certKey       string
 	autoCert      bool
 	publicURL     string
+	cancelCtx     context.CancelFunc
 }
 
 // NewServer performs the full dependency-injection wiring formerly done by
@@ -168,8 +168,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init raft store: %w", err)
 	}
-	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	startupCtx, cancelStartup := context.WithCancel(context.Background())
 	if generationStore != nil {
 		if err := writeLocalGeneration(c.String("raft-dir"), clusterGeneration); err != nil {
 			log.Printf("WARNING: persist raft generation: %v", err)
@@ -178,23 +177,26 @@ func NewServer(c *cli.Context) (*Server, error) {
 
 	// Wait for ANY leader (followers must not CrashLoop waiting for self
 	// leadership), then start the leader-only membership join loop.
-	leaderCtx, cancelLeader := context.WithTimeout(runCtx, leaderWaitTimeout)
+	leaderCtx, cancelLeader := context.WithTimeout(startupCtx, leaderWaitTimeout)
 	defer cancelLeader()
 	if err := rs.WaitForLeader(leaderCtx); err != nil {
+		cancelStartup()
 		_ = rs.Shutdown()
 		return nil, fmt.Errorf("wait for raft leader: %w", err)
 	}
-	go rs.StartJoinLoop(runCtx)
+	go rs.StartJoinLoop(startupCtx)
 	if replicaReader != nil && strings.HasSuffix(hostname, "-0") {
-		go watchSingleNodeRecovery(runCtx, replicaReader, rs, leaderWaitTimeout)
+		go watchSingleNodeRecovery(startupCtx, replicaReader, rs, leaderWaitTimeout)
 	}
 	if err := rs.WaitForCleanState(leaderCtx); err != nil {
+		cancelStartup()
 		_ = rs.Shutdown()
 		return nil, fmt.Errorf("wait for raft clean state: %w", err)
 	}
 
 	// Apply bootstrap.yaml exactly once, on the leader, when the FSM is empty.
 	if err := applyBootstrapOnce(ctx, rs, c.String("bootstrap-config-file")); err != nil {
+		cancelStartup()
 		_ = rs.Shutdown()
 		return nil, err
 	}
@@ -215,6 +217,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	}
 	broker, natsErr := nats.New(natsCfg)
 	if natsErr != nil {
+		cancelStartup()
 		_ = rs.Shutdown()
 		return nil, fmt.Errorf("init nats broker: %w", natsErr)
 	}
@@ -231,6 +234,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 
 	if c.Bool("dev-admin") {
 		if err := initDevAdmin(ctx, svc, c.String("dev-admin-password"), c.String("raft-dir")); err != nil {
+			cancelStartup()
 			broker.Shutdown()
 			_ = rs.Shutdown()
 			return nil, fmt.Errorf("dev admin: %w", err)
@@ -254,12 +258,14 @@ func NewServer(c *cli.Context) (*Server, error) {
 		if rs.IsLeader() {
 			b := make([]byte, 32)
 			if _, err := rand.Read(b); err != nil {
+				cancelStartup()
 				broker.Shutdown()
 				_ = rs.Shutdown()
 				return nil, fmt.Errorf("generate session secret: %w", err)
 			}
 			secret = hex.EncodeToString(b)
 			if err := svc.SetSessionSecret(ctx, secret); err != nil {
+				cancelStartup()
 				broker.Shutdown()
 				_ = rs.Shutdown()
 				return nil, fmt.Errorf("persist generated session secret: %w", err)
@@ -276,6 +282,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 				users, _ := svc.ListUsers(ctx)
 				providers, _ := svc.OIDCProviders(ctx)
 				if len(users) > 0 || len(providers) > 0 {
+					cancelStartup()
 					broker.Shutdown()
 					_ = rs.Shutdown()
 					return nil, fmt.Errorf("no session secret configured and node is not the leader: set session_secret via bootstrap.yaml or on the leader node")
@@ -324,6 +331,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	for _, provider := range providers {
 		oidcHandler, err := handler.NewOIDCHandler(provider, sessionSecret, publicURL)
 		if err != nil {
+			cancelStartup()
 			broker.Shutdown()
 			_ = rs.Shutdown()
 			return nil, fmt.Errorf("init OIDC handler for %s: %w", provider.ID, err)
@@ -386,7 +394,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 		certFile:      certFile,
 		certKey:       certKey,
 		autoCert:      autoCert,
-		httpPort:      c.Int("port"),
+		cancelCtx:     cancelStartup,
 		httpServer: &http.Server{
 			Addr:              portAddr,
 			Handler:           finalRouter,
@@ -399,6 +407,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 // gracefully (transferring Raft leadership).
 func (s *Server) Run(ctx context.Context) error {
 	defer func() {
+		s.cancelCtx()
 		_ = s.repo.Shutdown()
 		s.broker.Shutdown()
 	}()
