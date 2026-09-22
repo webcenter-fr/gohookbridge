@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -16,6 +17,19 @@ import (
 	"github.com/hashicorp/raft"
 	"gotest.tools/v3/assert"
 )
+
+// localhostFirstIP returns the first address that "localhost" resolves to.
+// retryingStreamLayer dials the first resolved address, so the test listener
+// must bind to that same address. Hardcoding an address (e.g. [::1]) makes the
+// test depend on the resolver's IPv4/IPv6 ordering, which differs between
+// environments.
+func localhostFirstIP(t *testing.T) string {
+	t.Helper()
+	ips, err := net.DefaultResolver.LookupHost(context.Background(), "localhost")
+	assert.NilError(t, err)
+	assert.Assert(t, len(ips) > 0)
+	return ips[0]
+}
 
 func TestHostAddr_String(t *testing.T) {
 	a := hostAddr{host: "pod-0.headless.ns.svc", port: 6001}
@@ -63,11 +77,11 @@ type testError string
 func (e testError) Error() string { return string(e) }
 
 func TestRetryingStreamLayerDial_PlaintextReResolve(t *testing.T) {
-	// Bind the IPv6 loopback: "localhost" resolves to ::1 first in this
-	// environment, and the retrying layer dials the first resolved address.
-	layer, err := newPlainStreamLayer("[::1]:0", nil)
+	// Bind the address "localhost" resolves to first, so the retrying layer's
+	// re-resolution reaches this listener regardless of IPv4/IPv6 ordering.
+	layer, err := newPlainStreamLayer(net.JoinHostPort(localhostFirstIP(t), "0"), nil)
 	if err != nil {
-		t.Skipf("IPv6 loopback unavailable: %v", err)
+		t.Skipf("loopback listener unavailable: %v", err)
 	}
 	defer func() { _ = layer.Close() }()
 
@@ -99,9 +113,9 @@ func TestRetryingStreamLayerDial_PlaintextReResolve(t *testing.T) {
 
 func TestRetryingStreamLayerDial_TLS(t *testing.T) {
 	cfg := testSelfSignedTLSConfig(t)
-	layer, err := newTLSStreamLayer("[::1]:0", nil, cfg)
+	layer, err := newTLSStreamLayer(net.JoinHostPort(localhostFirstIP(t), "0"), nil, cfg)
 	if err != nil {
-		t.Skipf("IPv6 loopback unavailable: %v", err)
+		t.Skipf("loopback listener unavailable: %v", err)
 	}
 	defer func() { _ = layer.Close() }()
 
