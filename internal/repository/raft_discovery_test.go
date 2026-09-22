@@ -1,4 +1,4 @@
-package store
+package repository
 
 import (
 	"fmt"
@@ -18,17 +18,17 @@ func TestNewPeerResolverSelection(t *testing.T) {
 		{
 			name: "explicit peers wins",
 			cfg:  RaftDiscoveryConfig{Peers: []RaftPeer{{ID: "a", Address: "a:1"}}, StatefulSetName: "sts", HeadlessService: "h"},
-			want: "*store.staticPeerResolver",
+			want: "*repository.staticPeerResolver",
 		},
 		{
 			name: "dns discovery",
 			cfg:  RaftDiscoveryConfig{StatefulSetName: "sts", HeadlessService: "h", Namespace: "ns", Replicas: 3},
-			want: "*store.dnsPeerResolver",
+			want: "*repository.dnsPeerResolver",
 		},
 		{
 			name: "single node fallback",
 			cfg:  RaftDiscoveryConfig{BindAddr: "127.0.0.1:6001"},
-			want: "*store.singleNodeResolver",
+			want: "*repository.singleNodeResolver",
 		},
 	}
 	for _, tc := range tests {

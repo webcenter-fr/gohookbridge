@@ -1,7 +1,8 @@
-package store
+package repository
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"gotest.tools/v3/assert"
 )
 
@@ -247,7 +249,7 @@ func TestRaftStore_HasData(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Assert(t, !hasData)
 
-	err = rs.CreateChannel(&Channel{ID: "test"})
+	err = rs.CreateChannel(context.Background(), &domain.Channel{ID: "test"})
 	assert.NilError(t, err)
 	hasData, err = rs.HasData()
 	assert.NilError(t, err)
@@ -257,28 +259,28 @@ func TestRaftStore_HasData(t *testing.T) {
 func TestRaftStore_CreateProject(t *testing.T) {
 	rs := newTestRaftStore(t)
 
-	p := &Channel{ID: "proj1"}
-	err := rs.CreateChannel(p)
+	p := &domain.Channel{ID: "proj1"}
+	err := rs.CreateChannel(context.Background(), p)
 	assert.NilError(t, err)
 
-	got, err := rs.GetChannel("proj1")
+	got, err := rs.GetChannel(context.Background(), "proj1")
 	assert.NilError(t, err)
 	assert.Equal(t, got.ID, "proj1")
 
-	err = rs.CreateChannel(&Channel{ID: "proj1"})
+	err = rs.CreateChannel(context.Background(), &domain.Channel{ID: "proj1"})
 	assert.ErrorContains(t, err, "already exists")
 }
 
 func TestRaftStore_UpdateProject(t *testing.T) {
 	rs := newTestRaftStore(t)
 
-	err := rs.CreateChannel(&Channel{ID: "proj1"})
+	err := rs.CreateChannel(context.Background(), &domain.Channel{ID: "proj1"})
 	assert.NilError(t, err)
 
-	err = rs.UpdateChannel(&Channel{ID: "proj1", MaxBodySize: 999})
+	err = rs.UpdateChannel(context.Background(), &domain.Channel{ID: "proj1", MaxBodySize: 999})
 	assert.NilError(t, err)
 
-	got, err := rs.GetChannel("proj1")
+	got, err := rs.GetChannel(context.Background(), "proj1")
 	assert.NilError(t, err)
 	assert.Equal(t, got.MaxBodySize, 999)
 }
@@ -286,13 +288,13 @@ func TestRaftStore_UpdateProject(t *testing.T) {
 func TestRaftStore_DeleteProject(t *testing.T) {
 	rs := newTestRaftStore(t)
 
-	err := rs.CreateChannel(&Channel{ID: "proj1"})
+	err := rs.CreateChannel(context.Background(), &domain.Channel{ID: "proj1"})
 	assert.NilError(t, err)
 
-	err = rs.DeleteChannel("proj1")
+	err = rs.DeleteChannel(context.Background(), "proj1")
 	assert.NilError(t, err)
 
-	_, err = rs.GetChannel("proj1")
+	_, err = rs.GetChannel(context.Background(), "proj1")
 	assert.ErrorContains(t, err, "not found")
 }
 
@@ -301,11 +303,11 @@ func TestRaftStore_ListProjects(t *testing.T) {
 
 	ids := []string{"p1", "p2", "p3"}
 	for _, id := range ids {
-		err := rs.CreateChannel(&Channel{ID: id})
+		err := rs.CreateChannel(context.Background(), &domain.Channel{ID: id})
 		assert.NilError(t, err)
 	}
 
-	channels, err := rs.ListChannels()
+	channels, err := rs.ListChannels(context.Background())
 	assert.NilError(t, err)
 	assert.Equal(t, len(channels), 3)
 }
@@ -313,7 +315,7 @@ func TestRaftStore_ListProjects(t *testing.T) {
 func TestRaftStore_GetGlobalConfig(t *testing.T) {
 	rs := newTestRaftStore(t)
 
-	cfg, err := rs.GetGlobalConfig()
+	cfg, err := rs.GetGlobalConfig(context.Background())
 	assert.NilError(t, err)
 	assert.Equal(t, cfg.Server.MaxBodySize, 26214400)
 	assert.Equal(t, cfg.Server.CORSOrigin, "*")
@@ -327,22 +329,22 @@ func TestRaftStore_GetGlobalConfig(t *testing.T) {
 func TestRaftStore_UpdateGlobalConfig(t *testing.T) {
 	rs := newTestRaftStore(t)
 
-	newCfg := &GlobalConfig{
-		Server: ServerConfig{
+	newCfg := &domain.GlobalConfig{
+		Server: domain.ServerConfig{
 			MaxBodySize:        100,
 			BehindReverseProxy: true,
 			CORSOrigin:         "https://example.com",
 			Footer:             "custom footer",
 		},
-		Defaults: DefaultChannelConfig{
+		Defaults: domain.DefaultChannelConfig{
 			WebhookSecret: "sig1",
 			AllowedIPs:    []string{"10.0.0.0/8"},
 		},
 	}
-	err := rs.UpdateGlobalConfig(newCfg)
+	err := rs.UpdateGlobalConfig(context.Background(), newCfg)
 	assert.NilError(t, err)
 
-	cfg, err := rs.GetGlobalConfig()
+	cfg, err := rs.GetGlobalConfig(context.Background())
 	assert.NilError(t, err)
 	assert.Equal(t, cfg.Server.MaxBodySize, 100)
 	assert.Assert(t, cfg.Server.BehindReverseProxy)
@@ -355,36 +357,36 @@ func TestRaftStore_UpdateGlobalConfig(t *testing.T) {
 func TestRaftStore_CRUD_Users(t *testing.T) {
 	rs := newTestRaftStore(t)
 
-	u := &User{
+	u := &domain.User{
 		ID:       "user1",
 		Username: "testuser",
 		Roles:    []string{"admin"},
 		Channels: []string{"proj1"},
 	}
-	err := rs.CreateUser(u)
+	err := rs.CreateUser(context.Background(), u)
 	assert.NilError(t, err)
 
-	got, err := rs.GetUser("user1")
+	got, err := rs.GetUser(context.Background(), "user1")
 	assert.NilError(t, err)
 	assert.Equal(t, got.Username, "testuser")
 	assert.DeepEqual(t, got.Roles, []string{"admin"})
 	assert.DeepEqual(t, got.Channels, []string{"proj1"})
 
 	got.Roles = []string{"channel_admin"}
-	err = rs.UpdateUser(got)
+	err = rs.UpdateUser(context.Background(), got)
 	assert.NilError(t, err)
 
-	updated, err := rs.GetUser("user1")
+	updated, err := rs.GetUser(context.Background(), "user1")
 	assert.NilError(t, err)
 	assert.DeepEqual(t, updated.Roles, []string{"channel_admin"})
 
-	err = rs.DeleteUser("user1")
+	err = rs.DeleteUser(context.Background(), "user1")
 	assert.NilError(t, err)
 
-	_, err = rs.GetUser("user1")
+	_, err = rs.GetUser(context.Background(), "user1")
 	assert.ErrorContains(t, err, "not found")
 
-	users, err := rs.ListUsers()
+	users, err := rs.ListUsers(context.Background())
 	assert.NilError(t, err)
 	assert.Equal(t, len(users), 0)
 }
@@ -392,113 +394,69 @@ func TestRaftStore_CRUD_Users(t *testing.T) {
 func TestRaftStore_GetUserByUsername(t *testing.T) {
 	rs := newTestRaftStore(t)
 
-	u := &User{
+	u := &domain.User{
 		ID:       "uid-1",
 		Username: "johndoe",
 		Roles:    []string{"admin"},
 	}
-	err := rs.CreateUser(u)
+	err := rs.CreateUser(context.Background(), u)
 	assert.NilError(t, err)
 
-	err = rs.CreateUser(&User{
+	err = rs.CreateUser(context.Background(), &domain.User{
 		ID:       "uid-2",
 		Username: "janedoe",
 		Roles:    []string{"channel_viewer"},
 	})
 	assert.NilError(t, err)
 
-	got, err := rs.GetUserByUsername("johndoe")
+	got, err := rs.GetUserByUsername(context.Background(), "johndoe")
 	assert.NilError(t, err)
 	assert.Equal(t, got.ID, "uid-1")
 	assert.Equal(t, got.Username, "johndoe")
 
-	got, err = rs.GetUserByUsername("janedoe")
+	got, err = rs.GetUserByUsername(context.Background(), "janedoe")
 	assert.NilError(t, err)
 	assert.Equal(t, got.ID, "uid-2")
 
-	_, err = rs.GetUserByUsername("nonexistent")
+	_, err = rs.GetUserByUsername(context.Background(), "nonexistent")
 	assert.ErrorContains(t, err, "not found")
-}
-
-func TestRaftStore_ProjectConfigFallback(t *testing.T) {
-	rs := newTestRaftStore(t)
-
-	err := rs.UpdateGlobalConfig(&GlobalConfig{
-		Server: ServerConfig{
-			MaxBodySize: 100,
-		},
-		Defaults: DefaultChannelConfig{
-			WebhookSecret: "global-sig",
-			AllowedIPs:    []string{"10.0.0.0/8"},
-		},
-	})
-	assert.NilError(t, err)
-
-	resolved, err := rs.ResolveChannelConfig("nonexistent-project")
-	assert.NilError(t, err)
-	assert.Equal(t, resolved.ID, "nonexistent-project")
-	assert.Equal(t, resolved.MaxBodySize, 100)
-	assert.Equal(t, resolved.WebhookSecret, "global-sig")
-	assert.DeepEqual(t, resolved.AllowedIPs, []string{"10.0.0.0/8"})
-
-	err = rs.CreateChannel(&Channel{ID: "minimal-project"})
-	assert.NilError(t, err)
-
-	resolved, err = rs.ResolveChannelConfig("minimal-project")
-	assert.NilError(t, err)
-	assert.Equal(t, resolved.MaxBodySize, 100)
-	assert.Equal(t, resolved.WebhookSecret, "global-sig")
-	assert.DeepEqual(t, resolved.AllowedIPs, []string{"10.0.0.0/8"})
-
-	err = rs.UpdateChannel(&Channel{
-		ID:            "minimal-project",
-		MaxBodySize:   999,
-		WebhookSecret: "project-sig",
-	})
-	assert.NilError(t, err)
-
-	resolved, err = rs.ResolveChannelConfig("minimal-project")
-	assert.NilError(t, err)
-	assert.Equal(t, resolved.MaxBodySize, 999)
-	assert.Equal(t, resolved.WebhookSecret, "project-sig")
-	assert.DeepEqual(t, resolved.AllowedIPs, []string{"10.0.0.0/8"})
 }
 
 func TestClientCursorCRUD(t *testing.T) {
 	rs := newTestRaftStore(t)
 
-	cursor := &ClientCursor{
+	cursor := &domain.ClientCursor{
 		Channel:         "test-channel",
 		ClientID:        "test-client",
 		LastTimestampMs: 1234567890000,
 	}
-	err := rs.SetClientCursor(cursor)
+	err := rs.SetClientCursor(context.Background(), cursor)
 	assert.NilError(t, err)
 
-	got, err := rs.GetClientCursor("test-channel", "test-client")
+	got, err := rs.GetClientCursor(context.Background(), "test-channel", "test-client")
 	assert.NilError(t, err)
 	assert.Assert(t, got != nil)
 	assert.Equal(t, got.Channel, "test-channel")
 	assert.Equal(t, got.ClientID, "test-client")
 	assert.Equal(t, got.LastTimestampMs, int64(1234567890000))
 
-	got, err = rs.GetClientCursor("nonexistent", "test-client")
-	assert.NilError(t, err)
+	got, err = rs.GetClientCursor(context.Background(), "nonexistent", "test-client")
+	assert.Assert(t, errors.Is(err, domain.ErrNotFound))
 	assert.Assert(t, got == nil)
 
-	got, err = rs.GetClientCursor("test-channel", "nonexistent")
-	assert.NilError(t, err)
+	got, err = rs.GetClientCursor(context.Background(), "test-channel", "nonexistent")
+	assert.Assert(t, errors.Is(err, domain.ErrNotFound))
 	assert.Assert(t, got == nil)
 
-	cursor2 := &ClientCursor{
+	cursor2 := &domain.ClientCursor{
 		Channel:         "test-channel",
 		ClientID:        "test-client",
 		LastTimestampMs: 1234567899999,
 	}
-	err = rs.SetClientCursor(cursor2)
+	err = rs.SetClientCursor(context.Background(), cursor2)
 	assert.NilError(t, err)
 
-	got, err = rs.GetClientCursor("test-channel", "test-client")
+	got, err = rs.GetClientCursor(context.Background(), "test-channel", "test-client")
 	assert.NilError(t, err)
 	assert.Assert(t, got != nil)
 	assert.Equal(t, got.LastTimestampMs, int64(1234567899999))

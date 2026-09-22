@@ -1,4 +1,4 @@
-package store
+package repository
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
+	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"go.etcd.io/bbolt"
 	"gotest.tools/v3/assert"
 )
@@ -214,7 +215,7 @@ func TestMultiNode_BootstrapJoinElect(t *testing.T) {
 	assert.Assert(t, leader.IsLeader())
 
 	// A write on the leader commits against the full quorum and replicates.
-	assert.NilError(t, leader.CreateChannel(&Channel{ID: "joined"}))
+	assert.NilError(t, leader.CreateChannel(context.Background(), &domain.Channel{ID: "joined"}))
 	for i := 1; i < len(nodes); i++ {
 		waitForChannel(t, nodes[i].store, "joined")
 	}
@@ -225,7 +226,7 @@ func waitForChannel(t *testing.T, s *RaftStore, id string) {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := s.GetChannel(id); err == nil {
+		if _, err := s.GetChannel(context.Background(), id); err == nil {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -245,7 +246,7 @@ func TestMultiNode_KillLeaderReelect(t *testing.T) {
 
 	newLeader := findLeader(t, clusterStores(nodes))
 	assert.Assert(t, newLeader != leader, "expected a different leader after failover")
-	assert.NilError(t, newLeader.CreateChannel(&Channel{ID: "failover"}))
+	assert.NilError(t, newLeader.CreateChannel(context.Background(), &domain.Channel{ID: "failover"}))
 }
 
 func TestMultiNode_ReconcileAfterAddressChange(t *testing.T) {
@@ -283,7 +284,7 @@ func TestMultiNode_TLSClusterReplication(t *testing.T) {
 	bootstrapSingle(t, nodes)
 	leader := joinAll(t, nodes)
 
-	assert.NilError(t, leader.CreateChannel(&Channel{ID: "tls-joined"}))
+	assert.NilError(t, leader.CreateChannel(context.Background(), &domain.Channel{ID: "tls-joined"}))
 	for i := 1; i < len(nodes); i++ {
 		waitForChannel(t, nodes[i].store, "tls-joined")
 	}

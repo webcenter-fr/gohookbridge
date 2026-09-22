@@ -1,4 +1,4 @@
-// Package storetest provides test helpers for the store package.
+// Package storetest provides test helpers for the repository package.
 package storetest
 
 import (
@@ -7,15 +7,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/webcenter-fr/gohookbridge/gohookbridge/store"
+	"github.com/webcenter-fr/gohookbridge/internal/domain"
+	"github.com/webcenter-fr/gohookbridge/internal/repository"
+	"github.com/webcenter-fr/gohookbridge/internal/service"
 )
 
-func NewRaftStore(t *testing.T) *store.RaftStore {
+func NewRaftStore(t *testing.T) *repository.RaftStore {
 	t.Helper()
-	return NewRaftStoreWithConfig(t, store.RaftConfig{})
+	return NewRaftStoreWithConfig(t, repository.RaftConfig{})
 }
 
-func NewRaftStoreWithConfig(t *testing.T, cfg store.RaftConfig) *store.RaftStore {
+func NewRaftStoreWithConfig(t *testing.T, cfg repository.RaftConfig) *repository.RaftStore {
 	t.Helper()
 	if cfg.Dir == "" {
 		cfg.Dir = t.TempDir()
@@ -26,7 +28,7 @@ func NewRaftStoreWithConfig(t *testing.T, cfg store.RaftConfig) *store.RaftStore
 	if cfg.BindAddr == "" {
 		cfg.BindAddr = freeTCPAddr(t)
 	}
-	rs, err := store.NewRaftStore(cfg)
+	rs, err := repository.NewRaftStore(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,35 +56,35 @@ func freeTCPAddr(t *testing.T) string {
 	return addr
 }
 
-func DefaultGlobalConfig() *store.GlobalConfig {
-	return &store.GlobalConfig{
-		Server: store.ServerConfig{
+func DefaultGlobalConfig() *domain.GlobalConfig {
+	return &domain.GlobalConfig{
+		Server: domain.ServerConfig{
 			MaxBodySize: 26214400,
 			CORSOrigin:  "*",
 		},
-		Defaults: store.DefaultChannelConfig{},
+		Defaults: domain.DefaultChannelConfig{},
 	}
 }
 
-func SetupCORSOrigin(rs *store.RaftStore, corsOrigin string) {
+func SetupCORSOrigin(rs *repository.RaftStore, corsOrigin string) {
 	globalCfg := DefaultGlobalConfig()
 	globalCfg.Server.CORSOrigin = corsOrigin
-	rs.UpdateGlobalConfig(globalCfg) //nolint:errcheck
+	rs.UpdateGlobalConfig(context.Background(), globalCfg) //nolint:errcheck
 }
 
-func SetupProtectedChannels(t *testing.T, channels map[string][]string) *store.ProtectedChannels {
+func SetupProtectedChannels(t *testing.T, channels map[string][]string) *service.ProtectedChannels {
 	t.Helper()
 	rs := NewRaftStore(t)
 	SetupCORSOrigin(rs, "*")
 	for channel, allowedKeys := range channels {
-		p := &store.Channel{
+		p := &domain.Channel{
 			ID:                channel,
 			EncryptionMode:    "e2e",
 			EncryptionPubKeys: allowedKeys,
 		}
-		if err := rs.CreateChannel(p); err != nil {
+		if err := rs.CreateChannel(context.Background(), p); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return store.NewProtectedChannels(rs)
+	return service.NewService(rs, nil).NewProtectedChannels(context.Background())
 }

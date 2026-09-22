@@ -1,10 +1,12 @@
-package store
+package repository
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"golang.org/x/crypto/bcrypt"
 	"gotest.tools/v3/assert"
 )
@@ -107,8 +109,8 @@ func TestApplyBootstrap_GlobalConfig(t *testing.T) {
 	rs := newTestRaftStore(t)
 
 	cfg := &BootstrapConfig{
-		Global: &GlobalConfig{
-			Server: ServerConfig{
+		Global: &domain.GlobalConfig{
+			Server: domain.ServerConfig{
 				MaxBodySize:        500,
 				CORSOrigin:         "https://app.example.com",
 				BehindReverseProxy: true,
@@ -116,10 +118,10 @@ func TestApplyBootstrap_GlobalConfig(t *testing.T) {
 		},
 	}
 
-	err := rs.ApplyBootstrap(cfg)
+	err := rs.ApplyBootstrap(context.Background(), cfg)
 	assert.NilError(t, err)
 
-	got, err := rs.GetGlobalConfig()
+	got, err := rs.GetGlobalConfig(context.Background())
 	assert.NilError(t, err)
 	assert.Equal(t, got.Server.MaxBodySize, 500)
 	assert.Equal(t, got.Server.CORSOrigin, "https://app.example.com")
@@ -140,10 +142,10 @@ func TestApplyBootstrap_Users_PasswordHashed(t *testing.T) {
 		},
 	}
 
-	err := rs.ApplyBootstrap(cfg)
+	err := rs.ApplyBootstrap(context.Background(), cfg)
 	assert.NilError(t, err)
 
-	user, err := rs.GetUserByUsername("alice")
+	user, err := rs.GetUserByUsername(context.Background(), "alice")
 	assert.NilError(t, err)
 	assert.Equal(t, user.Username, "alice")
 	assert.Assert(t, user.PasswordHash != "")
@@ -166,18 +168,18 @@ func TestApplyBootstrap_Projects(t *testing.T) {
 		},
 	}
 
-	err := rs.ApplyBootstrap(cfg)
+	err := rs.ApplyBootstrap(context.Background(), cfg)
 	assert.NilError(t, err)
 
-	channels, err := rs.ListChannels()
+	channels, err := rs.ListChannels(context.Background())
 	assert.NilError(t, err)
 	assert.Equal(t, len(channels), 2)
 
-	gotA, err := rs.GetChannel("proj-a")
+	gotA, err := rs.GetChannel(context.Background(), "proj-a")
 	assert.NilError(t, err)
 	assert.Equal(t, gotA.ID, "proj-a")
 
-	gotB, err := rs.GetChannel("proj-b")
+	gotB, err := rs.GetChannel(context.Background(), "proj-b")
 	assert.NilError(t, err)
 	assert.Equal(t, gotB.ID, "proj-b")
 }
@@ -191,9 +193,9 @@ func TestApplyBootstrap_DoubleApplication(t *testing.T) {
 		},
 	}
 
-	err := rs.ApplyBootstrap(cfg)
+	err := rs.ApplyBootstrap(context.Background(), cfg)
 	assert.NilError(t, err)
 
-	err = rs.ApplyBootstrap(&BootstrapConfig{})
+	err = rs.ApplyBootstrap(context.Background(), &BootstrapConfig{})
 	assert.ErrorContains(t, err, "FSM already has data")
 }

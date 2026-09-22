@@ -1,19 +1,20 @@
-package store
+package repository
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
+	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"gopkg.in/yaml.v3"
 )
 
 type BootstrapConfig struct {
-	Raft     *BootstrapRaft     `json:"raft,omitempty"     yaml:"raft,omitempty"`
-	Global   *GlobalConfig      `json:"global,omitempty"   yaml:"global,omitempty"`
-	Users    []BootstrapUser    `json:"users,omitempty"    yaml:"users,omitempty"`
-	Channels []BootstrapChannel `json:"channels,omitempty" yaml:"channels,omitempty"`
+	Raft     *BootstrapRaft       `json:"raft,omitempty"     yaml:"raft,omitempty"`
+	Global   *domain.GlobalConfig `json:"global,omitempty"   yaml:"global,omitempty"`
+	Users    []BootstrapUser      `json:"users,omitempty"    yaml:"users,omitempty"`
+	Channels []BootstrapChannel   `json:"channels,omitempty" yaml:"channels,omitempty"`
 }
 
 type BootstrapRaft struct {
@@ -55,7 +56,7 @@ func LoadBootstrap(path string) (*BootstrapConfig, error) {
 	return &cfg, nil
 }
 
-func (rs *RaftStore) ApplyBootstrap(cfg *BootstrapConfig) error {
+func (rs *RaftStore) ApplyBootstrap(ctx context.Context, cfg *BootstrapConfig) error {
 	hasData, err := rs.HasData()
 	if err != nil {
 		return err
@@ -72,14 +73,14 @@ func (rs *RaftStore) ApplyBootstrap(cfg *BootstrapConfig) error {
 		payload.Users = append(payload.Users, fsmBootstrapUser(u))
 	}
 	for _, p := range cfg.Channels {
-		ch := &Channel{
+		ch := &domain.Channel{
 			ID:                p.ID,
 			Description:       p.Description,
 			WebhookSecret:     p.WebhookSecret,
 			WebhookSignatures: p.WebhookSignatures,
 			AllowedIPs:        p.AllowedIPs,
 		}
-		migrateChannel(ch)
+		domain.MigrateChannel(ch)
 		payload.Channels = append(payload.Channels, ch)
 	}
 
@@ -93,65 +94,4 @@ func (rs *RaftStore) ApplyBootstrap(cfg *BootstrapConfig) error {
 	}
 	_, err = rs.Apply(cmd)
 	return err
-}
-
-// IsIPAllowed checks if an IP is allowed by a project or global config.
-func IsIPAllowed(allowedIPs []string, clientIP string) (bool, error) {
-	if len(allowedIPs) == 0 {
-		return true, nil
-	}
-	parsed := parseIPList(allowedIPs)
-	return parsed.contains(clientIP), nil
-}
-
-type ipList struct {
-	cidrs []string
-	exact []string
-}
-
-func parseIPList(ranges []string) *ipList {
-	l := &ipList{}
-	for _, r := range ranges {
-		if strings.Contains(r, "/") {
-			l.cidrs = append(l.cidrs, r)
-		} else {
-			l.exact = append(l.exact, r)
-		}
-	}
-	return l
-}
-
-func (l *ipList) contains(ip string) bool {
-	for _, e := range l.exact {
-		if e == ip {
-			return true
-		}
-	}
-	for _, c := range l.cidrs {
-		if matchCIDR(c, ip) {
-			return true
-		}
-	}
-	return false
-}
-
-//nolint:unparam,revive
-func matchCIDR(cidr, ip string) bool {
-	// Simple CIDR matching
-	parts := strings.Split(cidr, "/")
-	if len(parts) != 2 {
-		return false
-	}
-	// In production, use net.IPNet.Contains
-	_ = parts
-	return false
-}
-
-// DefaultRoles returns the predefined roles map.
-func GetDefaultRoles() map[string][]string {
-	return map[string][]string{
-		"admin":          {"*"},
-		"channel_admin":  {"channel:write", "channel:read"},
-		"channel_viewer": {"channel:read"},
-	}
 }

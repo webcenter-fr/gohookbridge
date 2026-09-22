@@ -1,4 +1,4 @@
-package store
+package repository
 
 import (
 	"context"
@@ -16,10 +16,13 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
-	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
+	"github.com/webcenter-fr/gohookbridge/internal/domain"
+	"github.com/webcenter-fr/gohookbridge/pkg/uuid"
 	"go.etcd.io/bbolt"
-	"golang.org/x/crypto/bcrypt"
 )
+
+// RaftStore is the Raft+BoltDB implementation of domain.Repository.
+var _ domain.Repository = (*RaftStore)(nil)
 
 type RaftStore struct {
 	raft      *raft.Raft
@@ -818,30 +821,30 @@ func (rs *RaftStore) Shutdown() error {
 	return rs.Close()
 }
 
-func (rs *RaftStore) GetChannel(id string) (*Channel, error) {
+func (rs *RaftStore) GetChannel(ctx context.Context, id string) (*domain.Channel, error) {
 	if id == "" {
-		return nil, fmt.Errorf("channel ID required")
+		return nil, fmt.Errorf("%w: channel ID required", domain.ErrInvalidArgument)
 	}
 	val, err := getFSMValue(rs.db, "/channels/"+id+"/")
 	if err != nil {
 		return nil, err
 	}
 	if val == nil {
-		return nil, fmt.Errorf("channel %q not found", id)
+		return nil, fmt.Errorf("%w: channel %q", domain.ErrNotFound, id)
 	}
-	var ch Channel
+	var ch domain.Channel
 	if err := json.Unmarshal(val, &ch); err != nil {
 		return nil, err
 	}
 	return &ch, nil
 }
 
-func (rs *RaftStore) ListChannels() ([]*Channel, error) {
+func (rs *RaftStore) ListChannels(ctx context.Context) ([]*domain.Channel, error) {
 	keys, err := listFSMKeys(rs.db, "/channels/")
 	if err != nil {
 		return nil, err
 	}
-	var channels []*Channel
+	var channels []*domain.Channel
 	seen := make(map[string]bool)
 	for _, key := range keys {
 		parts := strings.Split(strings.TrimPrefix(key, "/channels/"), "/")
@@ -857,19 +860,19 @@ func (rs *RaftStore) ListChannels() ([]*Channel, error) {
 		if err != nil || val == nil {
 			continue
 		}
-		var ch Channel
+		var ch domain.Channel
 		if err := json.Unmarshal(val, &ch); err != nil {
 			continue
 		}
-		migrateChannel(&ch)
+		domain.MigrateChannel(&ch)
 		channels = append(channels, &ch)
 	}
 	return channels, nil
 }
 
-func (rs *RaftStore) CreateChannel(p *Channel) error {
+func (rs *RaftStore) CreateChannel(ctx context.Context, p *domain.Channel) error {
 	if p.ID == "" {
-		return fmt.Errorf("channel ID required")
+		return fmt.Errorf("%w: channel ID required", domain.ErrInvalidArgument)
 	}
 	val, err := json.Marshal(p)
 	if err != nil {
@@ -889,14 +892,14 @@ func (rs *RaftStore) CreateChannel(p *Channel) error {
 		return err
 	}
 	if resp != nil {
-		return fmt.Errorf("%v", resp)
+		return resp.(error)
 	}
 	return nil
 }
 
-func (rs *RaftStore) UpdateChannel(p *Channel) error {
+func (rs *RaftStore) UpdateChannel(ctx context.Context, p *domain.Channel) error {
 	if p.ID == "" {
-		return fmt.Errorf("channel ID required")
+		return fmt.Errorf("%w: channel ID required", domain.ErrInvalidArgument)
 	}
 	val, err := json.Marshal(p)
 	if err != nil {
@@ -905,19 +908,19 @@ func (rs *RaftStore) UpdateChannel(p *Channel) error {
 	return rs.applyCommand("set", "/channels/"+p.ID+"/", val)
 }
 
-func (rs *RaftStore) DeleteChannel(id string) error {
+func (rs *RaftStore) DeleteChannel(ctx context.Context, id string) error {
 	return rs.applyCommand("delete", "/channels/"+id+"/", nil)
 }
 
-func (rs *RaftStore) GetGlobalConfig() (*GlobalConfig, error) {
-	cfg := defaultGlobalConfig()
+func (rs *RaftStore) GetGlobalConfig(ctx context.Context) (*domain.GlobalConfig, error) {
+	cfg := domain.DefaultGlobalConfig()
 
 	val, err := getFSMValue(rs.db, "/global/server/")
 	if err != nil {
 		return nil, err
 	}
 	if val != nil {
-		var sc ServerConfig
+		var sc domain.ServerConfig
 		if err := json.Unmarshal(val, &sc); err == nil {
 			cfg.Server = sc
 		}
@@ -928,7 +931,7 @@ func (rs *RaftStore) GetGlobalConfig() (*GlobalConfig, error) {
 		return nil, err
 	}
 	if val != nil {
-		var dc DefaultChannelConfig
+		var dc domain.DefaultChannelConfig
 		if err := json.Unmarshal(val, &dc); err == nil {
 			cfg.Defaults = dc
 		}
@@ -937,9 +940,9 @@ func (rs *RaftStore) GetGlobalConfig() (*GlobalConfig, error) {
 	return cfg, nil
 }
 
-func (rs *RaftStore) UpdateGlobalConfig(cfg *GlobalConfig) error {
+func (rs *RaftStore) UpdateGlobalConfig(ctx context.Context, cfg *domain.GlobalConfig) error {
 	if cfg == nil {
-		return fmt.Errorf("config required")
+		return fmt.Errorf("%w: config required", domain.ErrInvalidArgument)
 	}
 	//nolint:gosec
 	scVal, err := json.Marshal(cfg.Server)
@@ -956,37 +959,15 @@ func (rs *RaftStore) UpdateGlobalConfig(cfg *GlobalConfig) error {
 	return rs.applyCommand("set", "/global/defaults/", dcVal)
 }
 
-func (rs *RaftStore) ResolveChannelConfig(id string) (*Channel, error) {
-	ch, err := rs.GetChannel(id)
-	if err != nil {
-		global, globalErr := rs.GetGlobalConfig()
-		if globalErr != nil {
-			global = defaultGlobalConfig()
-		}
-		return &Channel{
-			ID:                id,
-			MaxBodySize:       global.Server.MaxBodySize,
-			WebhookSecret:     global.Defaults.WebhookSecret,
-			AllowedIPs:        global.Defaults.AllowedIPs,
-			MessageTTLSeconds: global.Defaults.MessageTTLSeconds,
-		}, nil
-	}
-	global, globalErr := rs.GetGlobalConfig()
-	if globalErr != nil {
-		global = defaultGlobalConfig()
-	}
-	return resolveChannelConfig(ch, global), nil
-}
-
-func (rs *RaftStore) GetUser(id string) (*User, error) {
+func (rs *RaftStore) GetUser(ctx context.Context, id string) (*domain.User, error) {
 	val, err := getFSMValue(rs.db, "/users/"+id+"/")
 	if err != nil {
 		return nil, err
 	}
 	if val == nil {
-		return nil, fmt.Errorf("user %q not found", id)
+		return nil, fmt.Errorf("%w: user %q", domain.ErrNotFound, id)
 	}
-	var u User
+	var u domain.User
 	if err := json.Unmarshal(val, &u); err != nil {
 		return nil, err
 	}
@@ -1010,24 +991,24 @@ func usernameIndexValue(userID string) []byte {
 	return val
 }
 
-func (rs *RaftStore) GetUserByUsername(username string) (*User, error) {
+func (rs *RaftStore) GetUserByUsername(ctx context.Context, username string) (*domain.User, error) {
 	idxVal, err := getFSMValue(rs.db, "/users/by-username/"+username+"/")
 	if err != nil || idxVal == nil {
-		return nil, fmt.Errorf("user %q not found", username)
+		return nil, fmt.Errorf("%w: user %q", domain.ErrNotFound, username)
 	}
 	var idx usernameIndex
 	if err := json.Unmarshal(idxVal, &idx); err != nil {
-		return nil, fmt.Errorf("user %q not found", username)
+		return nil, fmt.Errorf("%w: user %q", domain.ErrNotFound, username)
 	}
-	return rs.GetUser(idx.UserID)
+	return rs.GetUser(ctx, idx.UserID)
 }
 
-func (rs *RaftStore) ListUsers() ([]*User, error) {
+func (rs *RaftStore) ListUsers(ctx context.Context) ([]*domain.User, error) {
 	keys, err := listFSMKeys(rs.db, "/users/")
 	if err != nil {
 		return nil, err
 	}
-	var users []*User
+	var users []*domain.User
 	seen := make(map[string]bool)
 	for _, key := range keys {
 		parts := strings.Split(strings.TrimPrefix(key, "/users/"), "/")
@@ -1043,7 +1024,7 @@ func (rs *RaftStore) ListUsers() ([]*User, error) {
 		if err != nil || val == nil {
 			continue
 		}
-		var u User
+		var u domain.User
 		if err := json.Unmarshal(val, &u); err != nil {
 			continue
 		}
@@ -1052,12 +1033,12 @@ func (rs *RaftStore) ListUsers() ([]*User, error) {
 	return users, nil
 }
 
-func (rs *RaftStore) CreateUser(u *User) error {
+func (rs *RaftStore) CreateUser(ctx context.Context, u *domain.User) error {
 	if u.ID == "" {
 		u.ID = u.Username
 	}
 	if u.ID == "" {
-		return fmt.Errorf("user ID required")
+		return fmt.Errorf("%w: user ID required", domain.ErrInvalidArgument)
 	}
 	val, err := json.Marshal(u)
 	if err != nil {
@@ -1069,13 +1050,13 @@ func (rs *RaftStore) CreateUser(u *User) error {
 	return rs.applyCommand("set", usernameIndexKey(u.Username)+"/", usernameIndexValue(u.ID))
 }
 
-func (rs *RaftStore) UpdateUser(u *User) error {
-	old, err := rs.GetUser(u.ID)
+func (rs *RaftStore) UpdateUser(ctx context.Context, u *domain.User) error {
+	old, err := rs.GetUser(ctx, u.ID)
 	oldUsername := ""
 	if err == nil && old.Username != u.Username && old.Username != "" {
 		oldUsername = old.Username
 	}
-	if err := rs.CreateUser(u); err != nil {
+	if err := rs.CreateUser(ctx, u); err != nil {
 		return err
 	}
 	if oldUsername != "" {
@@ -1084,8 +1065,8 @@ func (rs *RaftStore) UpdateUser(u *User) error {
 	return nil
 }
 
-func (rs *RaftStore) DeleteUser(id string) error {
-	u, err := rs.GetUser(id)
+func (rs *RaftStore) DeleteUser(ctx context.Context, id string) error {
+	u, err := rs.GetUser(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -1095,7 +1076,7 @@ func (rs *RaftStore) DeleteUser(id string) error {
 	return rs.applyCommand("delete", "/users/by-username/"+u.Username+"/", nil)
 }
 
-func (rs *RaftStore) GetSetupModeEndTime() time.Time {
+func (rs *RaftStore) GetSetupModeEndTime(ctx context.Context) time.Time {
 	val, err := getFSMValue(rs.db, "/meta/setup_end")
 	if err != nil || val == nil {
 		return time.Time{}
@@ -1107,7 +1088,7 @@ func (rs *RaftStore) GetSetupModeEndTime() time.Time {
 	return t
 }
 
-func (rs *RaftStore) SetSetupModeEndTime(t time.Time) error {
+func (rs *RaftStore) SetSetupModeEndTime(ctx context.Context, t time.Time) error {
 	val, err := json.Marshal(t)
 	if err != nil {
 		return err
@@ -1115,19 +1096,19 @@ func (rs *RaftStore) SetSetupModeEndTime(t time.Time) error {
 	return rs.applyCommand("set", "/meta/setup_end", val)
 }
 
-func (rs *RaftStore) OIDCProviders() ([]OIDCProvider, error) {
+func (rs *RaftStore) OIDCProviders(ctx context.Context) ([]domain.OIDCProvider, error) {
 	val, err := getFSMValue(rs.db, "/global/auth/oidc_providers")
 	if err != nil || val == nil {
 		return nil, err
 	}
-	var providers []OIDCProvider
+	var providers []domain.OIDCProvider
 	if err := json.Unmarshal(val, &providers); err != nil {
 		return nil, err
 	}
 	return providers, nil
 }
 
-func (rs *RaftStore) SetOIDCProviders(providers []OIDCProvider) error {
+func (rs *RaftStore) SetOIDCProviders(ctx context.Context, providers []domain.OIDCProvider) error {
 	//nolint:gosec
 	val, err := json.Marshal(providers)
 	if err != nil {
@@ -1136,29 +1117,29 @@ func (rs *RaftStore) SetOIDCProviders(providers []OIDCProvider) error {
 	return rs.applyCommand("set-json", "/global/auth/oidc_providers", val)
 }
 
-func (rs *RaftStore) GetRole(name string) (*Role, error) {
+func (rs *RaftStore) GetRole(ctx context.Context, name string) (*domain.Role, error) {
 	val, err := getFSMValue(rs.db, "/rbac/roles/"+name+"/")
 	if err != nil {
 		return nil, err
 	}
 	if val == nil {
-		for _, r := range DefaultRoles {
+		for _, r := range domain.DefaultRoles {
 			if r.Name == name {
 				return &r, nil
 			}
 		}
-		return nil, fmt.Errorf("role %q not found", name)
+		return nil, fmt.Errorf("%w: role %q", domain.ErrNotFound, name)
 	}
-	var r Role
+	var r domain.Role
 	if err := json.Unmarshal(val, &r); err != nil {
 		return nil, err
 	}
 	return &r, nil
 }
 
-func (rs *RaftStore) ListRoles() ([]Role, error) {
-	roles := make([]Role, 0, len(DefaultRoles))
-	roles = append(roles, DefaultRoles...)
+func (rs *RaftStore) ListRoles(ctx context.Context) ([]domain.Role, error) {
+	roles := make([]domain.Role, 0, len(domain.DefaultRoles))
+	roles = append(roles, domain.DefaultRoles...)
 
 	keys, err := listFSMKeys(rs.db, "/rbac/roles/")
 	if err != nil {
@@ -1177,7 +1158,7 @@ func (rs *RaftStore) ListRoles() ([]Role, error) {
 		if err != nil || val == nil {
 			continue
 		}
-		var r Role
+		var r domain.Role
 		if err := json.Unmarshal(val, &r); err != nil {
 			continue
 		}
@@ -1186,9 +1167,9 @@ func (rs *RaftStore) ListRoles() ([]Role, error) {
 	return roles, nil
 }
 
-func (rs *RaftStore) CreateRole(r Role) error {
+func (rs *RaftStore) CreateRole(ctx context.Context, r domain.Role) error {
 	if isDefaultRole(r.Name) {
-		return fmt.Errorf("role %q already exists (default role)", r.Name)
+		return fmt.Errorf("%w: role %q", domain.ErrAlreadyExists, r.Name)
 	}
 	val, err := json.Marshal(r)
 	if err != nil {
@@ -1198,7 +1179,7 @@ func (rs *RaftStore) CreateRole(r Role) error {
 }
 
 func isDefaultRole(name string) bool {
-	for _, r := range DefaultRoles {
+	for _, r := range domain.DefaultRoles {
 		if r.Name == name {
 			return true
 		}
@@ -1206,195 +1187,20 @@ func isDefaultRole(name string) bool {
 	return false
 }
 
-func (rs *RaftStore) GetUserBinding(userID string) (*UserBinding, error) {
-	u, err := rs.GetUser(userID)
-	if err != nil {
-		return nil, err
-	}
-	return &UserBinding{
-		UserID:   u.ID,
-		Roles:    u.Roles,
-		Channels: u.Channels,
-	}, nil
-}
-
-func (rs *RaftStore) UpdateUserBinding(binding *UserBinding) error {
-	u, err := rs.GetUser(binding.UserID)
-	if err != nil {
-		return err
-	}
-	u.Roles = binding.Roles
-	u.Channels = binding.Channels
-	return rs.UpdateUser(u)
-}
-
-func (rs *RaftStore) ListBindings() ([]UserBinding, error) {
-	users, err := rs.ListUsers()
-	if err != nil {
-		return nil, err
-	}
-	bindings := make([]UserBinding, 0, len(users))
-	for _, u := range users {
-		bindings = append(bindings, UserBinding{
-			UserID:   u.ID,
-			Roles:    u.Roles,
-			Channels: u.Channels,
-		})
-	}
-	return bindings, nil
-}
-
-func (rs *RaftStore) IsSetupMode() bool {
-	users, err := rs.ListUsers()
-	if err != nil || len(users) == 0 {
-		return true
-	}
-	return false
-}
-
-func (rs *RaftStore) CreateDevAdmin(password string) error {
-	if !rs.IsSetupMode() {
-		return nil
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("hash password: %w", err)
-	}
-	user := &User{
-		ID:           "admin",
-		Username:     "admin",
-		PasswordHash: string(hash),
-		Roles:        []string{"admin"},
-		Channels:     []string{"*"},
-	}
-	return rs.CreateUser(user)
-}
-
-func (rs *RaftStore) ResolveChannelWebhookSecret(channelID string) (string, error) {
-	p, err := rs.GetChannel(channelID)
-	if err != nil {
-		global, globalErr := rs.GetGlobalConfig()
-		if globalErr != nil {
-			global = defaultGlobalConfig()
-		}
-		return global.Defaults.WebhookSecret, nil
-	}
-	migrateChannel(p)
-	if p.WebhookSecret != "" {
-		return p.WebhookSecret, nil
-	}
-	global, globalErr := rs.GetGlobalConfig()
-	if globalErr != nil {
-		global = defaultGlobalConfig()
-	}
-	return global.Defaults.WebhookSecret, nil
-}
-
-func (rs *RaftStore) ResolveChannelAllowedIPs(channelID string) ([]string, error) {
-	p, err := rs.GetChannel(channelID)
-	if err != nil {
-		global, globalErr := rs.GetGlobalConfig()
-		if globalErr != nil {
-			global = defaultGlobalConfig()
-		}
-		return global.Defaults.AllowedIPs, nil
-	}
-	if len(p.AllowedIPs) > 0 {
-		return p.AllowedIPs, nil
-	}
-	global, globalErr := rs.GetGlobalConfig()
-	if globalErr != nil {
-		global = defaultGlobalConfig()
-	}
-	return global.Defaults.AllowedIPs, nil
-}
-
-func (rs *RaftStore) ResolveChannelMaxBodySize(channelID string) (int, error) {
-	p, err := rs.GetChannel(channelID)
-	if err != nil {
-		global, globalErr := rs.GetGlobalConfig()
-		if globalErr != nil {
-			global = defaultGlobalConfig()
-		}
-		return global.Server.MaxBodySize, nil
-	}
-	if p.MaxBodySize > 0 {
-		return p.MaxBodySize, nil
-	}
-	global, globalErr := rs.GetGlobalConfig()
-	if globalErr != nil {
-		global = defaultGlobalConfig()
-	}
-	return global.Server.MaxBodySize, nil
-}
-
-func (rs *RaftStore) ResolveChannelEncryption(channelID string) (string, string, string, error) {
-	p, err := rs.GetChannel(channelID)
-	if err != nil {
-		return "", "", "", err
-	}
-	migrateChannel(p)
-	return p.EncryptionMode, p.EncryptionKey, p.EncryptionPublicKey, nil
-}
-
-func (rs *RaftStore) SessionSecret() string {
-	global, err := rs.GetGlobalConfig()
-	if err != nil {
-		return ""
-	}
-	if global.Server.SessionSecret != "" {
-		return global.Server.SessionSecret
-	}
-	return ""
-}
-
-func (rs *RaftStore) SetSessionSecret(secret string) error {
-	global, err := rs.GetGlobalConfig()
-	if err != nil {
-		global = defaultGlobalConfig()
-	}
-	global.Server.SessionSecret = secret
-	return rs.UpdateGlobalConfig(global)
-}
-
-func (rs *RaftStore) ResolveCORSOrigin() string {
-	global, err := rs.GetGlobalConfig()
-	if err != nil {
-		return "*"
-	}
-	return global.Server.CORSOrigin
-}
-
-func (rs *RaftStore) ResolveBehindReverseProxy() bool {
-	global, err := rs.GetGlobalConfig()
-	if err != nil {
-		return false
-	}
-	return global.Server.BehindReverseProxy
-}
-
-func (rs *RaftStore) ResolveFooter() string {
-	global, err := rs.GetGlobalConfig()
-	if err != nil {
-		return ""
-	}
-	return global.Server.Footer
-}
-
-func (rs *RaftStore) GetClientCursor(channel, clientID string) (*ClientCursor, error) {
+func (rs *RaftStore) GetClientCursor(ctx context.Context, channel, clientID string) (*domain.ClientCursor, error) {
 	key := "/cursors/" + channel + "/" + clientID + "/"
 	val, err := getFSMValue(rs.db, key)
 	if err != nil || val == nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: client cursor %s/%s", domain.ErrNotFound, channel, clientID)
 	}
-	var c ClientCursor
+	var c domain.ClientCursor
 	if err := json.Unmarshal(val, &c); err != nil {
 		return nil, err
 	}
 	return &c, nil
 }
 
-func (rs *RaftStore) SetClientCursor(cursor *ClientCursor) error {
+func (rs *RaftStore) SetClientCursor(ctx context.Context, cursor *domain.ClientCursor) error {
 	key := "/cursors/" + cursor.Channel + "/" + cursor.ClientID + "/"
 	val, err := json.Marshal(cursor)
 	if err != nil {
@@ -1403,15 +1209,15 @@ func (rs *RaftStore) SetClientCursor(cursor *ClientCursor) error {
 	return rs.applyCommand("set", key, val)
 }
 
-func (rs *RaftStore) CreateRoleMapping(m *RoleMapping) error {
+func (rs *RaftStore) CreateRoleMapping(ctx context.Context, m *domain.RoleMapping) error {
 	// Check for existing identical mapping to make this idempotent
-	existing, _ := rs.ListRoleMappings()
+	existing, _ := rs.ListRoleMappings(ctx)
 	for _, e := range existing {
 		if e.Type == m.Type && e.Subject == m.Subject && e.Role == m.Role && e.ChannelScope == m.ChannelScope {
 			return nil // already exists, idempotent
 		}
 	}
-	m.ID = gohookbridge.GenerateUUID()
+	m.ID = uuid.GenerateUUID()
 	val, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -1419,12 +1225,12 @@ func (rs *RaftStore) CreateRoleMapping(m *RoleMapping) error {
 	return rs.applyCommand("set", "/rbac/mappings/"+m.ID+"/", val)
 }
 
-func (rs *RaftStore) ListRoleMappings() ([]RoleMapping, error) {
+func (rs *RaftStore) ListRoleMappings(ctx context.Context) ([]domain.RoleMapping, error) {
 	keys, err := listFSMKeys(rs.db, "/rbac/mappings/")
 	if err != nil {
 		return nil, err
 	}
-	mappings := make([]RoleMapping, 0)
+	mappings := make([]domain.RoleMapping, 0)
 	for _, key := range keys {
 		parts := strings.Split(strings.TrimPrefix(key, "/rbac/mappings/"), "/")
 		if len(parts) < 1 || parts[0] == "" {
@@ -1434,7 +1240,7 @@ func (rs *RaftStore) ListRoleMappings() ([]RoleMapping, error) {
 		if err != nil || val == nil {
 			continue
 		}
-		var m RoleMapping
+		var m domain.RoleMapping
 		if err := json.Unmarshal(val, &m); err != nil {
 			continue
 		}
@@ -1443,16 +1249,16 @@ func (rs *RaftStore) ListRoleMappings() ([]RoleMapping, error) {
 	return mappings, nil
 }
 
-func (rs *RaftStore) DeleteRoleMapping(id string) error {
+func (rs *RaftStore) DeleteRoleMapping(ctx context.Context, id string) error {
 	return rs.applyCommand("delete", "/rbac/mappings/"+id+"/", nil)
 }
 
-func (rs *RaftStore) GetUserRoleMappings(userID string) ([]RoleMapping, error) {
-	all, err := rs.ListRoleMappings()
+func (rs *RaftStore) GetUserRoleMappings(ctx context.Context, userID string) ([]domain.RoleMapping, error) {
+	all, err := rs.ListRoleMappings(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var result []RoleMapping
+	var result []domain.RoleMapping
 	for _, m := range all {
 		if m.Type == "user" && m.Subject == userID {
 			result = append(result, m)
@@ -1461,12 +1267,12 @@ func (rs *RaftStore) GetUserRoleMappings(userID string) ([]RoleMapping, error) {
 	return result, nil
 }
 
-func (rs *RaftStore) GetGroupRoleMappings(groupName string) ([]RoleMapping, error) {
-	all, err := rs.ListRoleMappings()
+func (rs *RaftStore) GetGroupRoleMappings(ctx context.Context, groupName string) ([]domain.RoleMapping, error) {
+	all, err := rs.ListRoleMappings(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var result []RoleMapping
+	var result []domain.RoleMapping
 	for _, m := range all {
 		if m.Type == "group" && m.Subject == groupName {
 			result = append(result, m)
@@ -1475,17 +1281,17 @@ func (rs *RaftStore) GetGroupRoleMappings(groupName string) ([]RoleMapping, erro
 	return result, nil
 }
 
-func (rs *RaftStore) CreateChannelRoleMapping(m *ChannelRoleMapping) error {
+func (rs *RaftStore) CreateChannelRoleMapping(ctx context.Context, m *domain.ChannelRoleMapping) error {
 	// Check for existing identical mapping to make this idempotent
-	existing, _ := rs.ListChannelRoleMappings(m.ChannelID)
+	existing, _ := rs.ListChannelRoleMappings(ctx, m.ChannelID)
 	for _, e := range existing {
 		if e.Type == m.Type && e.Subject == m.Subject && e.Role == m.Role {
 			return nil // already exists, idempotent
 		}
 	}
-	m.ID = gohookbridge.GenerateUUID()
+	m.ID = uuid.GenerateUUID()
 	if m.ChannelID == "" {
-		return fmt.Errorf("channel_id required")
+		return fmt.Errorf("%w: channel_id required", domain.ErrInvalidArgument)
 	}
 	val, err := json.Marshal(m)
 	if err != nil {
@@ -1494,41 +1300,41 @@ func (rs *RaftStore) CreateChannelRoleMapping(m *ChannelRoleMapping) error {
 	return rs.applyCommand("set", "/channels/"+m.ChannelID+"/acl/"+m.ID+"/", val)
 }
 
-func (rs *RaftStore) ListChannelRoleMappings(channelID string) ([]ChannelRoleMapping, error) {
+func (rs *RaftStore) ListChannelRoleMappings(ctx context.Context, channelID string) ([]domain.ChannelRoleMapping, error) {
 	keys, err := listFSMKeys(rs.db, "/channels/"+channelID+"/acl/")
 	if err != nil {
 		return nil, err
 	}
-	var mappings []ChannelRoleMapping
+	var mappings []domain.ChannelRoleMapping
 	for _, key := range keys {
 		val, err := getFSMValue(rs.db, key)
 		if err != nil || val == nil {
 			continue
 		}
-		var m ChannelRoleMapping
+		var m domain.ChannelRoleMapping
 		if err := json.Unmarshal(val, &m); err != nil {
 			continue
 		}
 		mappings = append(mappings, m)
 	}
 	if mappings == nil {
-		mappings = make([]ChannelRoleMapping, 0)
+		mappings = make([]domain.ChannelRoleMapping, 0)
 	}
 	return mappings, nil
 }
 
-func (rs *RaftStore) DeleteChannelRoleMapping(channelID, entryID string) error {
+func (rs *RaftStore) DeleteChannelRoleMapping(ctx context.Context, channelID, entryID string) error {
 	return rs.applyCommand("delete", "/channels/"+channelID+"/acl/"+entryID+"/", nil)
 }
 
-func (rs *RaftStore) GetUserChannelRoleMappings(userID string) ([]ChannelRoleMapping, error) {
-	channels, err := rs.ListChannels()
+func (rs *RaftStore) GetUserChannelRoleMappings(ctx context.Context, userID string) ([]domain.ChannelRoleMapping, error) {
+	channels, err := rs.ListChannels(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var result []ChannelRoleMapping
+	var result []domain.ChannelRoleMapping
 	for _, ch := range channels {
-		acls, err := rs.ListChannelRoleMappings(ch.ID)
+		acls, err := rs.ListChannelRoleMappings(ctx, ch.ID)
 		if err != nil {
 			continue
 		}
@@ -1541,14 +1347,14 @@ func (rs *RaftStore) GetUserChannelRoleMappings(userID string) ([]ChannelRoleMap
 	return result, nil
 }
 
-func (rs *RaftStore) GetGroupChannelRoleMappings(groupName string) ([]ChannelRoleMapping, error) {
-	channels, err := rs.ListChannels()
+func (rs *RaftStore) GetGroupChannelRoleMappings(ctx context.Context, groupName string) ([]domain.ChannelRoleMapping, error) {
+	channels, err := rs.ListChannels(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var result []ChannelRoleMapping
+	var result []domain.ChannelRoleMapping
 	for _, ch := range channels {
-		acls, err := rs.ListChannelRoleMappings(ch.ID)
+		acls, err := rs.ListChannelRoleMappings(ctx, ch.ID)
 		if err != nil {
 			continue
 		}

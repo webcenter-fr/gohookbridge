@@ -1,4 +1,4 @@
-package store
+package repository
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/raft"
+	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"go.etcd.io/bbolt"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -25,9 +26,9 @@ type fsmBootstrapUser struct {
 }
 
 type fsmBootstrapPayload struct {
-	Global   *GlobalConfig      `json:"global,omitempty"`
-	Users    []fsmBootstrapUser `json:"users,omitempty"`
-	Channels []*Channel         `json:"channels,omitempty"`
+	Global   *domain.GlobalConfig `json:"global,omitempty"`
+	Users    []fsmBootstrapUser   `json:"users,omitempty"`
+	Channels []*domain.Channel    `json:"channels,omitempty"`
 }
 
 type FSM struct {
@@ -113,7 +114,7 @@ func (f *FSM) applyCreateChannel(key string, value []byte) error {
 		}
 		existing := b.Get([]byte(key))
 		if existing != nil {
-			return fmt.Errorf("channel %q already exists", strings.TrimPrefix(strings.TrimSuffix(key, "/"), "/channels/"))
+			return fmt.Errorf("%w: channel %q", domain.ErrAlreadyExists, strings.TrimPrefix(strings.TrimSuffix(key, "/"), "/channels/"))
 		}
 		return b.Put([]byte(key), value)
 	})
@@ -170,7 +171,7 @@ func (f *FSM) applyBootstrap(value []byte) error {
 			if err != nil {
 				return fmt.Errorf("hash password for user %q: %w", u.Username, err)
 			}
-			user := User{
+			user := domain.User{
 				ID:           u.Username,
 				Username:     u.Username,
 				PasswordHash: string(hash),

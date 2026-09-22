@@ -1,4 +1,4 @@
-package store
+package repository
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
+	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"gotest.tools/v3/assert"
 )
 
@@ -33,7 +34,7 @@ func seedMultiVoterState(t *testing.T, dir, nodeID string) {
 
 	lastIndex, err := logStore.LastIndex()
 	assert.NilError(t, err)
-	value, err := json.Marshal(ServerConfig{MaxBodySize: 4242})
+	value, err := json.Marshal(domain.ServerConfig{MaxBodySize: 4242})
 	assert.NilError(t, err)
 	data, err := json.Marshal(fsmCommand{Op: "set", Key: "/global/server/", Value: value})
 	assert.NilError(t, err)
@@ -68,7 +69,7 @@ func TestSingleNodeRecovery_CollapsesToSelfAndPreservesData(t *testing.T) {
 	assert.Equal(t, len(cfg.Servers), 1)
 	assert.Equal(t, string(cfg.Servers[0].ID), "node-a")
 
-	global, err := rs.GetGlobalConfig()
+	global, err := rs.GetGlobalConfig(context.Background())
 	assert.NilError(t, err)
 	assert.Equal(t, global.Server.MaxBodySize, 4242)
 }
