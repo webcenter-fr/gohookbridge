@@ -365,3 +365,19 @@ func createGiteaSignature(secret string, payload []byte) string {
 	mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
 }
+
+func TestSensitiveHeaderForLogs(t *testing.T) {
+	sensitive := []string{
+		"Authorization", "authorization", "Proxy-Authorization",
+		"Cookie", "X-Gitlab-Token", "x-gitlab-token",
+		"X-Hub-Signature", "X-Hub-Signature-256", "X-Gitea-Signature",
+	}
+	for _, h := range sensitive {
+		assert.Assert(t, sensitiveHeaderForLogs(h), "header %q should be redacted", h)
+	}
+
+	benign := []string{"Content-Type", "User-Agent", "X-GitHub-Event", "Accept"}
+	for _, h := range benign {
+		assert.Assert(t, !sensitiveHeaderForLogs(h), "header %q should not be redacted", h)
+	}
+}

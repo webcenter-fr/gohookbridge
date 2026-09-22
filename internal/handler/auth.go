@@ -14,6 +14,14 @@ const (
 	sessionMaxAge     = 86400
 )
 
+// dummyPasswordHash is a valid bcrypt hash of an unguessable placeholder
+// password. It is compared against the submitted password when the username is
+// unknown so that login response timing does not reveal whether an account
+// exists (CWE-204).
+//
+//nolint:gosec // this is a dummy hash used for timing equalization, not a credential
+const dummyPasswordHash = "$2a$10$GB/spbww7shMhAoZAdOXKOcdUaA/W1gnFjKLZpLdW.xe6U0FUNBfe"
+
 func setSessionCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -140,13 +148,14 @@ func APILoginHandler(svc *service.Service, secret [32]byte, banTracker *service.
 		var valid bool
 		for _, u := range cfg.Internal.Users {
 			if u.Username == body.Username {
-				if service.ValidatePassword(u.PasswordHash, body.Password) {
-					valid = true
-					break
-				}
+				valid = service.ValidatePassword(u.PasswordHash, body.Password)
+				break
 			}
 		}
 		if !valid {
+			// Equalize the response time for unknown usernames with a dummy
+			// bcrypt comparison so timing does not leak account existence.
+			_ = service.ValidatePassword(dummyPasswordHash, body.Password)
 			svc.RecordCredentialFailure(ctx, banTracker, r, service.FingerprintLogin(body.Username))
 			http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 			return

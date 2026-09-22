@@ -242,7 +242,15 @@ func HandleWebhookPost(broker *nats.Broker, svc *service.Service, banTracker *se
 		var headersBuilder strings.Builder
 		payload := make(map[string]any)
 		for k, v := range r.Header {
-			fmt.Fprintf(&headersBuilder, " %s=%s", k, v[0])
+			// The log line must never leak credentials: webhook secrets
+			// (X-Gitlab-Token), signatures, Authorization and cookies are
+			// redacted from stdout logs (CWE-532). The downstream event payload
+			// keeps the full headers for forwarding.
+			if sensitiveHeaderForLogs(k) {
+				fmt.Fprintf(&headersBuilder, " %s=<redacted>", k)
+			} else {
+				fmt.Fprintf(&headersBuilder, " %s=%s", k, v[0])
+			}
 			payload[strings.ToLower(k)] = v[0]
 		}
 		payload["timestamp"] = fmt.Sprintf("%d", now.UnixMilli())
@@ -445,6 +453,19 @@ func writeJSONResponse(w http.ResponseWriter, status int, v any) {
 func publishEvent(broker *nats.Broker, channel string, reencoded []byte) {
 	if err := broker.Publish(channel, reencoded); err != nil {
 		fmt.Fprintf(os.Stderr, "WARNING: nats publish error: %v\n", err)
+	}
+}
+
+// sensitiveHeaderForLogs reports whether a request header carries credentials
+// that must be redacted from stdout logs.
+func sensitiveHeaderForLogs(header string) bool {
+	switch strings.ToLower(header) {
+	case "authorization", "proxy-authorization", "cookie",
+		"x-gitlab-token", "x-hub-signature", "x-hub-signature-256",
+		"x-gitea-signature", "x-amz-signature":
+		return true
+	default:
+		return false
 	}
 }
 

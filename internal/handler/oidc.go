@@ -59,12 +59,26 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 	}, nil
 }
 
+// safeRedirectPath validates a post-login redirect target. Only same-site
+// relative paths are allowed; absolute URLs, protocol-relative URLs ("//") and
+// backslash tricks are rejected to prevent open redirects (CWE-601).
+func safeRedirectPath(redirect string) string {
+	if redirect == "" {
+		return "/"
+	}
+	if strings.HasPrefix(redirect, "/") &&
+		!strings.HasPrefix(redirect, "//") &&
+		!strings.HasPrefix(redirect, "/\\") &&
+		!strings.Contains(redirect, "\r") &&
+		!strings.Contains(redirect, "\n") {
+		return redirect
+	}
+	return "/"
+}
+
 func (h *OIDCHandler) LoginHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		redirect := r.URL.Query().Get("redirect")
-		if redirect == "" {
-			redirect = "/"
-		}
+		redirect := safeRedirectPath(r.URL.Query().Get("redirect"))
 
 		state := service.GenerateRandomHex()
 		nonce := service.GenerateRandomHex()
@@ -113,7 +127,7 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 			http.Error(w, "Invalid state", http.StatusBadRequest)
 			return
 		}
-		redirect := parts[1]
+		redirect := safeRedirectPath(parts[1])
 
 		clearOIDCStateCookie(w)
 

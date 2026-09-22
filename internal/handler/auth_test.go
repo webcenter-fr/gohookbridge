@@ -285,6 +285,130 @@ func TestOIDCCallback_InvalidState(t *testing.T) {
 	assert.Equal(t, w.Code, http.StatusBadRequest)
 }
 
+func TestSafeRedirectPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"empty", "", "/"},
+		{"relative", "/channels/foo", "/channels/foo"},
+		{"query", "/channels/foo?tab=1", "/channels/foo?tab=1"},
+		{"absoluteURL", "https://evil.example.com/phish", "/"},
+		{"protocolRelative", "//evil.example.com/phish", "/"},
+		{"backslash", "/\\evil.example.com", "/"},
+		{"crlf", "/safe\r\nLocation: x", "/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, safeRedirectPath(tt.input), tt.expected)
+		})
+	}
+}
+
+func TestOIDCLoginHandler_RejectsExternalRedirect(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-redirect-32")
+	provider := domain.OIDCProvider{
+		ID:        "test",
+		Name:      "TestProvider",
+		ClientID:  "test-client",
+		IssuerURL: "https://example.com",
+		Scopes:    []string{"openid"},
+	}
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"authorization_endpoint": "https://example.com/auth",
+				"token_endpoint":         "https://example.com/token",
+				"userinfo_endpoint":      "https://example.com/userinfo",
+			})
+			return
+		}
+	}))
+	defer mockServer.Close()
+
+	provider.IssuerURL = mockServer.URL
+	handler, err := NewOIDCHandler(provider, secret, "http://localhost:3333")
+	assert.NilError(t, err)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/oidc/test/login?redirect=https%3A%2F%2Fevil.example.com%2Fphish", nil)
+	w := httptest.NewRecorder()
+	handler.LoginHandler().ServeHTTP(w, req)
+	assert.Equal(t, w.Code, http.StatusFound)
+
+	// The state cookie must carry the sanitized redirect target, never the
+	// attacker-controlled external URL.
+	cookies := w.Result().Cookies()
+	var stateCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == oidcStateCookieName {
+			stateCookie = c
+			break
+		}
+	}
+	assert.Assert(t, stateCookie != nil)
+	parts := strings.SplitN(stateCookie.Value, "|", 2)
+	assert.Equal(t, len(parts), 2)
+	assert.Equal(t, parts[1], "/")
+}
+
+func TestOIDCCallbackHandler_RejectsExternalRedirect(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-cb-redirect-32")
+	var mockServer *httptest.Server
+	mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"authorization_endpoint": mockServer.URL + "/auth",
+				"token_endpoint":         mockServer.URL + "/token",
+				"userinfo_endpoint":      mockServer.URL + "/userinfo",
+			})
+		case strings.HasSuffix(r.URL.Path, "/token"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "mock-access-token",
+			})
+		case strings.HasSuffix(r.URL.Path, "/userinfo"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"sub":   "user123",
+				"email": "user@example.com",
+			})
+		}
+	}))
+	defer mockServer.Close()
+
+	provider := domain.OIDCProvider{
+		ID:           "test",
+		Name:         "TestProvider",
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		IssuerURL:    mockServer.URL,
+		Scopes:       []string{"openid"},
+	}
+
+	handler, err := NewOIDCHandler(provider, secret, mockServer.URL)
+	assert.NilError(t, err)
+
+	state := "valid-state-value"
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
+	req.AddCookie(&http.Cookie{
+		Name:     oidcStateCookieName,
+		Value:    state + "|https://evil.example.com/phish",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	w := httptest.NewRecorder()
+	handler.CallbackHandler().ServeHTTP(w, req)
+	assert.Equal(t, w.Code, http.StatusFound)
+	assert.Equal(t, w.Header().Get("Location"), "/")
+}
+
 func TestFullProtectedFlow(t *testing.T) {
 	secret := service.DeriveSessionSecret("test-secret-for-full-flow-test-32")
 	cfg := newTestAuthConfig()
