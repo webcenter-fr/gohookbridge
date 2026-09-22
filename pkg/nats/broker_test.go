@@ -114,6 +114,38 @@ func TestBrokerPublishSubscribe(t *testing.T) {
 	b.Unsubscribe("testchannel", live)
 }
 
+func TestBrokerFanoutMultipleSubscribers(t *testing.T) {
+	b, err := New(Config{
+		NodeID:     "test-fanout",
+		Port:       4235,
+		BufferSize: 100,
+	})
+	assert.NilError(t, err)
+	defer b.Shutdown()
+
+	_, live1 := b.Subscribe("fanout", time.Time{}, 10)
+	_, live2 := b.Subscribe("fanout", time.Time{}, 10)
+	defer b.Unsubscribe("fanout", live1)
+	defer b.Unsubscribe("fanout", live2)
+
+	err = b.Publish("fanout", []byte("fanout-test"))
+	assert.NilError(t, err)
+
+	select {
+	case data := <-live1:
+		assert.Equal(t, "fanout-test", string(data))
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for subscriber 1")
+	}
+
+	select {
+	case data := <-live2:
+		assert.Equal(t, "fanout-test", string(data))
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for subscriber 2")
+	}
+}
+
 func TestBrokerSubscribeReturnsHistorical(t *testing.T) {
 	b, err := New(Config{NodeID: "test-hist", Port: 4234, BufferSize: 100})
 	assert.NilError(t, err)
