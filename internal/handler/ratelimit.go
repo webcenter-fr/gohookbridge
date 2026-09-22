@@ -10,7 +10,7 @@ import (
 	"github.com/webcenter-fr/gohookbridge/internal/service"
 )
 
-func banMiddleware(tracker *service.BanTracker, svc *service.Service) func(http.Handler) http.Handler {
+func BanMiddleware(tracker *service.BanTracker, svc *service.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
@@ -39,7 +39,7 @@ func banMiddleware(tracker *service.BanTracker, svc *service.Service) func(http.
 	}
 }
 
-func rateLimitMiddleware(limiter *service.RateLimiter, svc *service.Service) func(http.Handler) http.Handler {
+func RateLimitMiddleware(limiter *service.RateLimiter, svc *service.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
@@ -68,14 +68,14 @@ func rateLimitMiddleware(limiter *service.RateLimiter, svc *service.Service) fun
 	}
 }
 
-func apiBansHandler(tracker *service.BanTracker) http.HandlerFunc {
+func APIBansHandler(tracker *service.BanTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(tracker.ListBans())
 	}
 }
 
-func apiUnbanHandler(tracker *service.BanTracker) http.HandlerFunc {
+func APIUnbanHandler(tracker *service.BanTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip := chi.URLParam(r, "ip")
 		if ip == "" {

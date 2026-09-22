@@ -27,7 +27,7 @@ type leaderInfo interface {
 // follower would otherwise answer "not the leader". The leader address is the
 // Raft transport address, so only its host is kept and the HTTP port is
 // substituted to reach the leader's API.
-func leaderForwardMiddleware(rs leaderInfo, httpPort int) func(http.Handler) http.Handler {
+func LeaderForwardMiddleware(rs leaderInfo, httpPort int) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if isReadOnlyMethod(r.Method) || rs.IsLeader() || r.Header.Get(leaderForwardedHeader) != "" {

@@ -123,7 +123,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(broker, svc, service.NewBanTracker())
+		handler := HandleWebhookPost(broker, svc, service.NewBanTracker())
 		handler(w, req)
 
 		resp := w.Result()
@@ -156,7 +156,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "unknown-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(broker, svc, service.NewBanTracker())
+		handler := HandleWebhookPost(broker, svc, service.NewBanTracker())
 		handler(w, req)
 
 		resp := w.Result()
@@ -173,7 +173,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(broker, svc, service.NewBanTracker())
+		handler := HandleWebhookPost(broker, svc, service.NewBanTracker())
 		handler(w, req)
 
 		resp := w.Result()
@@ -193,7 +193,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(broker, svc, service.NewBanTracker())
+		handler := HandleWebhookPost(broker, svc, service.NewBanTracker())
 		handler(w, req)
 
 		resp := w.Result()
@@ -218,7 +218,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler := handleWebhookPost(broker, svc, service.NewBanTracker())
+		handler := HandleWebhookPost(broker, svc, service.NewBanTracker())
 		handler(w, req)
 
 		resp := w.Result()
@@ -234,7 +234,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		rctx.URLParams.Add("channel", "test-channel")
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-		handler = handleWebhookPost(broker, svc, service.NewBanTracker())
+		handler = HandleWebhookPost(broker, svc, service.NewBanTracker())
 		handler(w, req)
 
 		resp = w.Result()
@@ -244,15 +244,15 @@ func TestHandleWebhookPost(t *testing.T) {
 
 func TestEffectivePublicURL(t *testing.T) {
 	t.Run("returns explicit public URL unchanged", func(t *testing.T) {
-		assert.Equal(t, effectivePublicURL("https://hooks.example.com", "localhost:3333", false), "https://hooks.example.com")
+		assert.Equal(t, EffectivePublicURL("https://hooks.example.com", "localhost:3333", false), "https://hooks.example.com")
 	})
 
 	t.Run("defaults to http address when tls is disabled", func(t *testing.T) {
-		assert.Equal(t, effectivePublicURL("", "localhost:3333", false), "http://localhost:3333")
+		assert.Equal(t, EffectivePublicURL("", "localhost:3333", false), "http://localhost:3333")
 	})
 
 	t.Run("defaults to https address when tls is enabled", func(t *testing.T) {
-		assert.Equal(t, effectivePublicURL("", "localhost:3333", true), "https://localhost:3333")
+		assert.Equal(t, EffectivePublicURL("", "localhost:3333", true), "https://localhost:3333")
 	})
 }
 
@@ -260,7 +260,7 @@ func TestHandleWebhookPostWithNATS(t *testing.T) {
 	broker := newNatsBroker(t, 4242)
 	svc := service.NewService(storetest.NewRaftStore(t), nil)
 
-	handler := handleWebhookPost(broker, svc, service.NewBanTracker())
+	handler := HandleWebhookPost(broker, svc, service.NewBanTracker())
 
 	t.Run("Publishes via NATS to subscriber", func(t *testing.T) {
 		historical, live := broker.Subscribe("nats-test", time.Time{}, 10)
@@ -324,7 +324,7 @@ func TestChannelTTLPropagation(t *testing.T) {
 	})
 	assert.NilError(t, err)
 
-	handler := handleWebhookPost(broker, svc, service.NewBanTracker())
+	handler := HandleWebhookPost(broker, svc, service.NewBanTracker())
 
 	payload := map[string]any{"event": "ttl-test"}
 	payloadBytes, err := json.Marshal(payload)

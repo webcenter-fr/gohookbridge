@@ -25,7 +25,9 @@ import (
 	"github.com/mgutz/ansi"
 	"github.com/mitchellh/mapstructure"
 	"github.com/r3labs/sse/v2"
-	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
+	"github.com/webcenter-fr/gohookbridge/pkg/crypto"
+	"github.com/webcenter-fr/gohookbridge/pkg/encryption"
+	"github.com/webcenter-fr/gohookbridge/pkg/uuid"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 	"gopkg.in/cenkalti/backoff.v1"
@@ -85,7 +87,7 @@ func getOrCreateClientID() string {
 		return strings.TrimSpace(string(data))
 	}
 
-	id := gohookbridge.GenerateUUID()
+	id := uuid.GenerateUUID()
 	_ = os.WriteFile(idFile, []byte(id), 0600)
 	return id
 }
@@ -638,7 +640,7 @@ func prepareSubscription(smeeURL, encryptionKeyFile string, resume bool, clientI
 		return channel, sseURL, nil, nil
 	}
 
-	publicKey, loadedPrivateKey, err := gohookbridge.LoadKeyPair(encryptionKeyFile)
+	publicKey, loadedPrivateKey, err := crypto.LoadKeyPair(encryptionKeyFile)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("load encryption keys: %w", err)
 	}
@@ -648,7 +650,7 @@ func prepareSubscription(smeeURL, encryptionKeyFile string, resume bool, clientI
 		return "", "", nil, fmt.Errorf("parse sse url: %w", err)
 	}
 	query := parsedURL.Query()
-	query.Set("pubkey", gohookbridge.EncodePublicKey(publicKey))
+	query.Set("pubkey", crypto.EncodePublicKey(publicKey))
 	parsedURL.RawQuery = query.Encode()
 
 	return channel, parsedURL.String(), loadedPrivateKey, nil
@@ -710,8 +712,8 @@ func (c hookBridge) clientSetup() error {
 		}
 
 		payload := msg.Data
-		if c.replayDataOpts.encryptionKey != "" && gohookbridge.IsAESEncrypted(msg.Data) {
-			decryptedPayload, err := gohookbridge.AESDecrypt(msg.Data, c.replayDataOpts.encryptionKey)
+		if c.replayDataOpts.encryptionKey != "" && encryption.IsAESEncrypted(msg.Data) {
+			decryptedPayload, err := encryption.AESDecrypt(msg.Data, c.replayDataOpts.encryptionKey)
 			if err != nil {
 				s := fmt.Sprintf("%s %s AES decrypting message %s", nowStr, ansi.Color("ERROR", "red+b"), err.Error())
 				c.logger.ErrorContext(context.Background(), s)
@@ -727,16 +729,16 @@ func (c hookBridge) clientSetup() error {
 			return
 		}
 
-		if privateKey != nil && gohookbridge.IsEncrypted(pm.body) {
-			decryptedBody, err := gohookbridge.Decrypt(pm.body, privateKey)
+		if privateKey != nil && crypto.IsEncrypted(pm.body) {
+			decryptedBody, err := crypto.Decrypt(pm.body, privateKey)
 			if err != nil {
 				s := fmt.Sprintf("%s %s decrypting message body %s", nowStr, ansi.Color("ERROR", "red+b"), err.Error())
 				c.logger.ErrorContext(context.Background(), s)
 				return
 			}
 			pm.body = decryptedBody
-		} else if c.replayDataOpts.encryptionKey != "" && gohookbridge.IsAESEncrypted(pm.body) {
-			decryptedBody, err := gohookbridge.AESDecrypt(pm.body, c.replayDataOpts.encryptionKey)
+		} else if c.replayDataOpts.encryptionKey != "" && encryption.IsAESEncrypted(pm.body) {
+			decryptedBody, err := encryption.AESDecrypt(pm.body, c.replayDataOpts.encryptionKey)
 			if err != nil {
 				s := fmt.Sprintf("%s %s AES decrypting message body %s", nowStr, ansi.Color("ERROR", "red+b"), err.Error())
 				c.logger.ErrorContext(context.Background(), s)

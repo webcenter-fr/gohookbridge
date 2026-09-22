@@ -7,12 +7,13 @@ import (
 	"strings"
 
 	"github.com/urfave/cli/v2"
-	"github.com/webcenter-fr/gohookbridge/gohookbridge/store"
+	"github.com/webcenter-fr/gohookbridge/internal/domain"
+	"github.com/webcenter-fr/gohookbridge/internal/repository"
 	"gopkg.in/yaml.v3"
 )
 
 func migrateConfig(_ *cli.Context) error {
-	global := store.GlobalConfig{}
+	global := domain.GlobalConfig{}
 	hasConfig := false
 
 	if v := os.Getenv("GOSMEE_MAX_BODY_SIZE"); v != "" {
@@ -59,7 +60,7 @@ func migrateConfig(_ *cli.Context) error {
 		return nil
 	}
 
-	bootstrap := store.BootstrapConfig{
+	bootstrap := repository.BootstrapConfig{
 		Global: &global,
 	}
 

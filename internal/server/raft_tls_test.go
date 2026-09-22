@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/urfave/cli/v2"
-	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
-	"github.com/webcenter-fr/gohookbridge/gohookbridge/store"
+	"github.com/webcenter-fr/gohookbridge/internal/app"
+	"github.com/webcenter-fr/gohookbridge/internal/repository"
 	"gotest.tools/v3/assert"
 )
 
@@ -14,19 +14,19 @@ import (
 // defaults, optionally overridden by args.
 func newTestCLIContext(t *testing.T, args ...string) *cli.Context {
 	t.Helper()
-	app := cli.NewApp()
-	app.Flags = gohookbridge.ServerFlags
+	cliApp := cli.NewApp()
+	cliApp.Flags = app.ServerFlags
 	set := flag.NewFlagSet("test", flag.ContinueOnError)
-	for _, f := range app.Flags {
+	for _, f := range cliApp.Flags {
 		assert.NilError(t, f.Apply(set))
 	}
 	assert.NilError(t, set.Parse(args))
-	return cli.NewContext(app, set, nil)
+	return cli.NewContext(cliApp, set, nil)
 }
 
 func TestBuildRaftTLSConfig_Disabled(t *testing.T) {
 	ctx := newTestCLIContext(t)
-	cfg, err := buildRaftTLSConfig(ctx, store.RaftDiscoveryConfig{}, "host")
+	cfg, err := buildRaftTLSConfig(ctx, repository.RaftDiscoveryConfig{}, "host")
 	assert.NilError(t, err)
 	assert.Assert(t, cfg == nil)
 }

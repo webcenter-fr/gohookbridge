@@ -1,12 +1,13 @@
 package server
 
 import (
+	"context"
 	"os"
 
 	"github.com/mattn/go-isatty"
 	"github.com/mgutz/ansi"
 	"github.com/urfave/cli/v2"
-	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
+	"github.com/webcenter-fr/gohookbridge/internal/app"
 )
 
 func Command() *cli.Command {
@@ -17,9 +18,13 @@ func Command() *cli.Command {
 			if !isatty.IsTerminal(os.Stdout.Fd()) {
 				ansi.DisableColors(true)
 			}
-			return serve(c)
+			s, err := NewServer(c)
+			if err != nil {
+				return err
+			}
+			return s.Run(context.Background())
 		},
-		Flags: gohookbridge.ServerFlags,
+		Flags: app.ServerFlags,
 		Subcommands: []*cli.Command{
 			{
 				Name:        "migrate-config",

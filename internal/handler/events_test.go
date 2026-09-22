@@ -93,7 +93,7 @@ func TestHandleEventsGet(t *testing.T) {
 		response := httptest.NewRecorder()
 		done := make(chan struct{})
 		go func() {
-			channelAccessMiddleware(svc, "consume", service.NewBanTracker())(handleEventsGet(broker, svc)).ServeHTTP(response, req)
+			ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())(HandleEventsGet(broker, svc)).ServeHTTP(response, req)
 			close(done)
 		}()
 
@@ -119,7 +119,7 @@ func TestHandleEventsGet(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		channelAccessMiddleware(svc, "consume", service.NewBanTracker())(handleEventsGet(broker, svc)).ServeHTTP(w, req)
+		ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())(HandleEventsGet(broker, svc)).ServeHTTP(w, req)
 		assert.Equal(t, w.Result().StatusCode, http.StatusForbidden)
 	})
 
@@ -134,7 +134,7 @@ func TestHandleEventsGet(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		channelAccessMiddleware(svc, "consume", service.NewBanTracker())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(w, req)
 		assert.Equal(t, w.Result().StatusCode, http.StatusOK)
@@ -149,7 +149,7 @@ func TestHandleEventsGet(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		channelAccessMiddleware(svc, "consume", service.NewBanTracker())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(w, req)
 		assert.Equal(t, w.Result().StatusCode, http.StatusUnauthorized)
@@ -180,7 +180,7 @@ func TestHandleEventsGet(t *testing.T) {
 		response := httptest.NewRecorder()
 		done := make(chan struct{})
 		go func() {
-			channelAccessMiddleware(svc, "consume", service.NewBanTracker())(handleEventsGet(broker, svc)).ServeHTTP(response, req)
+			ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())(HandleEventsGet(broker, svc)).ServeHTTP(response, req)
 			close(done)
 		}()
 
@@ -208,7 +208,7 @@ func TestHandleEventsGet(t *testing.T) {
 		response := httptest.NewRecorder()
 		done := make(chan struct{})
 		go func() {
-			handleEventsGet(broker, svc).ServeHTTP(response, req)
+			HandleEventsGet(broker, svc).ServeHTTP(response, req)
 			close(done)
 		}()
 
@@ -267,7 +267,7 @@ func TestHandleEventsGetCORSOrigin(t *testing.T) {
 			}))
 
 			router := chi.NewRouter()
-			router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, svc))
+			router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", HandleEventsGet(broker, svc))
 
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/plainchannel1", nil)
 			reqCtx, cancel := context.WithCancel(req.Context())
@@ -304,7 +304,7 @@ func TestRetVersion(t *testing.T) {
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/version", nil)
 	w := httptest.NewRecorder()
 
-	retVersion(w, req)
+	RetVersion(w, req)
 
 	resp := w.Result()
 	assert.Equal(t, resp.StatusCode, http.StatusOK)
@@ -323,7 +323,7 @@ func TestHandleEventsGetWithNATS(t *testing.T) {
 	svc := service.NewService(storetest.NewRaftStore(t), nil)
 
 	router := chi.NewRouter()
-	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, svc))
+	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", HandleEventsGet(broker, svc))
 
 	t.Run("Delivers historical and live events via NATS", func(t *testing.T) {
 		err := broker.Publish("nats-sse-channel", []byte(`{"history":true}`))
@@ -362,7 +362,7 @@ func TestHandleEventsGetWithNATS(t *testing.T) {
 	t.Run("Handles unprotected channel with NATS broker", func(t *testing.T) {
 		localRouter := chi.NewRouter()
 		svc3 := service.NewService(storetest.NewRaftStore(t), nil)
-		localRouter.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, svc3))
+		localRouter.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", HandleEventsGet(broker, svc3))
 
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/unprotected-nats", nil)
 		reqCtx, cancel := context.WithCancel(req.Context())
@@ -408,7 +408,7 @@ func TestHandleEventsGetWithClientID(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	router := chi.NewRouter()
-	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", handleEventsGet(broker, svc))
+	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", HandleEventsGet(broker, svc))
 
 	t.Run("Delivers only events after cursor", func(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/cursor-channel?client_id=test-client", nil)
@@ -441,7 +441,7 @@ func TestHandleEventsGetWithClientID(t *testing.T) {
 
 func TestLivezEndpoint(t *testing.T) {
 	w := httptest.NewRecorder()
-	retVersion(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/livez", nil))
+	RetVersion(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/livez", nil))
 	assert.Equal(t, w.Code, http.StatusOK)
 }
 
@@ -455,22 +455,22 @@ func (f *fakeHealth) IsStarted() bool    { return f.started }
 
 func TestReadyzEndpoint(t *testing.T) {
 	w := httptest.NewRecorder()
-	retReadyz(&fakeHealth{clean: true})(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil))
+	RetReadyz(&fakeHealth{clean: true})(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil))
 	assert.Equal(t, w.Code, http.StatusOK)
 	assert.Assert(t, strings.Contains(w.Body.String(), "ready"))
 
 	w = httptest.NewRecorder()
-	retReadyz(&fakeHealth{clean: false})(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil))
+	RetReadyz(&fakeHealth{clean: false})(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil))
 	assert.Equal(t, w.Code, http.StatusServiceUnavailable)
 }
 
 func TestStartupEndpoint(t *testing.T) {
 	w := httptest.NewRecorder()
-	retStartup(&fakeHealth{started: true})(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/startup", nil))
+	RetStartup(&fakeHealth{started: true})(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/startup", nil))
 	assert.Equal(t, w.Code, http.StatusOK)
 	assert.Assert(t, strings.Contains(w.Body.String(), "started"))
 
 	w = httptest.NewRecorder()
-	retStartup(&fakeHealth{started: false})(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/startup", nil))
+	RetStartup(&fakeHealth{started: false})(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/startup", nil))
 	assert.Equal(t, w.Code, http.StatusServiceUnavailable)
 }

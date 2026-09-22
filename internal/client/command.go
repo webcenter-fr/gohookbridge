@@ -9,7 +9,7 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/mgutz/ansi"
 	"github.com/urfave/cli/v2"
-	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
+	"github.com/webcenter-fr/gohookbridge/internal/app"
 )
 
 func Command() *cli.Command {
@@ -18,7 +18,7 @@ func Command() *cli.Command {
 		UsageText: "gohookbridge client [command options] SMEE_URL LOCAL_SERVICE_URL",
 		Usage:     "Make a client from the relay server to your local service",
 		Action:    clientAction,
-		Flags:     append(gohookbridge.CommonFlags, gohookbridge.ClientFlags...),
+		Flags:     append(app.CommonFlags, app.ClientFlags...),
 	}
 }
 
@@ -29,18 +29,18 @@ func ReplayCommand() *cli.Command {
 		Action: func(c *cli.Context) error {
 			return replay(c)
 		},
-		Flags: append(gohookbridge.CommonFlags, gohookbridge.ReplayFlags...),
+		Flags: append(app.CommonFlags, app.ReplayFlags...),
 	}
 }
 
 func clientAction(c *cli.Context) error {
-	logger, nocolor, err := gohookbridge.GetLogger(c)
+	logger, nocolor, err := app.GetLogger(c)
 	if err != nil {
 		return err
 	}
 
 	if c.Bool("new-url") {
-		url, err := gohookbridge.GetNewHookURL(gohookbridge.DefaultPublicHookURL)
+		url, err := app.GetNewHookURL(app.DefaultPublicHookURL)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			return cli.Exit("", 1)
@@ -84,7 +84,7 @@ func clientAction(c *cli.Context) error {
 	}
 	localDebugURL := c.String("local-debug-url")
 	if localDebugURL == "" {
-		localDebugURL = gohookbridge.DefaultLocalDebugURL
+		localDebugURL = app.DefaultLocalDebugURL
 	}
 
 	healthPort := c.Int("health-port")

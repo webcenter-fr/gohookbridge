@@ -40,7 +40,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(svc, "produce", service.NewBanTracker())
+		middleware := ChannelAccessMiddleware(svc, "produce", service.NewBanTracker())
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(w, req)
@@ -56,7 +56,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(svc, "produce", service.NewBanTracker())
+		middleware := ChannelAccessMiddleware(svc, "produce", service.NewBanTracker())
 		nextCalled := false
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
@@ -75,7 +75,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(svc, "produce", service.NewBanTracker())
+		middleware := ChannelAccessMiddleware(svc, "produce", service.NewBanTracker())
 		nextCalled := false
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
@@ -94,7 +94,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(svc, "produce", service.NewBanTracker())
+		middleware := ChannelAccessMiddleware(svc, "produce", service.NewBanTracker())
 		nextCalled := false
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
@@ -112,7 +112,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(svc, "consume", service.NewBanTracker())
+		middleware := ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(w, req)
@@ -127,7 +127,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(svc, "consume", service.NewBanTracker())
+		middleware := ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())
 		nextCalled := false
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
@@ -145,7 +145,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(svc, "consume", service.NewBanTracker())
+		middleware := ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())
 		nextCalled := false
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
@@ -163,7 +163,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(svc, "consume", service.NewBanTracker())
+		middleware := ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())
 		nextCalled := false
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			nextCalled = true
@@ -182,7 +182,7 @@ func TestChannelAccessMiddleware(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		middleware := channelAccessMiddleware(svc, "produce", service.NewBanTracker())
+		middleware := ChannelAccessMiddleware(svc, "produce", service.NewBanTracker())
 		middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(w, req)
@@ -249,7 +249,7 @@ func TestIPRestrictions(t *testing.T) {
 			ID:         "test",
 			AllowedIPs: []string{"127.0.0.1"},
 		}))
-		middleware := ipRestrictMiddleware(svc)
+		middleware := IPRestrictMiddleware(svc)
 
 		nextCalled := false
 		next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

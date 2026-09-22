@@ -9,7 +9,7 @@ import (
 
 // safeLogger wraps the chi request logger to redact sensitive query parameters
 // (e.g., channel access tokens) from server logs.
-func safeLogger(next http.Handler) http.Handler {
+func SafeLogger(next http.Handler) http.Handler {
 	return middleware.RequestLogger(&safeLogFormatter{Logger: log.Default()})(next)
 }
 

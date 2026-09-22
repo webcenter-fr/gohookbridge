@@ -8,14 +8,14 @@ import (
 	"strings"
 
 	"github.com/urfave/cli/v2"
-	"github.com/webcenter-fr/gohookbridge/gohookbridge/store"
+	"github.com/webcenter-fr/gohookbridge/internal/repository"
 )
 
 // buildRaftTLSConfig builds the raft transport tls.Config from flags. It
 // returns nil when raft TLS is disabled. In auto mode the internal CA is
 // shared via a K8s Secret; the bootstrap node is ordinal 0 of the StatefulSet
 // (or forced with --raft-tls-ca-bootstrap).
-func buildRaftTLSConfig(c *cli.Context, discovery store.RaftDiscoveryConfig, hostname string) (*tls.Config, error) {
+func buildRaftTLSConfig(c *cli.Context, discovery repository.RaftDiscoveryConfig, hostname string) (*tls.Config, error) {
 	isMultiNode := c.Int("raft-replicas") > 1 || len(c.StringSlice("raft-peers")) > 1
 	if !c.Bool("raft-tls-enabled") {
 		if isMultiNode {
@@ -33,12 +33,12 @@ func buildRaftTLSConfig(c *cli.Context, discovery store.RaftDiscoveryConfig, hos
 
 	commonName := c.String("raft-node-id")
 	if commonName == "" {
-		if self, err := store.NewPeerResolver(&discovery).Self(); err == nil {
+		if self, err := repository.NewPeerResolver(&discovery).Self(); err == nil {
 			commonName = self.ID
 		}
 	}
 
-	dnsNames, ipAddrs := store.PodSANs(&discovery, hostname)
+	dnsNames, ipAddrs := repository.PodSANs(&discovery, hostname)
 
 	clientset, err := newK8sClientset()
 	if err != nil {
@@ -46,7 +46,7 @@ func buildRaftTLSConfig(c *cli.Context, discovery store.RaftDiscoveryConfig, hos
 		clientset = nil
 	}
 
-	return store.LoadOrBuildRaftTLS(&store.RaftTLSConfig{
+	return repository.LoadOrBuildRaftTLS(&repository.RaftTLSConfig{
 		Enabled:           true,
 		Dir:               tlsDir,
 		Validity:          c.Duration("raft-tls-validity"),

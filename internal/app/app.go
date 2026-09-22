@@ -1,4 +1,4 @@
-package gohookbridge
+package app
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"github.com/lmittmann/tint"
 	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v2"
+	"github.com/webcenter-fr/gohookbridge/pkg/crypto"
 )
 
 //go:embed templates/version
@@ -72,14 +73,14 @@ func KeygenCommand() *cli.Command {
 		Name:  "keygen",
 		Usage: "Generate a client encryption keypair and print the public key",
 		Action: func(c *cli.Context) error {
-			publicKey, privateKey, err := GenerateKeyPair()
+			publicKey, privateKey, err := crypto.GenerateKeyPair()
 			if err != nil {
 				return err
 			}
-			if err := SaveKeyPair(c.String("key-file"), publicKey, privateKey); err != nil {
+			if err := crypto.SaveKeyPair(c.String("key-file"), publicKey, privateKey); err != nil {
 				return err
 			}
-			fmt.Fprintln(os.Stdout, EncodePublicKey(publicKey))
+			fmt.Fprintln(os.Stdout, crypto.EncodePublicKey(publicKey))
 			return nil
 		},
 		Flags: KeygenFlags,
@@ -131,8 +132,4 @@ non-publicly accessible endpoint, forward those requests to your local service.`
 		Flags:                CommonFlags,
 		Commands:             commands,
 	}
-}
-
-func Run(args []string) error {
-	return MakeApp().Run(args)
 }

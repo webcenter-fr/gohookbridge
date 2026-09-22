@@ -4,18 +4,18 @@ import (
 	"log"
 	"os"
 
-	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
-	"github.com/webcenter-fr/gohookbridge/gohookbridge/proxy"
+	"github.com/webcenter-fr/gohookbridge/internal/app"
+	"github.com/webcenter-fr/gohookbridge/internal/proxy"
 )
 
 func main() {
-	app := gohookbridge.MakeApp(
+	cliApp := app.MakeApp(
 		proxy.Command(),
 		proxy.ProduceCommand(),
-		gohookbridge.KeygenCommand(),
+		app.KeygenCommand(),
 	)
-	app.Commands = append(app.Commands, gohookbridge.CompletionCommands()...)
-	if err := app.Run(os.Args); err != nil {
+	cliApp.Commands = append(cliApp.Commands, app.CompletionCommands()...)
+	if err := cliApp.Run(os.Args); err != nil {
 		log.Fatal(err)
 	}
 }

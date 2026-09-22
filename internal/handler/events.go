@@ -14,7 +14,7 @@ import (
 	"github.com/webcenter-fr/gohookbridge/pkg/nats"
 )
 
-func retVersion(w http.ResponseWriter, _ *http.Request) {
+func RetVersion(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set(versionHeaderName, strings.TrimSpace(string(Version)))
 	resp := map[string]string{
@@ -25,7 +25,7 @@ func retVersion(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-func handleEventsGet(broker *nats.Broker, svc *service.Service) http.HandlerFunc {
+func HandleEventsGet(broker *nats.Broker, svc *service.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		channel := chi.URLParam(r, "channel")
@@ -133,7 +133,7 @@ type raftHealth interface {
 
 // retReadyz reports readiness: the Raft layer must be a settled Leader/Follower
 // with no un-applied committed entries.
-func retReadyz(rs raftHealth) http.HandlerFunc {
+func RetReadyz(rs raftHealth) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", contentType)
 		if rs.IsCleanState() {
@@ -148,7 +148,7 @@ func retReadyz(rs raftHealth) http.HandlerFunc {
 
 // retStartup reports whether this node has joined the Raft cluster (voter or
 // leader). Used by the Kubernetes startupProbe.
-func retStartup(rs raftHealth) http.HandlerFunc {
+func RetStartup(rs raftHealth) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", contentType)
 		if rs.IsStarted() {

@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/r3labs/sse/v2"
-	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
+	"github.com/webcenter-fr/gohookbridge/pkg/crypto"
 	"gotest.tools/v3/assert"
 )
 
@@ -991,8 +991,8 @@ func processTestEvent(t *testing.T, gs *hookBridge, now time.Time, msg *sse.Even
 	}
 
 	payload := msg.Data
-	if privateKey != nil && gohookbridge.IsEncrypted(msg.Data) {
-		decryptedPayload, err := gohookbridge.Decrypt(msg.Data, privateKey)
+	if privateKey != nil && crypto.IsEncrypted(msg.Data) {
+		decryptedPayload, err := crypto.Decrypt(msg.Data, privateKey)
 		if err != nil {
 			gs.logger.ErrorContext(context.Background(), fmt.Sprintf("Error decrypting message: %s", err.Error()))
 			return false, false, err
@@ -1272,10 +1272,10 @@ func TestClientSetupEventCallback(t *testing.T) {
 		}))
 		defer replayServer.Close()
 
-		publicKey, privateKey, err := gohookbridge.GenerateKeyPair()
+		publicKey, privateKey, err := crypto.GenerateKeyPair()
 		assert.NilError(t, err)
 
-		encryptedPayload, err := gohookbridge.Encrypt([]byte(defaultPayloadJSON), publicKey)
+		encryptedPayload, err := crypto.Encrypt([]byte(defaultPayloadJSON), publicKey)
 		assert.NilError(t, err)
 
 		gs := &hookBridge{replayDataOpts: opts, logger: logger}
@@ -1291,9 +1291,9 @@ func TestClientSetupEventCallback(t *testing.T) {
 
 func TestClientSetupKeyFileWithSmeeIOFails(t *testing.T) {
 	keyPath := filepath.Join(t.TempDir(), "client-key.json")
-	publicKey, privateKey, err := gohookbridge.GenerateKeyPair()
+	publicKey, privateKey, err := crypto.GenerateKeyPair()
 	assert.NilError(t, err)
-	assert.NilError(t, gohookbridge.SaveKeyPair(keyPath, publicKey, privateKey))
+	assert.NilError(t, crypto.SaveKeyPair(keyPath, publicKey, privateKey))
 
 	gs := hookBridge{
 		replayDataOpts: &replayDataOpts{
@@ -1320,9 +1320,9 @@ func TestPrepareSubscription(t *testing.T) {
 
 	t.Run("protected gohookbridge server appends public key", func(t *testing.T) {
 		keyPath := filepath.Join(t.TempDir(), "client-key.json")
-		publicKey, privateKey, err := gohookbridge.GenerateKeyPair()
+		publicKey, privateKey, err := crypto.GenerateKeyPair()
 		assert.NilError(t, err)
-		assert.NilError(t, gohookbridge.SaveKeyPair(keyPath, publicKey, privateKey))
+		assert.NilError(t, crypto.SaveKeyPair(keyPath, publicKey, privateKey))
 
 		channel, sseURL, loadedPrivateKey, err := prepareSubscription("https://example.com/protectedchan", keyPath, false, "", "")
 		assert.NilError(t, err)

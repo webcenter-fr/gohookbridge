@@ -95,7 +95,7 @@ func RequireAuthDynamic(svc *service.Service, secret [32]byte) func(http.Handler
 	}
 }
 
-func apiAuthMethodsHandler(svc *service.Service) http.HandlerFunc {
+func APIAuthMethodsHandler(svc *service.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cfg := svc.BuildAuthConfig(r.Context())
 		localEnabled := false
@@ -119,7 +119,7 @@ func apiAuthMethodsHandler(svc *service.Service) http.HandlerFunc {
 	}
 }
 
-func apiLoginHandler(svc *service.Service, secret [32]byte, banTracker *service.BanTracker) http.HandlerFunc {
+func APILoginHandler(svc *service.Service, secret [32]byte, banTracker *service.BanTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		cfg := svc.BuildAuthConfig(ctx)
@@ -169,7 +169,7 @@ func apiLoginHandler(svc *service.Service, secret [32]byte, banTracker *service.
 	}
 }
 
-func apiLogoutHandler() http.HandlerFunc {
+func APILogoutHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		clearSessionCookie(w)
 		w.Header().Set("Content-Type", "application/json")

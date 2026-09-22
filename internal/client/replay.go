@@ -15,7 +15,7 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/mgutz/ansi"
 	"github.com/urfave/cli/v2"
-	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
+	"github.com/webcenter-fr/gohookbridge/internal/app"
 )
 
 const userTSFormat = "2006-01-02T15:04:05"
@@ -131,7 +131,7 @@ func replay(c *cli.Context) error {
 	client := github.NewClient(nil)
 	client = client.WithAuthToken(c.String("github-token"))
 
-	logger, nocolor, err := gohookbridge.GetLogger(c)
+	logger, nocolor, err := app.GetLogger(c)
 	if err != nil {
 		return err
 	}

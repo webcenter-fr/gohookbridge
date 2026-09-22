@@ -25,7 +25,7 @@ func (f *fakeLeaderInfo) LeaderAddress() string { return f.addr }
 func TestLeaderForwardMiddleware(t *testing.T) {
 	t.Run("leader serves the request locally", func(t *testing.T) {
 		var called bool
-		handler := leaderForwardMiddleware(&fakeLeaderInfo{leader: true, addr: "leader.example:6001"}, 3333)(
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: true, addr: "leader.example:6001"}, 3333)(
 			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				called = true
 				w.WriteHeader(http.StatusTeapot)
@@ -41,7 +41,7 @@ func TestLeaderForwardMiddleware(t *testing.T) {
 
 	t.Run("read-only requests are not forwarded on a follower", func(t *testing.T) {
 		var called bool
-		handler := leaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "leader.example:6001"}, 3333)(
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "leader.example:6001"}, 3333)(
 			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				called = true
 				w.WriteHeader(http.StatusOK)
@@ -74,7 +74,7 @@ func TestLeaderForwardMiddleware(t *testing.T) {
 		leaderPort, err := strconv.Atoi(leaderURL.Port())
 		assert.NilError(t, err)
 
-		handler := leaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "127.0.0.1:6001"}, leaderPort)(
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "127.0.0.1:6001"}, leaderPort)(
 			http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Error("handler must not be called on a follower")
 			}),
@@ -93,7 +93,7 @@ func TestLeaderForwardMiddleware(t *testing.T) {
 	})
 
 	t.Run("follower returns 503 when no leader is known", func(t *testing.T) {
-		handler := leaderForwardMiddleware(&fakeLeaderInfo{leader: false}, 3333)(
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false}, 3333)(
 			http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Error("handler must not be called on a follower")
 			}),
@@ -107,7 +107,7 @@ func TestLeaderForwardMiddleware(t *testing.T) {
 
 	t.Run("already forwarded request is served locally", func(t *testing.T) {
 		var called atomic.Bool
-		handler := leaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "leader.example:6001"}, 3333)(
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "leader.example:6001"}, 3333)(
 			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				called.Store(true)
 				w.WriteHeader(http.StatusOK)

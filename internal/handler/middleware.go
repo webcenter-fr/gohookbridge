@@ -129,7 +129,7 @@ func (r *ipRanges) contains(ip net.IP) bool {
 	return false
 }
 
-func ipRestrictMiddleware(svc *service.Service) func(http.Handler) http.Handler {
+func IPRestrictMiddleware(svc *service.Service) func(http.Handler) http.Handler {
 	var (
 		mu    sync.Mutex
 		cache = make(map[string]*ipRanges)
@@ -179,7 +179,7 @@ func ipRestrictMiddleware(svc *service.Service) func(http.Handler) http.Handler 
 	}
 }
 
-func channelAccessMiddleware(svc *service.Service, requiredScope string, banTracker *service.BanTracker) func(http.Handler) http.Handler {
+func ChannelAccessMiddleware(svc *service.Service, requiredScope string, banTracker *service.BanTracker) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			channel := chi.URLParam(r, "channel")

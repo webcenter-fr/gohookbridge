@@ -28,12 +28,12 @@ const (
 	contentType       = "application/json"
 	versionHeaderName = "X-Gohookbridge-Version"
 	maxChannelLength  = 64
-	channelIDPattern  = "[a-zA-Z0-9_-]{1,64}"
-	channelPath       = "/{channel:" + channelIDPattern + "}"
-	eventsPath        = "/events/{channel:" + channelIDPattern + "}"
+	ChannelIDPattern  = "[a-zA-Z0-9_-]{1,64}"
+	ChannelPath       = "/{channel:" + ChannelIDPattern + "}"
+	EventsPath        = "/events/{channel:" + ChannelIDPattern + "}"
 )
 
-func effectivePublicURL(publicURL, portAddr string, sslEnabled bool) string {
+func EffectivePublicURL(publicURL, portAddr string, sslEnabled bool) string {
 	if publicURL != "" {
 		return publicURL
 	}
@@ -110,7 +110,7 @@ func validateWebhookSignature(secret string, payload []byte, r *http.Request) bo
 	return false
 }
 
-func handleWebhookPost(broker *nats.Broker, svc *service.Service, banTracker *service.BanTracker) http.HandlerFunc {
+func HandleWebhookPost(broker *nats.Broker, svc *service.Service, banTracker *service.BanTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		now := time.Now().UTC()
@@ -277,7 +277,7 @@ func handleWebhookPost(broker *nats.Broker, svc *service.Service, banTracker *se
 	}
 }
 
-func handleTestPayloadSend(broker *nats.Broker, svc *service.Service) http.HandlerFunc {
+func HandleTestPayloadSend(broker *nats.Broker, svc *service.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		channel := chi.URLParam(r, "channel")
 		if channel == "" {
@@ -335,7 +335,7 @@ func handleTestPayloadSend(broker *nats.Broker, svc *service.Service) http.Handl
 	}
 }
 
-func handleEventReplay(broker *nats.Broker, svc *service.Service) http.HandlerFunc {
+func HandleEventReplay(broker *nats.Broker, svc *service.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		channel := chi.URLParam(r, "channel")
@@ -387,7 +387,7 @@ func handleEventReplay(broker *nats.Broker, svc *service.Service) http.HandlerFu
 	}
 }
 
-func handleGenerateEncryptionKey(svc *service.Service) http.HandlerFunc {
+func HandleGenerateEncryptionKey(svc *service.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		channel := chi.URLParam(r, "channel")

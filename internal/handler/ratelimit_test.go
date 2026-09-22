@@ -21,7 +21,7 @@ func TestAPIUnbanHandlerInvalidIP(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		apiUnbanHandler(bt)(w, req)
+		APIUnbanHandler(bt)(w, req)
 		assert.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
 	})
 
@@ -32,7 +32,7 @@ func TestAPIUnbanHandlerInvalidIP(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		apiUnbanHandler(bt)(w, req)
+		APIUnbanHandler(bt)(w, req)
 		assert.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
 	})
 }

@@ -10,7 +10,8 @@ import (
 	"os"
 	"time"
 
-	gohookbridge "github.com/webcenter-fr/gohookbridge/gohookbridge"
+	"github.com/webcenter-fr/gohookbridge/pkg/crypto"
+	"github.com/webcenter-fr/gohookbridge/pkg/urlutil"
 
 	"github.com/urfave/cli/v2"
 )
@@ -19,12 +20,12 @@ func startProxy(c *cli.Context) error {
 	var pubKeyBytes *[32]byte
 	if pubKeyStr := c.String("pubkey"); pubKeyStr != "" {
 		var err error
-		pubKeyBytes, err = gohookbridge.ParsePublicKey(pubKeyStr)
+		pubKeyBytes, err = crypto.ParsePublicKey(pubKeyStr)
 		if err != nil {
 			return fmt.Errorf("invalid public key: %w", err)
 		}
 	} else if pubKeyFile := c.String("pubkey-file"); pubKeyFile != "" {
-		pub, _, err := gohookbridge.LoadKeyPair(pubKeyFile)
+		pub, _, err := crypto.LoadKeyPair(pubKeyFile)
 		if err != nil {
 			return fmt.Errorf("load key file: %w", err)
 		}
@@ -40,7 +41,7 @@ func startProxy(c *cli.Context) error {
 	}
 
 	if token := c.String("token"); token != "" {
-		targetURL = gohookbridge.URLWithQueryParam(targetURL, "token", token)
+		targetURL = urlutil.URLWithQueryParam(targetURL, "token", token)
 	}
 
 	insecureSkip := c.Bool("insecure-skip-tls-verify")
@@ -72,7 +73,7 @@ func startProxy(c *cli.Context) error {
 		}
 		r.Body.Close()
 
-		encrypted, err := gohookbridge.Encrypt(body, pubKeyBytes)
+		encrypted, err := crypto.Encrypt(body, pubKeyBytes)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: encrypt error: %v\n", err)
 			http.Error(w, "encryption failed", http.StatusInternalServerError)

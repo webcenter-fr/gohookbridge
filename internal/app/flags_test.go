@@ -1,4 +1,4 @@
-package gohookbridge
+package app
 
 import (
 	"strings"
