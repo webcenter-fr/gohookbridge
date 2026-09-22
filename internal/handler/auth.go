@@ -64,10 +64,10 @@ func RequireAuth(secret [32]byte) func(http.Handler) http.Handler {
 				}
 				return
 			}
-			//nolint:staticcheck
+			//nolint:revive,staticcheck // context keys are package-level string constants by design
 			ctx := context.WithValue(r.Context(), UsernameContextKey, token.Username)
 			if len(token.Groups) > 0 {
-				//nolint:staticcheck
+				//nolint:revive,staticcheck // context keys are package-level string constants by design
 				ctx = context.WithValue(ctx, GroupsContextKey, token.Groups)
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))

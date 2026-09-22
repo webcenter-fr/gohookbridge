@@ -81,6 +81,13 @@ linters:
       - linters:
           - gosec
         path: _test\.go
+      - linters:
+          - revive
+        text: unused-parameter
+        path: internal/repository/
+        # every repository method takes context.Context as its first
+        # parameter by design (domain.Repository); some CRUD methods do not
+        # use it internally yet.
     paths:
       - vendor
       - third_party$

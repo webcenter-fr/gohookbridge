@@ -410,12 +410,12 @@ func (s *Server) Run(ctx context.Context) error {
 	// HTTP server down, so a rolling restart re-elects a leader promptly.
 	go func() {
 		<-runCtx.Done()
-		stepDownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		stepDownCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 10*time.Second)
 		defer cancel()
 		if err := s.repo.StepDown(stepDownCtx); err != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: raft step down: %v\n", err)
 		}
-		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.WithoutCancel(runCtx), 10*time.Second)
 		defer cancelShutdown()
 		_ = s.httpServer.Shutdown(shutdownCtx)
 	}()

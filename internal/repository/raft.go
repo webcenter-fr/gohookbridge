@@ -892,6 +892,7 @@ func (rs *RaftStore) CreateChannel(ctx context.Context, p *domain.Channel) error
 		return err
 	}
 	if resp != nil {
+		//nolint:forcetypeassert // the FSM applies an error value; preserve it for errors.Is
 		return resp.(error)
 	}
 	return nil

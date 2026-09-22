@@ -74,9 +74,10 @@ func (rs *RaftStore) ApplyBootstrap(ctx context.Context, cfg *BootstrapConfig) e
 	}
 	for _, p := range cfg.Channels {
 		ch := &domain.Channel{
-			ID:                p.ID,
-			Description:       p.Description,
-			WebhookSecret:     p.WebhookSecret,
+			ID:            p.ID,
+			Description:   p.Description,
+			WebhookSecret: p.WebhookSecret,
+			//nolint:staticcheck // legacy field migrated in MigrateChannel
 			WebhookSignatures: p.WebhookSignatures,
 			AllowedIPs:        p.AllowedIPs,
 		}
