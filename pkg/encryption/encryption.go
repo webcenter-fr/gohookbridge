@@ -1,4 +1,4 @@
-package gohookbridge
+package encryption
 
 import (
 	"crypto/aes"

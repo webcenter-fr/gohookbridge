@@ -1,4 +1,4 @@
-package gohookbridge
+package urlutil
 
 import "net/url"
 

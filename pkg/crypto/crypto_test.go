@@ -1,4 +1,4 @@
-package gohookbridge
+package crypto
 
 import (
 	"os"

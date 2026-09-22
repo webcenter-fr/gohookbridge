@@ -1,4 +1,4 @@
-package gohookbridge
+package uuid
 
 import (
 	"crypto/rand"
