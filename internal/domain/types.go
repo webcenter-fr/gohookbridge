@@ -46,6 +46,12 @@ func init() {
 	})
 }
 
+// ValidateStruct validates s with the domain validator, including the custom
+// "channelid" tag used by Channel.ID.
+func ValidateStruct(s interface{}) error {
+	return validate.Struct(s)
+}
+
 type User struct {
 	ID           string   `json:"id"                      validate:"required,min=1,max=128"`
 	Username     string   `json:"username"                validate:"required,min=1,max=128"`

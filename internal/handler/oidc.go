@@ -1,4 +1,4 @@
-package server
+package handler
 
 import (
 	"context"
@@ -9,6 +9,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/webcenter-fr/gohookbridge/internal/domain"
+	"github.com/webcenter-fr/gohookbridge/internal/service"
 )
 
 const oidcStateCookieName = "oidc_state"
@@ -20,13 +23,13 @@ type OIDCDiscovery struct {
 }
 
 type OIDCHandler struct {
-	Provider      OIDCProvider
+	Provider      domain.OIDCProvider
 	Discovery     *OIDCDiscovery
 	SessionSecret [32]byte
 	PublicURL     string
 }
 
-func NewOIDCHandler(provider OIDCProvider, sessionSecret [32]byte, publicURL string) (*OIDCHandler, error) {
+func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, publicURL string) (*OIDCHandler, error) {
 	if provider.GroupsClaim == "" {
 		provider.GroupsClaim = "groups"
 	}
@@ -63,8 +66,8 @@ func (h *OIDCHandler) LoginHandler() http.HandlerFunc {
 			redirect = "/"
 		}
 
-		state := generateRandomHex()
-		nonce := generateRandomHex()
+		state := service.GenerateRandomHex()
+		nonce := service.GenerateRandomHex()
 
 		stateValue := fmt.Sprintf("%s|%s", state, redirect)
 		http.SetCookie(w, &http.Cookie{
@@ -140,14 +143,14 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 
 		groups := extractGroupsFromToken(userInfo, h.Provider.GroupsClaim)
 
-		sessionTok := &sessionToken{
+		sessionTok := &service.SessionToken{
 			Username:  username,
 			Method:    "oidc",
 			Provider:  h.Provider.ID,
 			ExpiresAt: time.Now().Unix() + sessionMaxAge,
 			Groups:    groups,
 		}
-		encoded, err := encodeSession(sessionTok, h.SessionSecret)
+		encoded, err := service.EncodeSession(sessionTok, h.SessionSecret)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
