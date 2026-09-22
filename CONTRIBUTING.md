@@ -69,7 +69,7 @@
 ├── main.go                     # Program entrypoint (full binary)
 ├── Makefile                    # Build, test, lint targets (3 binary targets)
 ├── Dockerfile                  # Multi-stage container build
-├── misc/                       # Deployment manifests, systemd units
+├── misc/                       # System service files (systemd/launchd) + replay helper
 └── hack/                       # Release helper scripts
 ```
 

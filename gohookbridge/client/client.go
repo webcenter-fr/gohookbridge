@@ -48,7 +48,7 @@ const (
 	tsFormat             = "2006-01-02T15.04.01.000"
 )
 
-type goSmee struct {
+type hookBridge struct {
 	replayDataOpts *replayDataOpts
 	channel        string
 	logger         *slog.Logger
@@ -90,7 +90,7 @@ func getOrCreateClientID() string {
 	return id
 }
 
-func (c goSmee) parse(now time.Time, data []byte) (payloadMsg, error) {
+func (c hookBridge) parse(now time.Time, data []byte) (payloadMsg, error) {
 	dt := now
 	pm := payloadMsg{
 		headers: make(map[string]string),
@@ -386,12 +386,12 @@ func runExecCommand(ctx context.Context, rd *replayDataOpts, logger *slog.Logger
 	//nolint:gosec // Command is intentionally user-provided
 	cmd := exec.CommandContext(ctx, "sh", "-c", rd.execCommand)
 	cmd.Env = append(buildExecEnv(rd.execEnvVars),
-		"GOSMEE_EVENT_TYPE="+pm.eventType,
-		"GOSMEE_EVENT_ID="+pm.eventID,
-		"GOSMEE_CONTENT_TYPE="+pm.contentType,
-		"GOSMEE_TIMESTAMP="+pm.timestamp,
-		"GOSMEE_PAYLOAD_FILE="+payloadFile.Name(),
-		"GOSMEE_HEADERS_FILE="+headersFile.Name(),
+		"GOHOOKBRIDGE_EVENT_TYPE="+pm.eventType,
+		"GOHOOKBRIDGE_EVENT_ID="+pm.eventID,
+		"GOHOOKBRIDGE_CONTENT_TYPE="+pm.contentType,
+		"GOHOOKBRIDGE_TIMESTAMP="+pm.timestamp,
+		"GOHOOKBRIDGE_PAYLOAD_FILE="+payloadFile.Name(),
+		"GOHOOKBRIDGE_HEADERS_FILE="+headersFile.Name(),
 	)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -513,7 +513,7 @@ func checkServerVersion(serverURL string, clientVersion string, logger *slog.Log
 		return nil
 	}
 
-	serverVersion := resp.Header.Get("X-Gosmee-Version")
+	serverVersion := resp.Header.Get("X-Gohookbridge-Version")
 
 	if serverVersion == "" {
 		var versionResp struct {
@@ -654,7 +654,7 @@ func prepareSubscription(smeeURL, encryptionKeyFile string, resume bool, clientI
 	return channel, parsedURL.String(), loadedPrivateKey, nil
 }
 
-func (c goSmee) clientSetup() error {
+func (c hookBridge) clientSetup() error {
 	version := strings.TrimSpace(Version)
 	s := fmt.Sprintf("%sStarting gohookbridge client version: %s", emoji("⇉", "green+b", c.replayDataOpts.decorate), version)
 	c.logger.InfoContext(context.Background(), s)
@@ -817,7 +817,7 @@ func serveHealthEndpoint(port int, logger *slog.Logger, decorate bool) {
 
 func retVersion(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Gosmee-Version", Version)
+	w.Header().Set("X-Gohookbridge-Version", Version)
 	resp := map[string]string{
 		"version": Version,
 	}

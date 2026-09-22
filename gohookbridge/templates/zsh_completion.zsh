@@ -1,4 +1,4 @@
-#compdef gosmee
+#compdef gohookbridge
 
 export _CLI_ZSH_AUTOCOMPLETE_HACK=1
 _cli_zsh_autocomplete() {
@@ -20,4 +20,4 @@ _cli_zsh_autocomplete() {
   return
 }
 
-compdef _cli_zsh_autocomplete gosmee
+compdef _cli_zsh_autocomplete gohookbridge

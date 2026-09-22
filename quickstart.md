@@ -197,80 +197,20 @@ helm upgrade --install gohookbridge ./helm/gohookbridge \
 After migration, pod restarts self-heal via DNS re-resolution and membership
 reconciliation — no further recovery mode is needed.
 
-### Server Deployment
+### Server and client (Helm)
 
-Deploy the gohookbridge server to receive webhooks from external sources:
+The server and client are deployed with the Helm chart (see the "Kubernetes
+with Helm" and "High Availability with Helm" sections above). The chart renders
+the server as a StatefulSet and exposes all configuration through values:
 
-```shell
-# 1. Edit the public URL in misc/gohookbridge-server-deployment.yaml
-#    Replace https://yourserver.example.com with your actual domain
+- `server.publicURL`, `server.ingress` — public endpoint + Ingress/TLS
+- `server.bootstrap.config` — admin user, projects, and global settings
+  (bootstrap.yaml content, stored in a Secret)
+- `client.channelURL` / `client.targetURL` — client forwarding source/target
 
-# 2. Apply the deployment
-kubectl apply -f misc/gohookbridge-server-deployment.yaml
-
-# 3. Expose the service externally (example with an Ingress)
-cat <<EOF | kubectl apply -f -
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: gohookbridge-server
-spec:
-  rules:
-  - host: webhook.example.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: gohookbridge-server
-            port:
-              number: 80
-EOF
-
-# 4. Verify the server is running
-kubectl get pods -l app=gohookbridge-server
-kubectl logs deployment/gohookbridge-server
-
-# 5. Generate a channel and send a test webhook
-CHANNEL=$(curl -s https://webhook.example.com/new)
-curl -X POST "https://webhook.example.com/${CHANNEL##*/}" \
-  -H "Content-Type: application/json" \
-  -d '{"event": "test"}'
-```
-
-#### Bootstrap configuration
-
-On first boot, you can initialize the Raft store with an admin user, projects, and global settings:
-
-```shell
-# Create a bootstrap ConfigMap
-kubectl create configmap gohookbridge-bootstrap --from-file=bootstrap.yaml
-
-# Edit the deployment to add:
-#   --bootstrap-config-file /etc/gohookbridge/bootstrap.yaml
-# and mount the ConfigMap at /etc/gohookbridge/
-```
-
-See the [README](./README.md#bootstrap-configuration) for the `bootstrap.yaml` format.
-
-### Client Deployment
-
-Deploy the gohookbridge client to relay webhooks from a server to an internal service:
-
-```shell
-# 1. Edit misc/gohookbridge-client-deployment.yaml
-#    Replace the arguments:
-#      - "https://yourserver.example.com/your-channel"  → your gohookbridge server or smee.io URL
-#      - "http://your-internal-service.namespace:8080"   → your internal service URL
-
-# 2. Apply the deployment
-kubectl apply -f misc/gohookbridge-client-deployment.yaml
-
-# 3. Verify
-kubectl get pods -l app=gohookbridge-client
-kubectl logs deployment/gohookbridge-client
-```
+See [`helm/gohookbridge/values.yaml`](./helm/gohookbridge/values.yaml) for the
+full option list, and the [README](./README.md#bootstrap-configuration) for the
+`bootstrap.yaml` format.
 
 ### High Availability Server (multi-instance with Raft + NATS)
 

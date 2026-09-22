@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	sessionCookieName = "gosmee_session"
+	sessionCookieName = "gohookbridge_session"
 	sessionMaxAge     = 86400
 )
 
