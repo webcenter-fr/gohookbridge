@@ -127,7 +127,7 @@ sequenceDiagram
 | `/meta/setup_end` | `time.Time` JSON | Setup mode expiry |
 | `/global/auth/oidc_providers` | `[]OIDCProvider` JSON | OIDC providers list |
 
-**Key Raft configuration (from `store/raft.go`):**
+**Key Raft configuration (from `internal/repository/raft.go`):**
 
 | Parameter | Value | Purpose |
 |---|---|---|
@@ -864,9 +864,9 @@ Credentials are never stored in plaintext. Instead, SHA-256 hashes of credential
 
 Failures are recorded at three authentication points in the server:
 
-1. **`apiLoginHandler`** — On invalid username/password (`server/auth.go`)
-2. **`channelAccessMiddleware`** — On invalid channel access token (`server/server.go`)
-3. **`handleWebhookPost`** — On invalid webhook signature (`server/server.go`)
+1. **`apiLoginHandler`** — On invalid username/password (`internal/handler/auth.go`)
+2. **`channelAccessMiddleware`** — On invalid channel access token (`internal/handler/middleware.go`)
+3. **`handleWebhookPost`** — On invalid webhook signature (`internal/handler/webhook.go`)
 
 ### Data Structures
 

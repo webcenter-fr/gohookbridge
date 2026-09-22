@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"github.com/webcenter-fr/gohookbridge/internal/service"
 	"github.com/webcenter-fr/gohookbridge/pkg/crypto"
 	"github.com/webcenter-fr/gohookbridge/pkg/encryption"
@@ -393,7 +395,11 @@ func HandleGenerateEncryptionKey(svc *service.Service) http.HandlerFunc {
 		channel := chi.URLParam(r, "channel")
 		ch, err := svc.GetChannel(ctx, channel)
 		if err != nil {
-			http.Error(w, "channel not found", http.StatusNotFound)
+			if errors.Is(err, domain.ErrNotFound) {
+				http.Error(w, "channel not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 

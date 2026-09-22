@@ -68,3 +68,23 @@ func TestSPAHandler_ServesIndexForDeepLink(t *testing.T) {
 		assert.Equal(t, "", w.Header().Get("Cache-Control"))
 	})
 }
+
+// TestSPAHandlerRealEmbed exercises the production embed path (requires the
+// generated internal/web/static assets from `make web-build`).
+func TestSPAHandlerRealEmbed(t *testing.T) {
+	t.Run("serves index.html for root path", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+		w := httptest.NewRecorder()
+		SPAHandler().ServeHTTP(w, req)
+		resp := w.Result()
+		assert.Equal(t, resp.StatusCode, http.StatusOK)
+	})
+
+	t.Run("serves index.html for unknown paths (SPA fallback)", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/some/unknown/path", nil)
+		w := httptest.NewRecorder()
+		SPAHandler().ServeHTTP(w, req)
+		resp := w.Result()
+		assert.Equal(t, resp.StatusCode, http.StatusOK)
+	})
+}

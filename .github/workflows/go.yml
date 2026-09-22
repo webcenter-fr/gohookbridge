@@ -18,7 +18,7 @@ jobs:
         with:
           node-version: 22
 
-      # gohookbridge/web embeds static/*, which is gitignored and therefore
+      # internal/web embeds static/*, which is gitignored and therefore
       # absent on a fresh checkout. Build the web assets before linting so the
       # embed directive resolves.
       - name: Build web assets

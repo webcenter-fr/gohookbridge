@@ -178,7 +178,11 @@ func (h *apiHandler) getChannel(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	p, err := h.svc.GetChannel(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "channel not found")
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "channel not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	domain.MigrateChannel(p)
@@ -325,7 +329,11 @@ func (h *apiHandler) getUser(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	u, err := h.svc.GetUser(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -491,7 +499,11 @@ func (h *apiHandler) getMe(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.svc.GetUserByUsername(ctx, username)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -522,7 +534,11 @@ func (h *apiHandler) generateSecret(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	ch, err := h.svc.GetChannel(ctx, id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "channel not found")
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "channel not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -582,7 +598,11 @@ func (h *apiHandler) listAccessTokens(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	ch, err := h.svc.GetChannel(ctx, id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "channel not found")
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "channel not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	tokens := make([]map[string]string, 0, len(ch.AccessTokens))
@@ -627,7 +647,11 @@ func (h *apiHandler) updateAccessMode(w http.ResponseWriter, r *http.Request) {
 	}
 	ch, err := h.svc.GetChannel(ctx, id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "channel not found")
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "channel not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if body.AccessMode == "token" && len(ch.AccessTokens) == 0 {

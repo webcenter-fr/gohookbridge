@@ -31,7 +31,7 @@ make build
 ./bin/gohookbridge --help
 ```
 
-`make build` runs `nuxt generate` for the admin UI, copies the static output into `gohookbridge/web/static/`, and embeds it into the Go binary. Node.js 22+ is required for this step.
+`make build` runs `nuxt generate` for the admin UI, copies the static output into `internal/web/static/`, and embeds it into the Go binary. Node.js 22+ is required for this step.
 
 Or install directly:
 
