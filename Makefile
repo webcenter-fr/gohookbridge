@@ -41,10 +41,15 @@ web-typecheck:
 web-test:
 	cd web && npm test
 
-# web-build is required before `go test` because gohookbridge/web embeds
+# web-build is required before `go test` because internal/web embeds
 # static/* and the directory is gitignored (absent on a fresh checkout).
 test: web-build web-test
-	@go test $(TEST_FLAGS) ./... 
+	@go test $(TEST_FLAGS) ./...
+
+.PHONY: test-integration
+test-integration:
+	@go test -tags integration ./tests/integration/...
+
 
 .PHONY: html-coverage
 html-coverage: ## generate html coverage
@@ -55,7 +60,7 @@ clean:
 	@rm -rf $(OUTPUT_DIR)/$(NAME) $(OUTPUT_DIR)/gohookbridge-client $(OUTPUT_DIR)/gohookbridge-proxy $(OUTPUT_DIR)/$(NAME)-aarch64-linux
 
 build: web-build clean
-	@test -f gohookbridge/web/static/index.html || (echo "ERROR: gohookbridge/web/static/index.html missing after web-build. Check nuxt generate output." && exit 1)
+	@test -f internal/web/static/index.html || (echo "ERROR: internal/web/static/index.html missing after web-build. Check nuxt generate output." && exit 1)
 	@echo "building."
 	@mkdir -p $(OUTPUT_DIR)/
 	@go build  $(FLAGS)  -o $(OUTPUT_DIR)/$(NAME) ./cmd/gohookbridge

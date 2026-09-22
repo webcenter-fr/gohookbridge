@@ -2,6 +2,7 @@ version: "2"
 run:
   build-tags:
     - e2e
+    - integration
 linters:
   enable:
     - asasalint
@@ -80,11 +81,8 @@ linters:
       - linters:
           - gosec
         path: _test\.go
-      - path: pkg/resolve/resolve.go
-        text: don't use `init` function
     paths:
       - vendor
-      - pkg/provider/gitea/structs
       - third_party$
       - builtin$
       - examples$
@@ -100,7 +98,6 @@ formatters:
     generated: lax
     paths:
       - vendor
-      - pkg/provider/gitea/structs
       - third_party$
       - builtin$
       - examples$

@@ -7,4 +7,4 @@ web/node_modules
 web/.nuxt
 web/.output
 web/dist
-gohookbridge/web/static
+internal/web/static
