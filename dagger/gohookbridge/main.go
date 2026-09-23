@@ -40,8 +40,11 @@ const (
 	// (AGENTS.local.md: k3s v1.33.6).
 	k3sImage = "rancher/k3s:v1.33.6-k3s1"
 	// helmImage / kubectlImage / curlImage are the in-pipeline tool images.
+	// kubectlImage lives in the bitnamilegacy org: upstream docker.io/bitnami
+	// images were archived and tag 1.33 no longer resolves there (same image,
+	// legacy org).
 	helmImage    = "alpine/helm:3.17.2"
-	kubectlImage = "bitnami/kubectl:1.33"
+	kubectlImage = "bitnamilegacy/kubectl:1.33"
 	curlImage    = "alpine:3.21"
 )
 
@@ -228,7 +231,7 @@ func (m *Gohookbridge) Ci(
 		if err != nil {
 			return "", err
 		}
-		localRef := localImageRef + ":" + resolved
+		localRef := localPushRef + ":" + resolved
 		if _, err := built.GetContainer().Publish(ctx, localRef, dagger.ContainerPublishOpts{
 			RegistryService: registrySvc,
 		}); err != nil {
