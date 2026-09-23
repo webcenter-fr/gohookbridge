@@ -106,6 +106,12 @@ docker run ghcr.io/webcenter-fr/gohookbridge:latest
 docker run -d -p 3026:3026 --restart always --name example.org ghcr.io/webcenter-fr/gohookbridge:latest server --port 3026 --address 0.0.0.0 --public-url https://example.org
 ```
 
+## Dagger pipeline (CI/CD)
+
+- Build, publish to GHCR, and validate on an ephemeral k3s cluster with `dagger call -m dagger/gohookbridge ci --source . --version <v>` (a Dagger module consuming `disaster37/dagger-library-go/image`; image tagged with the caller-resolved version).
+- Requires a Docker daemon; the GHCR push reads `--registry-username`/`--registry-password`.
+- Validation report redirected to `tmp/dagger-validation-report.md`.
+
 ### GO
 
 ```shell
