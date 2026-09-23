@@ -536,7 +536,11 @@ func initDevAdmin(ctx context.Context, svc *service.Service, password, raftDir s
 		return nil
 	}
 	if password == "" {
-		password = service.GenerateRandomHex()
+		var err error
+		password, err = service.GenerateRandomHex()
+		if err != nil {
+			return fmt.Errorf("generate dev admin password: %w", err)
+		}
 	}
 	if err := svc.CreateDevAdmin(ctx, password); err != nil {
 		return fmt.Errorf("create dev admin: %w", err)

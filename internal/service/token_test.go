@@ -16,7 +16,8 @@ func newTokenService(t *testing.T) *Service {
 }
 
 func TestGenerateAccessToken(t *testing.T) {
-	raw, hash := GenerateAccessToken()
+	raw, hash, err := GenerateAccessToken()
+	assert.NilError(t, err)
 	assert.Assert(t, len(raw) > 0)
 	assert.Assert(t, len(hash) > 0)
 	assert.Assert(t, raw != hash, "raw and hash should be different")

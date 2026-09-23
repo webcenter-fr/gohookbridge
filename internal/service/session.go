@@ -71,8 +71,10 @@ func DecodeSession(tokenStr string, secret [32]byte) (*SessionToken, error) {
 }
 
 // GenerateRandomHex returns a random 16-byte value encoded as 32 hex chars.
-func GenerateRandomHex() string {
+func GenerateRandomHex() (string, error) {
 	b := make([]byte, 16)
-	rand.Read(b)
-	return fmt.Sprintf("%x", b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate random hex: %w", err)
+	}
+	return fmt.Sprintf("%x", b), nil
 }

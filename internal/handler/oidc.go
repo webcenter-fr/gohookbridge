@@ -80,8 +80,16 @@ func (h *OIDCHandler) LoginHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		redirect := safeRedirectPath(r.URL.Query().Get("redirect"))
 
-		state := service.GenerateRandomHex()
-		nonce := service.GenerateRandomHex()
+		state, err := service.GenerateRandomHex()
+		if err != nil {
+			http.Error(w, "Failed to generate state: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		nonce, err := service.GenerateRandomHex()
+		if err != nil {
+			http.Error(w, "Failed to generate nonce: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 
 		stateValue := fmt.Sprintf("%s|%s", state, redirect)
 		http.SetCookie(w, &http.Cookie{

@@ -6,19 +6,22 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
 	"time"
 
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"github.com/webcenter-fr/gohookbridge/pkg/uuid"
 )
 
-func GenerateAccessToken() (raw string, hash string) {
+func GenerateAccessToken() (raw string, hash string, err error) {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", "", fmt.Errorf("generate access token: %w", err)
+	}
 	raw = hex.EncodeToString(b)
 	h := sha256.Sum256([]byte(raw))
 	hash = hex.EncodeToString(h[:])
-	return raw, hash
+	return raw, hash, nil
 }
 
 func HashToken(raw string) string {
@@ -34,7 +37,10 @@ func (s *Service) CreateAccessToken(ctx context.Context, channelID string, name 
 	if err != nil {
 		return "", domain.ChannelAccessToken{}, err
 	}
-	raw, hash := GenerateAccessToken()
+	raw, hash, err := GenerateAccessToken()
+	if err != nil {
+		return "", domain.ChannelAccessToken{}, err
+	}
 	t := domain.ChannelAccessToken{
 		ID:        uuid.GenerateUUID(),
 		Name:      name,

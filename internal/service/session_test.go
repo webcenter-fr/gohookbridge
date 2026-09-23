@@ -83,8 +83,10 @@ func TestDeriveSessionSecret(t *testing.T) {
 }
 
 func TestGenerateRandomHex(t *testing.T) {
-	s1 := GenerateRandomHex()
-	s2 := GenerateRandomHex()
+	s1, err := GenerateRandomHex()
+	assert.NilError(t, err)
+	s2, err := GenerateRandomHex()
+	assert.NilError(t, err)
 	assert.Assert(t, s1 != "")
 	assert.Assert(t, s1 != s2)
 	assert.Equal(t, len(s1), 32)
