@@ -7,14 +7,17 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"github.com/webcenter-fr/gohookbridge/internal/service"
 )
 
 const oidcStateCookieName = "oidc_state"
+const oidcNonceCookieName = "oidc_nonce"
 
 type OIDCDiscovery struct {
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
@@ -28,6 +31,7 @@ type OIDCHandler struct {
 	SessionSecret [32]byte
 	PublicURL     string
 	SecureCookies bool
+	verifier      *oidc.IDTokenVerifier
 }
 
 func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, publicURL string, secureCookies bool) (*OIDCHandler, error) {
@@ -52,12 +56,20 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 	if err := json.Unmarshal(body, &disc); err != nil {
 		return nil, err
 	}
+	// go-oidc provider for ID-token verification (signature/JWKS, iss, aud,
+	// exp). The manual OIDCDiscovery above is kept for token exchange and
+	// userinfo.
+	p, err := oidc.NewProvider(context.Background(), provider.IssuerURL)
+	if err != nil {
+		return nil, fmt.Errorf("oidc provider discovery: %w", err)
+	}
 	return &OIDCHandler{
 		Provider:      provider,
 		Discovery:     &disc,
 		SessionSecret: sessionSecret,
 		PublicURL:     publicURL,
 		SecureCookies: secureCookies,
+		verifier:      p.Verifier(&oidc.Config{ClientID: provider.ClientID}),
 	}, nil
 }
 
@@ -97,6 +109,15 @@ func (h *OIDCHandler) LoginHandler() http.HandlerFunc {
 		http.SetCookie(w, &http.Cookie{
 			Name:     oidcStateCookieName,
 			Value:    stateValue,
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   h.SecureCookies,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   300,
+		})
+		http.SetCookie(w, &http.Cookie{
+			Name:     oidcNonceCookieName,
+			Value:    nonce,
 			Path:     "/",
 			HttpOnly: true,
 			Secure:   h.SecureCookies,
@@ -152,6 +173,49 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 			return
 		}
 
+		// Prefer the verified ID token when the provider returns one (CWE-345).
+		rawIDToken, _ := token["id_token"].(string)
+		if rawIDToken != "" {
+			nonce := ""
+			if c, cookieErr := r.Cookie(oidcNonceCookieName); cookieErr == nil {
+				nonce = c.Value
+			}
+			idToken, claims, verifyErr := h.verifyIDToken(r.Context(), rawIDToken, nonce)
+			if verifyErr != nil {
+				// Log the internal detail; never leak validation internals to
+				// the client.
+				fmt.Fprintf(os.Stderr, "WARNING: oidc id token validation failed: %v\n", verifyErr)
+				http.Error(w, "ID token validation failed", http.StatusBadRequest)
+				return
+			}
+			username := ""
+			if email, emailOK := claims["email"].(string); emailOK {
+				username = email
+			}
+			if username == "" {
+				username = idToken.Subject
+			}
+			groups := extractGroupsFromToken(claims, h.Provider.GroupsClaim)
+
+			sessionTok := &service.SessionToken{
+				Username:  username,
+				Method:    "oidc",
+				Provider:  h.Provider.ID,
+				ExpiresAt: time.Now().Unix() + sessionMaxAge,
+				Groups:    groups,
+			}
+			encoded, err := service.EncodeSession(sessionTok, h.SessionSecret)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			clearOIDCNonceCookie(w, h.SecureCookies)
+			setSessionCookie(w, encoded, h.SecureCookies)
+			http.Redirect(w, r, redirect, http.StatusFound)
+			return
+		}
+
+		// No id_token returned: fall back to the userinfo flow (unchanged).
 		userInfo, err := h.getUserInfo(accessToken)
 		if err != nil {
 			http.Error(w, "Userinfo failed: "+err.Error(), http.StatusInternalServerError)
@@ -179,9 +243,28 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		clearOIDCNonceCookie(w, h.SecureCookies)
 		setSessionCookie(w, encoded, h.SecureCookies)
 		http.Redirect(w, r, redirect, http.StatusFound)
 	}
+}
+
+// verifyIDToken validates the ID token (signature/JWKS, iss, aud, exp) and the
+// nonce. It intentionally does NOT fall back to userinfo on failure: a provider
+// that returns an id_token must produce a verifiable one.
+func (h *OIDCHandler) verifyIDToken(ctx context.Context, rawIDToken, nonce string) (*oidc.IDToken, map[string]any, error) {
+	idToken, err := h.verifier.Verify(ctx, rawIDToken)
+	if err != nil {
+		return nil, nil, fmt.Errorf("verify id token: %w", err)
+	}
+	if nonce == "" || idToken.Nonce != nonce {
+		return nil, nil, fmt.Errorf("id token nonce mismatch")
+	}
+	var claims map[string]any
+	if err := idToken.Claims(&claims); err != nil {
+		return nil, nil, fmt.Errorf("decode id token claims: %w", err)
+	}
+	return idToken, claims, nil
 }
 
 func (h *OIDCHandler) exchangeCode(code string, r *http.Request) (map[string]any, error) {
@@ -239,6 +322,18 @@ func (h *OIDCHandler) getUserInfo(accessToken string) (map[string]any, error) {
 func clearOIDCStateCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     oidcStateCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+func clearOIDCNonceCookie(w http.ResponseWriter, secure bool) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     oidcNonceCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,

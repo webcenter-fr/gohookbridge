@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/coreos/go-oidc/v3/oidc/oidctest"
 	"github.com/go-chi/chi/v5"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"github.com/webcenter-fr/gohookbridge/internal/service"
@@ -137,23 +141,14 @@ func TestClearSessionCookieSecureFlag(t *testing.T) {
 func TestOIDCStateCookieSecureFlag(t *testing.T) {
 	secret := service.DeriveSessionSecret("test-secret-for-oidc-secure-flag-32")
 	provider := domain.OIDCProvider{
-		ID:        "test",
-		Name:      "TestProvider",
-		ClientID:  "test-client",
-		IssuerURL: "https://example.com",
-		Scopes:    []string{"openid"},
+		ID:       "test",
+		Name:     "TestProvider",
+		ClientID: "test-client",
+		Scopes:   []string{"openid"},
 	}
 
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"authorization_endpoint": "https://example.com/auth",
-				"token_endpoint":         "https://example.com/token",
-				"userinfo_endpoint":      "https://example.com/userinfo",
-			})
-		}
-	}))
+	mock := newOIDCMock(t)
+	mockServer := mock.start()
 	defer mockServer.Close()
 	provider.IssuerURL = mockServer.URL
 
@@ -170,6 +165,11 @@ func TestOIDCStateCookieSecureFlag(t *testing.T) {
 			assert.Assert(t, stateCookie != nil)
 			assert.Equal(t, stateCookie.Secure, secure)
 			assert.Assert(t, stateCookie.HttpOnly)
+
+			nonceCookie := cookieByName(t, w, oidcNonceCookieName)
+			assert.Assert(t, nonceCookie != nil)
+			assert.Equal(t, nonceCookie.Secure, secure)
+			assert.Assert(t, nonceCookie.HttpOnly)
 		})
 	}
 }
@@ -194,27 +194,104 @@ func TestLogoutHandler(t *testing.T) {
 	assert.Assert(t, sessionCookie.MaxAge < 0)
 }
 
+// oidcMock is a composite OIDC test provider: it serves a full discovery
+// document, a JWKS endpoint (via oidctest), plus configurable token and
+// userinfo endpoints. ID tokens are signed with oidcMock.signIDToken.
+type oidcMock struct {
+	t          *testing.T
+	priv       *rsa.PrivateKey
+	keyID      string
+	issuerURL  string
+	tokenFn    func() map[string]any
+	userinfo   map[string]any
+	onUserinfo func()
+}
+
+func newOIDCMock(t *testing.T) *oidcMock {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	assert.NilError(t, err)
+	return &oidcMock{
+		t:        t,
+		priv:     priv,
+		keyID:    "test-key",
+		userinfo: map[string]any{"sub": "user123", "email": "user@example.com"},
+	}
+}
+
+func (m *oidcMock) signIDToken(claims map[string]any) string {
+	m.t.Helper()
+	raw, err := json.Marshal(claims)
+	assert.NilError(m.t, err)
+	return oidctest.SignIDToken(m.priv, m.keyID, oidc.RS256, string(raw))
+}
+
+// idTokenClaims builds standard claims (iss, aud, sub, email, exp, nonce) for
+// the given nonce value.
+func (m *oidcMock) idTokenClaims(nonce string) map[string]any {
+	return map[string]any{
+		"iss":   m.issuerURL,
+		"aud":   "test-client",
+		"sub":   "user123",
+		"email": "user@example.com",
+		"exp":   time.Now().Add(time.Hour).Unix(),
+		"nonce": nonce,
+	}
+}
+
+func (m *oidcMock) start() *httptest.Server {
+	m.t.Helper()
+	oidcSrv := &oidctest.Server{
+		PublicKeys: []oidctest.PublicKey{
+			{PublicKey: m.priv.Public(), KeyID: m.keyID, Algorithm: oidc.RS256},
+		},
+	}
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer":                 srv.URL,
+				"authorization_endpoint": srv.URL + "/auth",
+				"token_endpoint":         srv.URL + "/token",
+				"userinfo_endpoint":      srv.URL + "/userinfo",
+				"jwks_uri":               srv.URL + "/keys",
+			})
+		case "/keys":
+			oidcSrv.ServeHTTP(w, r)
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			resp := map[string]any{"access_token": "mock-access-token", "token_type": "Bearer"}
+			if m.tokenFn != nil {
+				resp = m.tokenFn()
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/userinfo":
+			if m.onUserinfo != nil {
+				m.onUserinfo()
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(m.userinfo)
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	m.issuerURL = srv.URL
+	return srv
+}
+
 func TestOIDCLoginHandler(t *testing.T) {
 	secret := service.DeriveSessionSecret("test-secret-for-oidc-login-32")
 	provider := domain.OIDCProvider{
-		ID:        "test",
-		Name:      "TestProvider",
-		ClientID:  "test-client",
-		IssuerURL: "https://example.com",
-		Scopes:    []string{"openid", "profile"},
+		ID:       "test",
+		Name:     "TestProvider",
+		ClientID: "test-client",
+		Scopes:   []string{"openid", "profile"},
 	}
 
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"authorization_endpoint": "https://example.com/auth",
-				"token_endpoint":         "https://example.com/token",
-				"userinfo_endpoint":      "https://example.com/userinfo",
-			})
-			return
-		}
-	}))
+	mock := newOIDCMock(t)
+	mockServer := mock.start()
 	defer mockServer.Close()
 
 	provider.IssuerURL = mockServer.URL
@@ -227,56 +304,40 @@ func TestOIDCLoginHandler(t *testing.T) {
 	assert.Equal(t, w.Code, http.StatusFound)
 
 	loc := w.Header().Get("Location")
-	assert.Assert(t, strings.HasPrefix(loc, "https://example.com/auth"))
+	assert.Assert(t, strings.HasPrefix(loc, mockServer.URL+"/auth"))
 	assert.Assert(t, strings.Contains(loc, "response_type=code"))
 	assert.Assert(t, strings.Contains(loc, "client_id=test-client"))
 	assert.Assert(t, strings.Contains(loc, "scope=openid+profile"))
 	assert.Assert(t, strings.Contains(loc, "state="))
+	assert.Assert(t, strings.Contains(loc, "nonce="))
 	assert.Assert(t, strings.Contains(loc, "redirect_uri="))
 
 	cookies := w.Result().Cookies()
-	var stateCookie *http.Cookie
+	var stateCookie, nonceCookie *http.Cookie
 	for _, c := range cookies {
-		if c.Name == oidcStateCookieName {
+		switch c.Name {
+		case oidcStateCookieName:
 			stateCookie = c
-			break
+		case oidcNonceCookieName:
+			nonceCookie = c
 		}
 	}
 	assert.Assert(t, stateCookie != nil)
 	assert.Assert(t, stateCookie.HttpOnly)
 	assert.Assert(t, stateCookie.Secure)
 	assert.Equal(t, stateCookie.SameSite, http.SameSiteLaxMode)
+	assert.Assert(t, nonceCookie != nil)
+	assert.Assert(t, nonceCookie.HttpOnly)
+	assert.Assert(t, nonceCookie.Secure)
+	assert.Equal(t, nonceCookie.SameSite, http.SameSiteLaxMode)
+	assert.Equal(t, nonceCookie.MaxAge, 300)
 }
 
 func TestOIDCCallbackHandler(t *testing.T) {
 	secret := service.DeriveSessionSecret("test-secret-for-oidc-callback-32")
 
-	var mockServer *httptest.Server
-	mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration"):
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"authorization_endpoint": mockServer.URL + "/auth",
-				"token_endpoint":         mockServer.URL + "/token",
-				"userinfo_endpoint":      mockServer.URL + "/userinfo",
-			})
-		case strings.HasSuffix(r.URL.Path, "/token"):
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"access_token": "mock-access-token",
-				"token_type":   "Bearer",
-			})
-		case strings.HasSuffix(r.URL.Path, "/userinfo"):
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"sub":   "user123",
-				"email": "user@example.com",
-			})
-		default:
-			http.Error(w, "not found", http.StatusNotFound)
-		}
-	}))
+	mock := newOIDCMock(t)
+	mockServer := mock.start()
 	defer mockServer.Close()
 
 	provider := domain.OIDCProvider{
@@ -322,20 +383,164 @@ func TestOIDCCallbackHandler(t *testing.T) {
 	assert.Assert(t, sessionCookie.Secure)
 }
 
+func TestOIDCCallback_IDTokenVerified(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-idtoken-32")
+
+	mock := newOIDCMock(t)
+	nonce := "test-nonce-value"
+	mock.tokenFn = func() map[string]any {
+		return map[string]any{
+			"access_token": "mock-access-token",
+			"token_type":   "Bearer",
+			"id_token":     mock.signIDToken(mock.idTokenClaims(nonce)),
+		}
+	}
+	userinfoCalls := 0
+	mock.onUserinfo = func() { userinfoCalls++ }
+	mockServer := mock.start()
+	defer mockServer.Close()
+
+	provider := domain.OIDCProvider{
+		ID:           "test",
+		Name:         "TestProvider",
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		IssuerURL:    mockServer.URL,
+		Scopes:       []string{"openid"},
+	}
+
+	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
+	assert.NilError(t, err)
+
+	state := "valid-state-value"
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
+	req.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: state + "|/", Path: "/", HttpOnly: true})
+	req.AddCookie(&http.Cookie{Name: oidcNonceCookieName, Value: nonce, Path: "/", HttpOnly: true})
+	w := httptest.NewRecorder()
+	handler.CallbackHandler().ServeHTTP(w, req)
+	assert.Equal(t, w.Code, http.StatusFound)
+
+	sessionCookie := cookieByName(t, w, sessionCookieName)
+	assert.Assert(t, sessionCookie != nil)
+	assert.Assert(t, sessionCookie.Value != "")
+
+	// The session must be built from the ID token claims, without a userinfo
+	// call.
+	tok, err := service.DecodeSession(sessionCookie.Value, secret)
+	assert.NilError(t, err)
+	assert.Equal(t, tok.Username, "user@example.com")
+	assert.Equal(t, userinfoCalls, 0, "id_token flow must not call userinfo")
+}
+
+func TestOIDCCallback_IDTokenNonceMismatch(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-nonce-mm-32")
+
+	mock := newOIDCMock(t)
+	mock.tokenFn = func() map[string]any {
+		return map[string]any{
+			"access_token": "mock-access-token",
+			"id_token":     mock.signIDToken(mock.idTokenClaims("attacker-nonce")),
+		}
+	}
+	mockServer := mock.start()
+	defer mockServer.Close()
+
+	provider := domain.OIDCProvider{
+		ID:           "test",
+		Name:         "TestProvider",
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		IssuerURL:    mockServer.URL,
+		Scopes:       []string{"openid"},
+	}
+
+	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
+	assert.NilError(t, err)
+
+	state := "valid-state-value"
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
+	req.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: state + "|/", Path: "/", HttpOnly: true})
+	req.AddCookie(&http.Cookie{Name: oidcNonceCookieName, Value: "expected-nonce", Path: "/", HttpOnly: true})
+	w := httptest.NewRecorder()
+	handler.CallbackHandler().ServeHTTP(w, req)
+	assert.Equal(t, w.Code, http.StatusBadRequest, "nonce mismatch must be a hard reject (no userinfo fallback)")
+
+	assert.Assert(t, cookieByName(t, w, sessionCookieName) == nil, "no session cookie on nonce mismatch")
+}
+
+func TestOIDCCallback_IDTokenMissingNonceCookie(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-nonce-mc-32")
+
+	mock := newOIDCMock(t)
+	mock.tokenFn = func() map[string]any {
+		return map[string]any{
+			"access_token": "mock-access-token",
+			"id_token":     mock.signIDToken(mock.idTokenClaims("whatever")),
+		}
+	}
+	mockServer := mock.start()
+	defer mockServer.Close()
+
+	provider := domain.OIDCProvider{
+		ID:           "test",
+		Name:         "TestProvider",
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		IssuerURL:    mockServer.URL,
+		Scopes:       []string{"openid"},
+	}
+
+	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
+	assert.NilError(t, err)
+
+	state := "valid-state-value"
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
+	req.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: state + "|/", Path: "/", HttpOnly: true})
+	w := httptest.NewRecorder()
+	handler.CallbackHandler().ServeHTTP(w, req)
+	assert.Equal(t, w.Code, http.StatusBadRequest, "id_token without nonce cookie must be rejected")
+}
+
+func TestOIDCCallback_TamperedIDTokenRejected(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-tamper-32")
+
+	mock := newOIDCMock(t)
+	mock.tokenFn = func() map[string]any {
+		return map[string]any{
+			"access_token": "mock-access-token",
+			"id_token":     mock.signIDToken(mock.idTokenClaims("expected-nonce")) + "tampered",
+		}
+	}
+	mockServer := mock.start()
+	defer mockServer.Close()
+
+	provider := domain.OIDCProvider{
+		ID:           "test",
+		Name:         "TestProvider",
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		IssuerURL:    mockServer.URL,
+		Scopes:       []string{"openid"},
+	}
+
+	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
+	assert.NilError(t, err)
+
+	state := "valid-state-value"
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
+	req.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: state + "|/", Path: "/", HttpOnly: true})
+	req.AddCookie(&http.Cookie{Name: oidcNonceCookieName, Value: "expected-nonce", Path: "/", HttpOnly: true})
+	w := httptest.NewRecorder()
+	handler.CallbackHandler().ServeHTTP(w, req)
+	assert.Equal(t, w.Code, http.StatusBadRequest, "tampered id_token must be rejected")
+	assert.Assert(t, cookieByName(t, w, sessionCookieName) == nil)
+}
+
 func TestOIDCCallback_InvalidState(t *testing.T) {
 	secret := service.DeriveSessionSecret("test-secret-for-oidc-invalid-32")
-	var mockServer *httptest.Server
-	mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"authorization_endpoint": mockServer.URL + "/auth",
-				"token_endpoint":         mockServer.URL + "/token",
-				"userinfo_endpoint":      mockServer.URL + "/userinfo",
-			})
-			return
-		}
-	}))
+
+	mock := newOIDCMock(t)
+	mockServer := mock.start()
 	defer mockServer.Close()
 
 	provider := domain.OIDCProvider{
@@ -385,24 +590,14 @@ func TestSafeRedirectPath(t *testing.T) {
 func TestOIDCLoginHandler_RejectsExternalRedirect(t *testing.T) {
 	secret := service.DeriveSessionSecret("test-secret-for-oidc-redirect-32")
 	provider := domain.OIDCProvider{
-		ID:        "test",
-		Name:      "TestProvider",
-		ClientID:  "test-client",
-		IssuerURL: "https://example.com",
-		Scopes:    []string{"openid"},
+		ID:       "test",
+		Name:     "TestProvider",
+		ClientID: "test-client",
+		Scopes:   []string{"openid"},
 	}
 
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"authorization_endpoint": "https://example.com/auth",
-				"token_endpoint":         "https://example.com/token",
-				"userinfo_endpoint":      "https://example.com/userinfo",
-			})
-			return
-		}
-	}))
+	mock := newOIDCMock(t)
+	mockServer := mock.start()
 	defer mockServer.Close()
 
 	provider.IssuerURL = mockServer.URL
@@ -432,29 +627,9 @@ func TestOIDCLoginHandler_RejectsExternalRedirect(t *testing.T) {
 
 func TestOIDCCallbackHandler_RejectsExternalRedirect(t *testing.T) {
 	secret := service.DeriveSessionSecret("test-secret-for-oidc-cb-redirect-32")
-	var mockServer *httptest.Server
-	mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration"):
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"authorization_endpoint": mockServer.URL + "/auth",
-				"token_endpoint":         mockServer.URL + "/token",
-				"userinfo_endpoint":      mockServer.URL + "/userinfo",
-			})
-		case strings.HasSuffix(r.URL.Path, "/token"):
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"access_token": "mock-access-token",
-			})
-		case strings.HasSuffix(r.URL.Path, "/userinfo"):
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"sub":   "user123",
-				"email": "user@example.com",
-			})
-		}
-	}))
+
+	mock := newOIDCMock(t)
+	mockServer := mock.start()
 	defer mockServer.Close()
 
 	provider := domain.OIDCProvider{
