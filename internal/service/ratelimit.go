@@ -14,8 +14,9 @@ import (
 
 // RateLimiter is a sliding-window per-IP request limiter.
 type RateLimiter struct {
-	mu      sync.Mutex
-	entries map[string][]time.Time
+	mu        sync.Mutex
+	entries   map[string][]time.Time
+	lastSweep time.Time
 }
 
 func NewRateLimiter() *RateLimiter {
@@ -24,11 +25,36 @@ func NewRateLimiter() *RateLimiter {
 	}
 }
 
+// Sweep removes IP keys that have no timestamps within the last windowSeconds.
+func (rl *RateLimiter) Sweep(windowSeconds int) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.sweep(time.Now(), clampWindow(windowSeconds))
+}
+
+func (rl *RateLimiter) sweep(now time.Time, windowSeconds int) {
+	cutoff := now.Add(-time.Duration(windowSeconds) * time.Second)
+	for ip, times := range rl.entries {
+		if len(times) == 0 || times[len(times)-1].Before(cutoff) {
+			delete(rl.entries, ip)
+		}
+	}
+}
+
+func (rl *RateLimiter) maybeSweep(now time.Time, windowSeconds int) {
+	if !rl.lastSweep.IsZero() && now.Sub(rl.lastSweep) < time.Duration(windowSeconds)*time.Second {
+		return
+	}
+	rl.lastSweep = now
+	rl.sweep(now, windowSeconds)
+}
+
 func (rl *RateLimiter) Allow(ip string, maxRequests int, windowSeconds int) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
 	now := time.Now()
+	rl.maybeSweep(now, clampWindow(windowSeconds))
 	windowStart := now.Add(-time.Duration(windowSeconds) * time.Second)
 
 	times := rl.entries[ip]
@@ -61,9 +87,10 @@ type BanInfo struct {
 
 // BanTracker counts credential failures per IP and bans suspicious clients.
 type BanTracker struct {
-	mu       sync.Mutex
-	failures map[string][]banEntry
-	banned   map[string]time.Time
+	mu        sync.Mutex
+	failures  map[string][]banEntry
+	banned    map[string]time.Time
+	lastSweep time.Time
 }
 
 func NewBanTracker() *BanTracker {
@@ -116,7 +143,7 @@ func (bt *BanTracker) IsBanned(ip string) bool {
 	return false
 }
 
-func (bt *BanTracker) banIfSuspicious(ip string, maxUniqueFailures int, banDurationSeconds int) bool {
+func (bt *BanTracker) banIfSuspicious(ip string, maxUniqueFailures, banDurationSeconds, windowSeconds int) bool {
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
 
@@ -126,7 +153,7 @@ func (bt *BanTracker) banIfSuspicious(ip string, maxUniqueFailures int, banDurat
 	fingerprints := make(map[string]struct{})
 	valid := bt.failures[ip][:0]
 	for _, e := range bt.failures[ip] {
-		if now.Sub(e.timestamp) <= time.Duration(bt.getWindowSeconds(ip))*time.Second {
+		if now.Sub(e.timestamp) <= time.Duration(windowSeconds)*time.Second {
 			valid = append(valid, e)
 			fingerprints[e.fingerprint] = struct{}{}
 		}
@@ -140,10 +167,40 @@ func (bt *BanTracker) banIfSuspicious(ip string, maxUniqueFailures int, banDurat
 	return false
 }
 
-// getWindowSeconds returns the window seconds for the given IP's failure tracking.
-// This is a helper used internally while holding the lock, so it returns a default.
-func (bt *BanTracker) getWindowSeconds(_ string) int {
-	return 300
+// Sweep removes expired failure entries and expired bans.
+func (bt *BanTracker) Sweep(windowSeconds int) {
+	bt.mu.Lock()
+	defer bt.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-time.Duration(clampWindow(windowSeconds)) * time.Second)
+	for ip, entries := range bt.failures {
+		kept := entries[:0]
+		for _, e := range entries {
+			if e.timestamp.After(cutoff) {
+				kept = append(kept, e)
+			}
+		}
+		if len(kept) == 0 {
+			delete(bt.failures, ip)
+		} else {
+			bt.failures[ip] = kept
+		}
+	}
+	for ip, until := range bt.banned {
+		if !now.Before(until) {
+			delete(bt.banned, ip)
+		}
+	}
+	bt.lastSweep = now
+}
+
+// clampWindow guards against a zero/unset window config, falling back to the
+// domain default (300s).
+func clampWindow(seconds int) int {
+	if seconds <= 0 {
+		return 300 // matches domain.DefaultGlobalConfig BanWindowSeconds
+	}
+	return seconds
 }
 
 func (bt *BanTracker) ListBans() []BanInfo {
@@ -227,8 +284,10 @@ func (s *Service) RecordCredentialFailure(ctx context.Context, tracker *BanTrack
 	}
 
 	ipStr := ip.String()
-	tracker.recordFailure(ipStr, fingerprint, cfg.Server.BanWindowSeconds)
-	tracker.banIfSuspicious(ipStr, cfg.Server.BanMaxUniqueFailures, cfg.Server.BanDurationSeconds)
+	window := clampWindow(cfg.Server.BanWindowSeconds)
+	tracker.Sweep(cfg.Server.BanWindowSeconds)
+	tracker.recordFailure(ipStr, fingerprint, window)
+	tracker.banIfSuspicious(ipStr, cfg.Server.BanMaxUniqueFailures, cfg.Server.BanDurationSeconds, window)
 }
 
 func FingerprintLogin(username string) string {
