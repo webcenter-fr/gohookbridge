@@ -31,6 +31,19 @@ func GetGroupsFromContext(ctx context.Context) []string {
 	return groups
 }
 
+// ChannelContext sets contextKeyChannelID from the "channel" URL param so
+// RequirePermission can scope channel:* permissions.
+func ChannelContext(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if channel := chi.URLParam(r, "channel"); channel != "" {
+			//nolint:revive,staticcheck // context keys are package-level string constants by design
+			ctx := context.WithValue(r.Context(), contextKeyChannelID, channel)
+			r = r.WithContext(ctx)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func RequirePermission(svc *service.Service, perm domain.Permission) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

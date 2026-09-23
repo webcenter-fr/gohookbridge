@@ -148,6 +148,22 @@ func TestServerEndToEndWebhookRelay(t *testing.T) {
 	assert.Assert(t, ok, "no webhook event relayed over SSE")
 	assert.Equal(t, string(relayedBody), string(payload))
 
+	// Operational endpoints must require an authenticated session even in
+	// setup mode (no session cookie sent → 401).
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/api/send/itest-channel"},
+		{http.MethodPost, "/api/channels/itest-channel/events/00112233/replay"},
+		{http.MethodPost, "/api/channels/itest-channel/generate-encryption-key"},
+	} {
+		req, err := http.NewRequestWithContext(runCtx, tc.method, baseURL+tc.path, nil)
+		assert.NilError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		assert.NilError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, resp.StatusCode, http.StatusUnauthorized, "%s %s should require auth", tc.method, tc.path)
+	}
+
 	// Shut the server down and make sure Run returns cleanly.
 	cancel()
 	select {

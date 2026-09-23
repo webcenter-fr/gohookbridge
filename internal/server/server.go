@@ -361,9 +361,19 @@ func NewServer(c *cli.Context) (*Server, error) {
 	apiRouter.Use(handler.LeaderForwardMiddleware(rs, c.Int("port")))
 	apiRouter.Use(handler.RequireAuthDynamic(svc, sessionSecret))
 	handler.RegisterAPIHandlers(apiRouter, svc)
-	apiRouter.Post("/send/{channel:"+handler.ChannelIDPattern+"}", handler.HandleTestPayloadSend(broker, svc))
-	apiRouter.Post("/channels/{channel:"+handler.ChannelIDPattern+"}/events/{eventId}/replay", handler.HandleEventReplay(broker, svc))
-	apiRouter.Post("/channels/{channel:"+handler.ChannelIDPattern+"}/generate-encryption-key", handler.HandleGenerateEncryptionKey(svc))
+	// Channel-write-gated operational endpoints (no setup-mode bypass: in setup
+	// mode there is no session, so RequirePermission returns 401).
+	apiRouter.Group(func(r chi.Router) {
+		r.Use(handler.ChannelContext) // first Use = outermost
+		r.Use(handler.RequirePermission(svc, domain.PermChannelWrite))
+		r.Post("/send/{channel:"+handler.ChannelIDPattern+"}", handler.HandleTestPayloadSend(broker, svc))
+		r.Post("/channels/{channel:"+handler.ChannelIDPattern+"}/events/{eventId:"+handler.EventIDPattern+"}/replay", handler.HandleEventReplay(broker, svc))
+	})
+	// Admin-only endpoint.
+	apiRouter.Group(func(r chi.Router) {
+		r.Use(handler.RequirePermission(svc, domain.PermAll))
+		r.Post("/channels/{channel:"+handler.ChannelIDPattern+"}/generate-encryption-key", handler.HandleGenerateEncryptionKey(svc))
+	})
 	apiRouter.Group(func(r chi.Router) {
 		r.Use(handler.RequirePermission(svc, domain.PermGlobalRead))
 		r.Get("/bans", handler.APIBansHandler(banTrackerInst))
