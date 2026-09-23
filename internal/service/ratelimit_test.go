@@ -198,6 +198,29 @@ func TestBanTrackerSweepRemovesExpired(t *testing.T) {
 	assert.Equal(t, true, okBanNew)
 }
 
+func TestBanTrackerMaybeSweepThrottled(t *testing.T) {
+	bt := NewBanTracker()
+	bt.failures["192.0.2.1"] = []banEntry{{fingerprint: "fp-old", timestamp: time.Now().Add(-10 * time.Minute)}}
+
+	// First sweep within the window removes the expired entry.
+	bt.maybeSweep(time.Now(), 60)
+	_, ok := bt.failures["192.0.2.1"]
+	assert.Equal(t, false, ok)
+
+	// A second sweep within the same window is throttled: the failure hot
+	// path must not pay a full-map scan on every attempt.
+	bt.failures["192.0.2.1"] = []banEntry{{fingerprint: "fp-old", timestamp: time.Now().Add(-10 * time.Minute)}}
+	bt.maybeSweep(time.Now(), 60)
+	_, ok = bt.failures["192.0.2.1"]
+	assert.Equal(t, true, ok, "sweep must be throttled within the same window")
+
+	// Once the window elapses the sweep runs again.
+	bt.lastSweep = time.Now().Add(-2 * time.Minute)
+	bt.maybeSweep(time.Now(), 60)
+	_, ok = bt.failures["192.0.2.1"]
+	assert.Equal(t, false, ok, "sweep must run again after the window elapses")
+}
+
 func TestClampWindow(t *testing.T) {
 	assert.Equal(t, 300, clampWindow(0))
 	assert.Equal(t, 300, clampWindow(-5))

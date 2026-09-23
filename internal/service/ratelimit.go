@@ -172,7 +172,14 @@ func (bt *BanTracker) Sweep(windowSeconds int) {
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
 	now := time.Now()
-	cutoff := now.Add(-time.Duration(clampWindow(windowSeconds)) * time.Second)
+	bt.lastSweep = now
+	bt.sweep(now, clampWindow(windowSeconds))
+}
+
+// sweep removes expired failure entries and expired bans without touching the
+// throttle state; callers must hold bt.mu.
+func (bt *BanTracker) sweep(now time.Time, windowSeconds int) {
+	cutoff := now.Add(-time.Duration(windowSeconds) * time.Second)
 	for ip, entries := range bt.failures {
 		kept := entries[:0]
 		for _, e := range entries {
@@ -191,7 +198,17 @@ func (bt *BanTracker) Sweep(windowSeconds int) {
 			delete(bt.banned, ip)
 		}
 	}
+}
+
+// maybeSweep runs sweep at most once per window so that the credential-failure
+// hot path (webhooks, channel tokens) cannot be turned into a per-failure
+// full-map scan by an attacker forcing failures.
+func (bt *BanTracker) maybeSweep(now time.Time, windowSeconds int) {
+	if !bt.lastSweep.IsZero() && now.Sub(bt.lastSweep) < time.Duration(windowSeconds)*time.Second {
+		return
+	}
 	bt.lastSweep = now
+	bt.sweep(now, windowSeconds)
 }
 
 // clampWindow guards against a zero/unset window config, falling back to the
@@ -285,7 +302,7 @@ func (s *Service) RecordCredentialFailure(ctx context.Context, tracker *BanTrack
 
 	ipStr := ip.String()
 	window := clampWindow(cfg.Server.BanWindowSeconds)
-	tracker.Sweep(cfg.Server.BanWindowSeconds)
+	tracker.maybeSweep(time.Now(), window)
 	tracker.recordFailure(ipStr, fingerprint, window)
 	tracker.banIfSuspicious(ipStr, cfg.Server.BanMaxUniqueFailures, cfg.Server.BanDurationSeconds, window)
 }

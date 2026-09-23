@@ -19,6 +19,10 @@ import (
 const oidcStateCookieName = "oidc_state"
 const oidcNonceCookieName = "oidc_nonce"
 
+// oidcDiscoveryTimeout bounds the provider discovery/JWKS fetches performed at
+// startup so a hanging issuer cannot block the server from serving forever.
+const oidcDiscoveryTimeout = 10 * time.Second
+
 type OIDCDiscovery struct {
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
@@ -38,8 +42,14 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 	if provider.GroupsClaim == "" {
 		provider.GroupsClaim = "groups"
 	}
+	// Bound the startup fetches: a hanging issuer must not block boot. The
+	// verifier's JWKS refresh uses its own background context (go-oidc), so
+	// canceling this context after discovery is safe.
+	discCtx, cancel := context.WithTimeout(context.Background(), oidcDiscoveryTimeout)
+	defer cancel()
+
 	discURL := strings.TrimSuffix(provider.IssuerURL, "/") + "/.well-known/openid-configuration"
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, discURL, nil)
+	req, err := http.NewRequestWithContext(discCtx, http.MethodGet, discURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +69,7 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 	// go-oidc provider for ID-token verification (signature/JWKS, iss, aud,
 	// exp). The manual OIDCDiscovery above is kept for token exchange and
 	// userinfo.
-	p, err := oidc.NewProvider(context.Background(), provider.IssuerURL)
+	p, err := oidc.NewProvider(discCtx, provider.IssuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("oidc provider discovery: %w", err)
 	}
