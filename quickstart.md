@@ -136,12 +136,15 @@ Build, push, and validate a release with the repository's Dagger module
 VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//'); \
 [ -z "$VERSION" ] && VERSION=dev
 dagger call -m dagger/gohookbridge ci --source . --version "$VERSION" \
+  --registry-username "$GHCR_USERNAME" --registry-password env:GHCR_TOKEN \
   > tmp/dagger-validation-report.md
 ```
 
 The validation runs on an ephemeral k3s cluster that is torn down
-automatically when the call ends. Pass `--skip-push` to skip the GHCR push
-(build + validation only).
+automatically when the call ends. The GHCR password is passed as a Dagger
+Secret reference (`env:GHCR_TOKEN` or `file:path`) — never a plaintext
+value. Pass `--skip-push` to skip the GHCR push (build + validation only,
+no credentials needed).
 
 ### High Availability with Helm (3 replicas)
 

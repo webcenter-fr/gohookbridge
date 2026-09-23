@@ -109,7 +109,7 @@ docker run -d -p 3026:3026 --restart always --name example.org ghcr.io/webcenter
 ## Dagger pipeline (CI/CD)
 
 - Build, publish to GHCR, and validate on an ephemeral k3s cluster with `dagger call -m dagger/gohookbridge ci --source . --version <v>` (a Dagger module consuming `disaster37/dagger-library-go/image`; image tagged with the caller-resolved version).
-- Requires a Docker daemon; the GHCR push reads `--registry-username`/`--registry-password`.
+- Requires a Docker daemon; the GHCR push reads `--registry-username`/`--registry-password`, with the password passed as a Dagger Secret reference such as `--registry-password env:GHCR_TOKEN` (or `file:./token.txt`) — never a plaintext value.
 - Validation report redirected to `tmp/dagger-validation-report.md`.
 
 ### GO

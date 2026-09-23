@@ -86,9 +86,16 @@ func (m *Gohookbridge) Ci(
 	// +optional
 	// +default=""
 	registryUsername string,
+	// registryPassword is a Dagger Secret, not a plain string: the CLI then
+	// takes a secret reference instead of the raw value — the verified
+	// syntax (dagger CLI v0.21.8, Dagger docs "Working with core Dagger
+	// types > Secrets": secret args accept provider URIs) is
+	// `--registry-password env:GHCR_TOKEN` or `--registry-password
+	// file:./token.txt`. A plain string was logged verbatim in the
+	// dagger.cloud trace on the first live run, so this intentionally
+	// deviates from plan §11 decision 5 (plain-string args).
 	// +optional
-	// +default=""
-	registryPassword string,
+	registryPassword *dagger.Secret,
 	// +optional
 	// +default=false
 	pushLatest bool,
@@ -158,11 +165,21 @@ func (m *Gohookbridge) Ci(
 	}
 
 	imageRef := registry + "/" + repositoryName + ":" + resolved
+	// The report (including the dry-run report) shows only credential
+	// PRESENCE — never a username or password value.
+	usernamePresence := "<not set>"
+	if registryUsername != "" {
+		usernamePresence = "<set>"
+	}
+	passwordPresence := "<not set>"
+	if registryPassword != nil {
+		passwordPresence = "<set>"
+	}
 	sections := []pipeline.ReportSection{{
 		Title: "Inputs",
 		Body: fmt.Sprintf(
-			"- Version: %s\n- Image: %s\n- Channel: %s\n- Timeout: %s\n- Push to registry: %t\n- Push :latest: %t\n- Kubernetes validation: %t",
-			resolved, imageRef, channelID, timeout, !skipPush, pushLatest, !skipK8s,
+			"- Version: %s\n- Image: %s\n- Channel: %s\n- Timeout: %s\n- Registry username: %s\n- Registry password: %s\n- Push to registry: %t\n- Push :latest: %t\n- Kubernetes validation: %t",
+			resolved, imageRef, channelID, timeout, usernamePresence, passwordPresence, !skipPush, pushLatest, !skipK8s,
 		),
 	}}
 	if len(warnings) > 0 {
@@ -187,15 +204,17 @@ func (m *Gohookbridge) Ci(
 
 	// (b) Build + push through github.com/disaster37/dagger-library-go/image.
 	// Registry credentials are fatal only when a push is requested; --skip-push
-	// still allows build + k8s validation. Values are wrapped into Dagger
-	// secrets here and never logged or placed in the report.
+	// still allows build + k8s validation. The username is wrapped into a
+	// Dagger secret here; the password already IS a Dagger Secret (see the
+	// registryPassword parameter doc). Neither value is ever logged or placed
+	// in the report.
 	var userSecret, passSecret *dagger.Secret
 	if !skipPush {
-		if registryUsername == "" || registryPassword == "" {
-			return "", errors.New("push requested but registry credentials are missing: pass --registry-username and --registry-password (credential values are never logged)")
+		if registryUsername == "" || registryPassword == nil {
+			return "", errors.New("push requested but registry credentials are missing: pass --registry-username <name> and --registry-password env:VAR (or file:path); credential values are never logged")
 		}
 		userSecret = dag.SetSecret("registry-username", registryUsername)
-		passSecret = dag.SetSecret("registry-password", registryPassword)
+		passSecret = registryPassword
 	}
 
 	img := dag.Image()
