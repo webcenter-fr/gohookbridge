@@ -257,15 +257,23 @@ func (h *apiHandler) updateGlobalConfig(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if cfg.Server.SessionSecret == "" {
-		existing, err := h.svc.GetGlobalConfig(ctx)
-		if err == nil {
-			cfg.Server.SessionSecret = existing.Server.SessionSecret
-		}
+	if cfg.Server.SessionSecret != "" {
+		writeError(w, http.StatusBadRequest, "session_secret cannot be changed via API")
+		return
 	}
+	existing, err := h.svc.GetGlobalConfig(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	cfg.Server.SessionSecret = existing.Server.SessionSecret
 	if err := h.svc.UpdateGlobalConfig(ctx, &cfg); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Never echo the stored secret back to the client.
+	if cfg.Server.SessionSecret != "" {
+		cfg.Server.SessionSecret = "<redacted>"
 	}
 	writeJSON(w, http.StatusOK, &cfg)
 }

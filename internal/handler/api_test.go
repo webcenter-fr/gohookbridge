@@ -213,6 +213,35 @@ func TestGetChannel_NotFoundMapsTo404(t *testing.T) {
 	assert.Equal(t, w.Code, http.StatusNotFound)
 }
 
+func TestUpdateGlobalConfig_RejectsSessionSecret(t *testing.T) {
+	svc, router := setupAPI(t)
+	ctx := context.Background()
+
+	stored := "0123456789abcdef0123456789abcdef"
+	assert.NilError(t, svc.SetSessionSecret(ctx, stored))
+
+	t.Run("non-empty client value returns 400", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, apiRequest("PUT", "/global", map[string]any{
+			"server": map[string]any{"session_secret": "attacker-controlled"},
+		}))
+		assert.Equal(t, w.Code, http.StatusBadRequest)
+		assert.Assert(t, strings.Contains(w.Body.String(), "session_secret cannot be changed via API"))
+	})
+
+	t.Run("empty client value preserves stored secret and does not echo it", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, apiRequest("PUT", "/global", map[string]any{
+			"server": map[string]any{"session_secret": ""},
+		}))
+		assert.Equal(t, w.Code, http.StatusOK)
+		assert.Assert(t, !strings.Contains(w.Body.String(), stored), "response must not echo the stored session secret")
+
+		got := svc.SessionSecret(ctx)
+		assert.Equal(t, got, stored, "stored secret must be preserved")
+	})
+}
+
 func TestCreateUser_DuplicateMapsTo409(t *testing.T) {
 	svc, router := setupAPI(t)
 
