@@ -213,6 +213,25 @@ func TestGetChannel_NotFoundMapsTo404(t *testing.T) {
 	assert.Equal(t, w.Code, http.StatusNotFound)
 }
 
+func TestCreateUser_DuplicateMapsTo409(t *testing.T) {
+	svc, router := setupAPI(t)
+
+	create := func(t *testing.T, name string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, apiRequest("POST", "/users", map[string]string{"username": name, "password": "secret-password-1"}))
+		return w
+	}
+
+	assert.Equal(t, create(t, "dup-user").Code, http.StatusCreated)
+	w := create(t, "dup-user")
+	assert.Equal(t, w.Code, http.StatusConflict)
+	assert.Assert(t, strings.Contains(w.Body.String(), "user already exists"))
+
+	_, err := svc.GetUser(context.Background(), "dup-user")
+	assert.NilError(t, err)
+}
+
 func TestUpdateUser_CannotRemoveAdminRole(t *testing.T) {
 	svc, router := setupAPI(t)
 

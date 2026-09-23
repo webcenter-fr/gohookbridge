@@ -171,6 +171,9 @@ func (f *fakeRepository) ListUsers(_ context.Context) ([]*domain.User, error) {
 func (f *fakeRepository) CreateUser(_ context.Context, u *domain.User) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if _, ok := f.users[u.ID]; ok {
+		return fmt.Errorf("%w: user %q", domain.ErrAlreadyExists, u.ID)
+	}
 	cp := *u
 	f.users[u.ID] = &cp
 	f.username[u.Username] = u.ID

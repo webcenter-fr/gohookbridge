@@ -3,10 +3,12 @@ package repository
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"testing"
 
 	"github.com/hashicorp/raft"
+	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"gotest.tools/v3/assert"
 )
 
@@ -105,6 +107,20 @@ func TestFSM_ApplyDelete(t *testing.T) {
 	val, err := getFSMValue(fsm.db, "/key")
 	assert.NilError(t, err)
 	assert.Assert(t, val == nil)
+}
+
+func TestFSM_CreateUser_Duplicate(t *testing.T) {
+	fsm := newTestFSM(t)
+
+	user := map[string]string{"id": "user1", "username": "user1"}
+	cmdBytes := marshalCmd(t, "create-user", "/users/user1/", user)
+	applyOK(t, fsm, cmdBytes)
+
+	result := fsm.Apply(&raft.Log{Data: cmdBytes})
+	assert.Assert(t, result != nil)
+	appliedErr, ok := result.(error)
+	assert.Assert(t, ok, "Apply returned non-error: %v", result)
+	assert.Assert(t, errors.Is(appliedErr, domain.ErrAlreadyExists))
 }
 
 func TestFSM_Snapshot(t *testing.T) {

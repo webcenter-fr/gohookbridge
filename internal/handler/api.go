@@ -319,6 +319,10 @@ func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 		Channels:     input.Channels,
 	}
 	if err := h.svc.CreateUser(ctx, user); err != nil {
+		if errors.Is(err, domain.ErrAlreadyExists) {
+			writeError(w, http.StatusConflict, "user already exists")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

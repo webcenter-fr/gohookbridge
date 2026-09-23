@@ -1045,8 +1045,18 @@ func (rs *RaftStore) CreateUser(ctx context.Context, u *domain.User) error {
 	if err != nil {
 		return err
 	}
-	if err := rs.applyCommand("set", "/users/"+u.ID+"/", val); err != nil {
+	cmd := fsmCommand{Op: "create-user", Key: "/users/" + u.ID + "/", Value: val}
+	data, err := json.Marshal(cmd)
+	if err != nil {
 		return err
+	}
+	resp, err := rs.Apply(data)
+	if err != nil {
+		return err
+	}
+	if resp != nil {
+		//nolint:forcetypeassert // preserve domain.ErrAlreadyExists across Apply
+		return resp.(error)
 	}
 	return rs.applyCommand("set", usernameIndexKey(u.Username)+"/", usernameIndexValue(u.ID))
 }
@@ -1057,7 +1067,14 @@ func (rs *RaftStore) UpdateUser(ctx context.Context, u *domain.User) error {
 	if err == nil && old.Username != u.Username && old.Username != "" {
 		oldUsername = old.Username
 	}
-	if err := rs.CreateUser(ctx, u); err != nil {
+	val, err := json.Marshal(u)
+	if err != nil {
+		return err
+	}
+	if err := rs.applyCommand("set", "/users/"+u.ID+"/", val); err != nil {
+		return err
+	}
+	if err := rs.applyCommand("set", usernameIndexKey(u.Username)+"/", usernameIndexValue(u.ID)); err != nil {
 		return err
 	}
 	if oldUsername != "" {

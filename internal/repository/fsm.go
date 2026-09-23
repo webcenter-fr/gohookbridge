@@ -60,6 +60,8 @@ func (f *FSM) Apply(log *raft.Log) interface{} {
 		return f.applyDelete(cmd.Key)
 	case "create-channel":
 		return f.applyCreateChannel(cmd.Key, []byte(cmd.Value))
+	case "create-user":
+		return f.applyCreateUser(cmd.Key, []byte(cmd.Value))
 	case "bootstrap":
 		return f.applyBootstrap([]byte(cmd.Value))
 	default:
@@ -115,6 +117,19 @@ func (f *FSM) applyCreateChannel(key string, value []byte) error {
 		existing := b.Get([]byte(key))
 		if existing != nil {
 			return fmt.Errorf("%w: channel %q", domain.ErrAlreadyExists, strings.TrimPrefix(strings.TrimSuffix(key, "/"), "/channels/"))
+		}
+		return b.Put([]byte(key), value)
+	})
+}
+
+func (f *FSM) applyCreateUser(key string, value []byte) error {
+	return f.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(fsmDataBucketName))
+		if b == nil {
+			return fmt.Errorf("bucket %s not found", fsmDataBucketName)
+		}
+		if b.Get([]byte(key)) != nil {
+			return fmt.Errorf("%w: user %q", domain.ErrAlreadyExists, strings.TrimPrefix(strings.TrimSuffix(key, "/"), "/users/"))
 		}
 		return b.Put([]byte(key), value)
 	})

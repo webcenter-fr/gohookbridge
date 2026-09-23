@@ -391,6 +391,47 @@ func TestRaftStore_CRUD_Users(t *testing.T) {
 	assert.Equal(t, len(users), 0)
 }
 
+func TestRaftStore_CreateUser_Duplicate(t *testing.T) {
+	rs := newTestRaftStore(t)
+
+	u := &domain.User{ID: "user1", Username: "testuser"}
+	assert.NilError(t, rs.CreateUser(context.Background(), u))
+
+	err := rs.CreateUser(context.Background(), &domain.User{ID: "user1", Username: "testuser"})
+	assert.Assert(t, errors.Is(err, domain.ErrAlreadyExists))
+
+	// Ensure the existing user was not overwritten.
+	got, err := rs.GetUser(context.Background(), "user1")
+	assert.NilError(t, err)
+	assert.Equal(t, got.Username, "testuser")
+}
+
+func TestRaftStore_UpdateUser_Rename(t *testing.T) {
+	rs := newTestRaftStore(t)
+
+	assert.NilError(t, rs.CreateUser(context.Background(), &domain.User{
+		ID:       "uid-1",
+		Username: "oldname",
+		Roles:    []string{"channel_viewer"},
+	}))
+
+	got, err := rs.GetUser(context.Background(), "uid-1")
+	assert.NilError(t, err)
+	got.Username = "newname"
+	assert.NilError(t, rs.UpdateUser(context.Background(), got))
+
+	_, err = rs.GetUserByUsername(context.Background(), "oldname")
+	assert.Assert(t, errors.Is(err, domain.ErrNotFound))
+
+	byName, err := rs.GetUserByUsername(context.Background(), "newname")
+	assert.NilError(t, err)
+	assert.Equal(t, byName.ID, "uid-1")
+
+	updated, err := rs.GetUser(context.Background(), "uid-1")
+	assert.NilError(t, err)
+	assert.Equal(t, updated.Username, "newname")
+}
+
 func TestRaftStore_GetUserByUsername(t *testing.T) {
 	rs := newTestRaftStore(t)
 
