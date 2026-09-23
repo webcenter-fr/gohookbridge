@@ -106,6 +106,7 @@ func (h *OIDCHandler) LoginHandler() http.HandlerFunc {
 		}
 
 		stateValue := fmt.Sprintf("%s|%s", state, redirect)
+		//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
 		http.SetCookie(w, &http.Cookie{
 			Name:     oidcStateCookieName,
 			Value:    stateValue,
@@ -115,6 +116,7 @@ func (h *OIDCHandler) LoginHandler() http.HandlerFunc {
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   300,
 		})
+		//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
 		http.SetCookie(w, &http.Cookie{
 			Name:     oidcNonceCookieName,
 			Value:    nonce,
@@ -320,6 +322,7 @@ func (h *OIDCHandler) getUserInfo(accessToken string) (map[string]any, error) {
 }
 
 func clearOIDCStateCookie(w http.ResponseWriter, secure bool) {
+	//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
 	http.SetCookie(w, &http.Cookie{
 		Name:     oidcStateCookieName,
 		Value:    "",
@@ -332,6 +335,7 @@ func clearOIDCStateCookie(w http.ResponseWriter, secure bool) {
 }
 
 func clearOIDCNonceCookie(w http.ResponseWriter, secure bool) {
+	//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
 	http.SetCookie(w, &http.Cookie{
 		Name:     oidcNonceCookieName,
 		Value:    "",

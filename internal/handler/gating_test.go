@@ -142,7 +142,7 @@ func TestChannelContextSetsChannelID(t *testing.T) {
 	svc := setupGatingFixture(t)
 
 	called := false
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		called = true
 		channelID, _ := r.Context().Value(contextKeyChannelID).(string)
 		assert.Equal(t, channelID, "test-channel")
@@ -153,6 +153,7 @@ func TestChannelContextSetsChannelID(t *testing.T) {
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("channel", "test-channel")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	//nolint:revive,staticcheck // context keys are package-level string constants by design
 	req = req.WithContext(context.WithValue(req.Context(), UsernameContextKey, "admin"))
 
 	w := httptest.NewRecorder()

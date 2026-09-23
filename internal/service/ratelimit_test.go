@@ -204,7 +204,7 @@ func TestClampWindow(t *testing.T) {
 	assert.Equal(t, 60, clampWindow(60))
 }
 
-func TestRateLimiterAndBanTrackerConcurrent(t *testing.T) {
+func TestRateLimiterAndBanTrackerConcurrent(_ *testing.T) {
 	rl := NewRateLimiter()
 	bt := NewBanTracker()
 

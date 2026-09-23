@@ -23,6 +23,7 @@ const (
 const dummyPasswordHash = "$2a$10$GB/spbww7shMhAoZAdOXKOcdUaA/W1gnFjKLZpLdW.xe6U0FUNBfe"
 
 func setSessionCookie(w http.ResponseWriter, token string, secure bool) {
+	//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
@@ -35,6 +36,7 @@ func setSessionCookie(w http.ResponseWriter, token string, secure bool) {
 }
 
 func clearSessionCookie(w http.ResponseWriter, secure bool) {
+	//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
