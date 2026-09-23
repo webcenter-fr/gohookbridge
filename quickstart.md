@@ -127,6 +127,25 @@ kubectl get pods -n gohookbridge
 helm status gohookbridge -n gohookbridge
 ```
 
+### Validate with Dagger
+
+Build, push, and validate a release with the repository's Dagger module
+(requires a Docker daemon):
+
+```shell
+VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//'); \
+[ -z "$VERSION" ] && VERSION=dev
+dagger call -m dagger/gohookbridge ci --source . --version "$VERSION" \
+  --registry-username "$GHCR_USERNAME" --registry-password env:GHCR_TOKEN \
+  > tmp/dagger-validation-report.md
+```
+
+The validation runs on an ephemeral k3s cluster that is torn down
+automatically when the call ends. The GHCR password is passed as a Dagger
+Secret reference (`env:GHCR_TOKEN` or `file:path`) — never a plaintext
+value. Pass `--skip-push` to skip the GHCR push (build + validation only,
+no credentials needed).
+
 ### High Availability with Helm (3 replicas)
 
 The chart defaults to `server.replicas: 3` and deploys the server as a StatefulSet with a headless Service, per-pod Raft PVCs, and deterministic `--raft-peers` / `--nats-routes` derived from the replica count. Each pod binds `0.0.0.0:6001` and advertises its pod FQDN (`--raft-advertise-addr`), with DNS discovery driven by `--raft-replicas` / `--raft-statefulset-name` / `--raft-headless-service` / `--raft-namespace`. Raft mTLS is enabled by default (`server.raft.tls.enabled: true`), with the internal CA shared through the `<fullname>-raft-ca` Secret. For a home/lab cluster, keep the environment-specific values in a gitignored `helm/gohookbridge/values-home.yaml`:

@@ -179,6 +179,59 @@ curl -X POST "$CHANNEL" \
   -d '{"hello":"world"}'
 ```
 
+### Dagger pipeline (build, push, validate)
+
+The repository ships a Dagger module (`dagger/gohookbridge`, Go SDK) that
+builds the container image with the caller-resolved version, pushes it to
+GHCR through `github.com/disaster37/dagger-library-go/image`, and validates
+it on an ephemeral k3s cluster deployed with the `helm/gohookbridge` chart.
+The module is invoked directly with `dagger call` — Dagger replaces the
+Makefile for image delivery: there is no Makefile target and no CI workflow
+for this pipeline, the LLM/agent is the caller.
+
+Prerequisites:
+
+- A Docker daemon (the Dagger engine boots through it) or
+  `_EXPERIMENTAL_DAGGER_RUNNER_HOST` pointing at a remote runner.
+- Optional `GHCR_USERNAME`/`GHCR_TOKEN` for pushing, passed as
+  `--registry-username "$GHCR_USERNAME"` and
+  `--registry-password env:GHCR_TOKEN`. The password is taken as a Dagger
+  Secret reference — `env:VAR` or `file:path` (verified with dagger CLI
+  v0.21.8) — so its value never reaches the Dagger trace; it can also be
+  given as `--registry-password file:./token.txt`.
+
+Resolve the version first (the module's source directory has no `.git`):
+
+```shell
+VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//'); \
+[ -z "$VERSION" ] && VERSION=dev
+```
+
+Full run — build + GHCR push + ephemeral k3s validation, with the
+human-reviewable report redirected to `tmp/dagger-validation-report.md`:
+
+```shell
+dagger call -m dagger/gohookbridge ci --source . --version "$VERSION" \
+  --registry-username "$GHCR_USERNAME" --registry-password env:GHCR_TOKEN \
+  > tmp/dagger-validation-report.md
+```
+
+Variants:
+
+| Invocation | Result |
+|---|---|
+| `dagger call -m dagger/gohookbridge ci --source . --version "$VERSION" --skip-push --skip-k8s` | build only |
+| `dagger call -m dagger/gohookbridge ci --source . --version "$VERSION" --skip-k8s` | build + GHCR push |
+| `dagger call -m dagger/gohookbridge ci --source . --version "$VERSION" --skip-push` | build + ephemeral k3s validation, no GHCR credentials needed |
+| `dagger call -m dagger/gohookbridge ci --source . --version "$VERSION" --push-latest` | also publish the `:latest` tag |
+
+The variants that push additionally require
+`--registry-username "$GHCR_USERNAME" --registry-password env:GHCR_TOKEN`
+(the password is a Dagger Secret reference — `env:VAR` or `file:path` —
+never a plaintext value).
+
+The ephemeral k3s cluster is torn down automatically when the call ends.
+
 ## Backend conventions
 
 ### Code style

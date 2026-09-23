@@ -1,0 +1,14 @@
+{
+  "name": "gohookbridge",
+  "engineVersion": "v0.21.8",
+  "sdk": {
+    "source": "go"
+  },
+  "dependencies": [
+    {
+      "name": "image",
+      "source": "github.com/disaster37/dagger-library-go/image@2.0.19",
+      "pin": "d7e755bbd544480c8a96adc2204d70cf40ee6c0c"
+    }
+  ]
+}
