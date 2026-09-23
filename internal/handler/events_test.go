@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -44,6 +45,52 @@ func eventually(t *testing.T, predicate func() bool) bool {
 	}
 
 	return false
+}
+
+// syncRecorder wraps httptest.ResponseRecorder with a mutex. The SSE handler
+// streams from its own goroutine while the test goroutine polls the buffered
+// output, and httptest.ResponseRecorder is not safe for concurrent use.
+type syncRecorder struct {
+	mu  sync.Mutex
+	rec *httptest.ResponseRecorder
+}
+
+func newSyncRecorder() *syncRecorder {
+	return &syncRecorder{rec: httptest.NewRecorder()}
+}
+
+func (s *syncRecorder) Header() http.Header {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rec.Header()
+}
+
+func (s *syncRecorder) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rec.Write(p)
+}
+
+func (s *syncRecorder) WriteHeader(code int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec.WriteHeader(code)
+}
+
+// Flush implements http.Flusher so the SSE handler can stream through the
+// wrapper (HandleEventsGet type-asserts http.Flusher).
+func (s *syncRecorder) Flush() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec.Flush()
+}
+
+// Body returns the recorded body; safe to call while the handler goroutine
+// is still writing.
+func (s *syncRecorder) Body() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rec.Body.String()
 }
 
 func TestHandleEventsGet(t *testing.T) {
@@ -90,7 +137,7 @@ func TestHandleEventsGet(t *testing.T) {
 		req = req.WithContext(reqCtx)
 		defer cancel()
 
-		response := httptest.NewRecorder()
+		response := newSyncRecorder()
 		done := make(chan struct{})
 		go func() {
 			ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())(HandleEventsGet(broker, svc)).ServeHTTP(response, req)
@@ -98,7 +145,7 @@ func TestHandleEventsGet(t *testing.T) {
 		}()
 
 		assert.Assert(t, eventually(t, func() bool {
-			return strings.Contains(response.Body.String(), `{"message":"connected"}`)
+			return strings.Contains(response.Body(), `{"message":"connected"}`)
 		}))
 		cancel()
 		<-done
@@ -177,7 +224,7 @@ func TestHandleEventsGet(t *testing.T) {
 		req = req.WithContext(reqCtx)
 		defer cancel()
 
-		response := httptest.NewRecorder()
+		response := newSyncRecorder()
 		done := make(chan struct{})
 		go func() {
 			ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())(HandleEventsGet(broker, svc)).ServeHTTP(response, req)
@@ -185,7 +232,7 @@ func TestHandleEventsGet(t *testing.T) {
 		}()
 
 		assert.Assert(t, eventually(t, func() bool {
-			return strings.Contains(response.Body.String(), `{"encrypted":true,"ciphertext":"dGVzdA=="}`)
+			return strings.Contains(response.Body(), `{"encrypted":true,"ciphertext":"dGVzdA=="}`)
 		}), "E2E channel should relay encrypted data without 404")
 
 		cancel()
@@ -205,7 +252,7 @@ func TestHandleEventsGet(t *testing.T) {
 		req = req.WithContext(reqCtx)
 		defer cancel()
 
-		response := httptest.NewRecorder()
+		response := newSyncRecorder()
 		done := make(chan struct{})
 		go func() {
 			HandleEventsGet(broker, svc).ServeHTTP(response, req)
@@ -213,10 +260,10 @@ func TestHandleEventsGet(t *testing.T) {
 		}()
 
 		assert.Assert(t, eventually(t, func() bool {
-			return strings.Contains(response.Body.String(), `{"plain":true}`)
+			return strings.Contains(response.Body(), `{"plain":true}`)
 		}))
 
-		body := response.Body.String()
+		body := response.Body()
 		assert.Assert(t, strings.Contains(body, `{"message":"connected"}`))
 		assert.Assert(t, strings.Contains(body, `{"message":"ready"}`))
 		assert.Assert(t, strings.Contains(body, `{"plain":true}`))
@@ -274,7 +321,7 @@ func TestHandleEventsGetCORSOrigin(t *testing.T) {
 			req = req.WithContext(reqCtx)
 			defer cancel()
 
-			response := httptest.NewRecorder()
+			response := newSyncRecorder()
 			done := make(chan struct{})
 			go func() {
 				router.ServeHTTP(response, req)
@@ -282,7 +329,7 @@ func TestHandleEventsGetCORSOrigin(t *testing.T) {
 			}()
 
 			assert.Assert(t, eventually(t, func() bool {
-				return strings.Contains(response.Body.String(), `{"message":"connected"}`)
+				return strings.Contains(response.Body(), `{"message":"connected"}`)
 			}))
 
 			headerValue := response.Header().Get("Access-Control-Allow-Origin")
@@ -335,7 +382,7 @@ func TestHandleEventsGetWithNATS(t *testing.T) {
 		req = req.WithContext(reqCtx)
 		defer cancel()
 
-		response := httptest.NewRecorder()
+		response := newSyncRecorder()
 		done := make(chan struct{})
 		go func() {
 			router.ServeHTTP(response, req)
@@ -343,16 +390,16 @@ func TestHandleEventsGetWithNATS(t *testing.T) {
 		}()
 
 		assert.Assert(t, eventually(t, func() bool {
-			return strings.Contains(response.Body.String(), `{"history":true}`)
+			return strings.Contains(response.Body(), `{"history":true}`)
 		}))
 
-		body := response.Body.String()
+		body := response.Body()
 		assert.Assert(t, strings.Contains(body, `{"message":"connected"}`))
 		assert.Assert(t, strings.Contains(body, `{"message":"ready"}`))
 
 		_ = broker.Publish("nats-sse-channel", []byte(`{"live":true}`))
 		assert.Assert(t, eventually(t, func() bool {
-			return strings.Contains(response.Body.String(), `{"live":true}`)
+			return strings.Contains(response.Body(), `{"live":true}`)
 		}))
 
 		cancel()
@@ -369,7 +416,7 @@ func TestHandleEventsGetWithNATS(t *testing.T) {
 		req = req.WithContext(reqCtx)
 		defer cancel()
 
-		response := httptest.NewRecorder()
+		response := newSyncRecorder()
 		done := make(chan struct{})
 		go func() {
 			localRouter.ServeHTTP(response, req)
@@ -377,7 +424,7 @@ func TestHandleEventsGetWithNATS(t *testing.T) {
 		}()
 
 		assert.Assert(t, eventually(t, func() bool {
-			return strings.Contains(response.Body.String(), `{"message":"connected"}`)
+			return strings.Contains(response.Body(), `{"message":"connected"}`)
 		}))
 
 		cancel()
@@ -416,7 +463,7 @@ func TestHandleEventsGetWithClientID(t *testing.T) {
 		req = req.WithContext(reqCtx)
 		defer cancel()
 
-		response := httptest.NewRecorder()
+		response := newSyncRecorder()
 		done := make(chan struct{})
 		go func() {
 			router.ServeHTTP(response, req)
@@ -424,10 +471,10 @@ func TestHandleEventsGetWithClientID(t *testing.T) {
 		}()
 
 		assert.Assert(t, eventually(t, func() bool {
-			return strings.Contains(response.Body.String(), `{"recent":true}`)
+			return strings.Contains(response.Body(), `{"recent":true}`)
 		}), "recent event should be delivered")
 
-		body := response.Body.String()
+		body := response.Body()
 		assert.Assert(t, !strings.Contains(body, `{"old":true}`), "old event should NOT be delivered")
 
 		cancel()
