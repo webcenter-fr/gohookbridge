@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/sha256"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +81,34 @@ func TestDeriveSessionSecret(t *testing.T) {
 	assert.Equal(t, secret1, secret2)
 	assert.Assert(t, secret1 != secret3)
 	assert.Equal(t, len(secret1), 32)
+
+	// HKDF with domain separation must not equal a raw SHA-256 of the input.
+	raw := sha256.Sum256([]byte("hello"))
+	assert.Assert(t, secret1 != raw, "derived key must differ from raw SHA-256")
+}
+
+func TestValidateSessionSecret(t *testing.T) {
+	tests := []struct {
+		name    string
+		secret  string
+		wantErr bool
+	}{
+		{"empty allowed", "", false},
+		{"31 chars too short", strings.Repeat("a", 31), true},
+		{"32 chars ok", strings.Repeat("a", 32), false},
+		{"64 chars ok", strings.Repeat("a", 64), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateSessionSecret(tt.secret)
+			if tt.wantErr {
+				assert.Assert(t, err != nil)
+				assert.Assert(t, strings.Contains(err.Error(), "session_secret must be at least"))
+			} else {
+				assert.NilError(t, err)
+			}
+		})
+	}
 }
 
 func TestGenerateRandomHex(t *testing.T) {

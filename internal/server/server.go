@@ -297,6 +297,11 @@ func NewServer(c *cli.Context) (*Server, error) {
 	}
 	var sessionSecret [32]byte
 	if secret != "" {
+		if err := service.ValidateSessionSecret(secret); err != nil {
+			// Legacy stored secrets that are weaker than the current minimum
+			// must not crash-loop existing deployments: warn and keep serving.
+			fmt.Fprintf(os.Stderr, "WARNING: stored session_secret is weak: %v (rotate before relying on it)\n", err)
+		}
 		sessionSecret = service.DeriveSessionSecret(secret)
 	}
 
@@ -476,6 +481,11 @@ func applyBootstrapOnce(ctx context.Context, rs *repository.RaftStore, path stri
 	cfg, err := repository.LoadBootstrap(path)
 	if err != nil {
 		return fmt.Errorf("load bootstrap: %w", err)
+	}
+	if cfg.Global != nil && cfg.Global.Server.SessionSecret != "" {
+		if err := service.ValidateSessionSecret(cfg.Global.Server.SessionSecret); err != nil {
+			return fmt.Errorf("bootstrap session_secret: %w", err)
+		}
 	}
 	if err := rs.ApplyBootstrap(ctx, cfg); err != nil {
 		return fmt.Errorf("apply bootstrap: %w", err)

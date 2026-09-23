@@ -7,8 +7,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/hkdf"
 )
 
 // SessionToken is the signed session payload stored in the session cookie.
@@ -20,10 +23,37 @@ type SessionToken struct {
 	Groups    []string `json:"groups,omitempty"`
 }
 
-// DeriveSessionSecret derives the HMAC key used to sign session cookies from
-// the configured session secret string.
+const sessionSecretKDFInfo = "gohookbridge.session.signing.v1"
+
+// DeriveSessionSecret derives the HMAC-SHA256 signing key from the configured
+// session secret using HKDF-SHA256 (extract+expand with a domain-separation
+// info string). SHA-256 alone is not a KDF; HKDF is the standard extractor for
+// turning a shared secret into keying material.
 func DeriveSessionSecret(secret string) [32]byte {
-	return sha256.Sum256([]byte(secret))
+	var key [32]byte
+	r := hkdf.New(sha256.New, []byte(secret), nil, []byte(sessionSecretKDFInfo))
+	if _, err := io.ReadFull(r, key[:]); err != nil {
+		// Cannot happen for HKDF-SHA256 (returns exactly the requested bytes).
+		panic("service: derive session secret: " + err.Error())
+	}
+	return key
+}
+
+// MinSessionSecretLength is the minimum accepted length for a configured
+// session secret (32+ hex/base64 chars provide >= 128 bits of keyspace).
+const MinSessionSecretLength = 32
+
+// ValidateSessionSecret rejects weak session secrets (CWE-326). An empty
+// secret is allowed (the server auto-generates a 32-byte random one). A
+// 32+ character hex/base64 secret provides >= 128 bits of keyspace.
+func ValidateSessionSecret(secret string) error {
+	if secret == "" {
+		return nil
+	}
+	if len(secret) < MinSessionSecretLength {
+		return fmt.Errorf("session_secret must be at least %d characters (got %d)", MinSessionSecretLength, len(secret))
+	}
+	return nil
 }
 
 // EncodeSession signs and encodes a session token as
