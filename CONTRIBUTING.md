@@ -292,6 +292,8 @@ The ephemeral k3s cluster is torn down automatically when the call ends.
 
 ### Code style
 
+Security-sensitive changes (session secret handling, cookie flags, OIDC ID-token validation, endpoint permissions) are documented in `SECURITY.md`.
+
 - Follow standard Go idioms as enforced by `golangci-lint` with the project's `.golangci.yml` configuration.
 - Run `make fmt` (go fmt) or `make fumpt` (gofumpt with extra rules) before committing.
 - Run `make lint-go` before opening a PR — the CI runs the same command.
