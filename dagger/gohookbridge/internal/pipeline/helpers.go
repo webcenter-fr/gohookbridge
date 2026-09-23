@@ -7,6 +7,8 @@
 package pipeline
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -37,6 +39,20 @@ func ResolveVersion(version string) string {
 		return trimmed
 	}
 	return "dev"
+}
+
+// NewRunNonce returns a fresh 16-byte crypto/rand nonce, hex-encoded (32
+// characters). Ci generates one per invocation and injects it as the
+// GOOHOOKBRIDGE_RUN_NONCE environment variable on every exec of the
+// Kubernetes validation phase, so each run has a distinct Dagger cache key
+// and the engine can never replay a previous run's readyz/helm/kubectl/smoke
+// results against a fresh cluster.
+func NewRunNonce() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate run nonce: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 // RenderHelmValues renders the helm values-override map to YAML for the smoke

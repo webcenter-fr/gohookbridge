@@ -45,6 +45,18 @@ func TestResolveVersion(t *testing.T) {
 	}
 }
 
+func TestNewRunNonce(t *testing.T) {
+	first, err := NewRunNonce()
+	assert.NilError(t, err)
+	assert.Assert(t, first != "", "nonce must be non-empty")
+	assert.Equal(t, 32, len(first), "nonce must be 16 bytes hex-encoded")
+
+	second, err := NewRunNonce()
+	assert.NilError(t, err)
+	assert.Assert(t, second != "", "nonce must be non-empty")
+	assert.Assert(t, first != second, "successive nonces must differ")
+}
+
 func TestRenderHelmValues(t *testing.T) {
 	rendered, err := RenderHelmValues("registry:5000/gohookbridge", "1.2.3", "dagger-smoke")
 	assert.NilError(t, err)

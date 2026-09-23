@@ -36,6 +36,12 @@ const (
 	defaultChannelID = "dagger-smoke"
 	// defaultTimeout bounds the whole pipeline.
 	defaultTimeout = "15m"
+	// runNonceEnv carries the per-run cache nonce on every exec of the
+	// Kubernetes validation phase (see Ci and pipeline.NewRunNonce): the
+	// nonce makes each run's cache keys unique so the engine never replays
+	// a previous run's readyz/helm/kubectl/smoke results against a fresh
+	// k3s instance.
+	runNonceEnv = "GOOHOOKBRIDGE_RUN_NONCE"
 	// k3sImage is a pinned k3s version matching the repo's documented cluster
 	// (AGENTS.local.md: k3s v1.33.6).
 	k3sImage = "rancher/k3s:v1.33.6-k3s1"
@@ -57,6 +63,14 @@ type Gohookbridge struct{}
 // ephemeral k3s cluster. It is the single LLM entrypoint; the returned
 // Markdown report is redirected by the caller to
 // tmp/dagger-validation-report.md.
+//
+// +cache="never"
+// Ci is side-effecting (GHCR push, ephemeral cluster) and reads live state,
+// so this FunctionCachePolicy Never annotation opts the call out of the
+// engine's function-result memoization: otherwise a second identical
+// `dagger call ci` replays the whole previous result. The per-run nonce (see
+// runNonceEnv) then busts the inner exec cache, which stays active even with
+// function caching disabled.
 func (m *Gohookbridge) Ci(
 	ctx context.Context,
 	// +required
@@ -94,6 +108,13 @@ func (m *Gohookbridge) Ci(
 	// +default="15m"
 	timeout string,
 ) (string, error) {
+	// Per-run cache nonce (a): generated once here and injected on every
+	// validation-phase exec so each run gets fresh Dagger cache keys.
+	nonce, err := pipeline.NewRunNonce()
+	if err != nil {
+		return "", err
+	}
+
 	// (a) Version normalization: trim a leading "v", fall back to "dev"
 	// (pure helpers, unit-tested in internal/pipeline).
 	var warnings []string
@@ -239,7 +260,7 @@ func (m *Gohookbridge) Ci(
 			return "", fmt.Errorf("publish image %s to the in-pipeline registry: %w", localRef, err)
 		}
 
-		_, kubeconfig, err := startK3s(ctx)
+		_, kubeconfig, err := startK3s(ctx, nonce)
 		if err != nil {
 			return "", err
 		}
@@ -249,16 +270,16 @@ func (m *Gohookbridge) Ci(
 			return "", err
 		}
 
-		if err := deployHelm(ctx, source, kubeconfig, values); err != nil {
+		if err := deployHelm(ctx, source, kubeconfig, values, nonce); err != nil {
 			sections = append(sections, pipeline.ReportSection{
 				Title: "Ephemeral Kubernetes validation",
 				Body: fmt.Sprintf("helm install failed: %s\n\n%s",
-					err, collectDiagnostics(ctx, kubeconfig)),
+					err, collectDiagnostics(ctx, kubeconfig, nonce)),
 			})
 			return pipeline.BuildReport(sections...), fmt.Errorf("deploy helm chart %q: %w", helmRelease, err)
 		}
 
-		k8sReport, err := validateDeployment(ctx, kubeconfig, channelID, resolved)
+		k8sReport, err := validateDeployment(ctx, kubeconfig, channelID, resolved, nonce)
 		sections = append(sections, pipeline.ReportSection{
 			Title: "Ephemeral Kubernetes validation",
 			Body:  k8sReport,

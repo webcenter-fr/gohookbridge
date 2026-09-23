@@ -12,9 +12,12 @@ import (
 // validateDeployment waits for the server pod to be Ready, port-forwards the
 // <release>-server Service, runs the smoke script, and returns a Markdown
 // report string. On failure it captures kubectl describe/logs into the report
-// and returns an error carrying the failing check (and pod logs).
-func validateDeployment(ctx context.Context, kubeconfig *dagger.File, channelID string, version string) (string, error) {
-	k3s, _, err := startK3s(ctx)
+// and returns an error carrying the failing check (and pod logs). The nonce is
+// injected as an env var on every exec (kubectl wait, port-forward, smoke,
+// diagnostics) so none of them can replay a previous run's cached result
+// against a fresh cluster.
+func validateDeployment(ctx context.Context, kubeconfig *dagger.File, channelID string, version string, nonce string) (string, error) {
+	k3s, _, err := startK3s(ctx, nonce)
 	if err != nil {
 		return "collect cluster state: " + err.Error(), err
 	}
@@ -22,6 +25,7 @@ func validateDeployment(ctx context.Context, kubeconfig *dagger.File, channelID 
 		return dag.Container().From(kubectlImage).
 			WithFile("/kubeconfig.yaml", kubeconfig).
 			WithEnvVariable("KUBECONFIG", "/kubeconfig.yaml").
+			WithEnvVariable(runNonceEnv, nonce).
 			WithServiceBinding("k3s", k3s)
 	}
 
@@ -38,7 +42,7 @@ func validateDeployment(ctx context.Context, kubeconfig *dagger.File, channelID 
 	}
 	if waitCode != 0 {
 		waitOut := combined(ctx, wait)
-		details := "server pod never became Ready\n\n```text\n" + waitOut + "\n```\n\n" + collectDiagnostics(ctx, kubeconfig)
+		details := "server pod never became Ready\n\n```text\n" + waitOut + "\n```\n\n" + collectDiagnostics(ctx, kubeconfig, nonce)
 		return details, fmt.Errorf("server pod not ready within 180s: %s", waitOut)
 	}
 
@@ -59,7 +63,7 @@ func validateDeployment(ctx context.Context, kubeconfig *dagger.File, channelID 
 		})
 	pfStarted, err := pf.Start(ctx)
 	if err != nil {
-		details := "port-forward service failed to start: " + err.Error() + "\n\n" + collectDiagnostics(ctx, kubeconfig)
+		details := "port-forward service failed to start: " + err.Error() + "\n\n" + collectDiagnostics(ctx, kubeconfig, nonce)
 		return details, fmt.Errorf("start port-forward for svc/%s: %w", serverServiceName, err)
 	}
 
@@ -68,6 +72,7 @@ func validateDeployment(ctx context.Context, kubeconfig *dagger.File, channelID 
 		WithEnvVariable("BASE_URL", fmt.Sprintf("http://pf:%d", pfPort)).
 		WithEnvVariable("CHANNEL_ID", channelID).
 		WithEnvVariable("EXPECTED_VERSION", version).
+		WithEnvVariable(runNonceEnv, nonce).
 		WithServiceBinding("pf", pfStarted).
 		WithNewFile("/smoke.sh", pipeline.SmokeScript).
 		WithExec([]string{"sh", "/smoke.sh"}, dagger.ContainerWithExecOpts{Expect: dagger.ReturnTypeAny})
@@ -76,13 +81,13 @@ func validateDeployment(ctx context.Context, kubeconfig *dagger.File, channelID 
 	stderr, stderrErr := smoke.Stderr(ctx)
 	checkOutput := strings.TrimSpace(stdout + stderr + errSuffix(stdoutErr) + errSuffix(stderrErr))
 	if runErr != nil {
-		details := "smoke script failed to run: " + runErr.Error() + "\n\n" + collectDiagnostics(ctx, kubeconfig)
+		details := "smoke script failed to run: " + runErr.Error() + "\n\n" + collectDiagnostics(ctx, kubeconfig, nonce)
 		return details, fmt.Errorf("run smoke script: %w", runErr)
 	}
 	if code != 0 {
-		details := "smoke checks failed:\n\n```text\n" + checkOutput + "\n```\n\n" + collectDiagnostics(ctx, kubeconfig)
+		details := "smoke checks failed:\n\n```text\n" + checkOutput + "\n```\n\n" + collectDiagnostics(ctx, kubeconfig, nonce)
 		return details, fmt.Errorf("smoke validation failed (exit %d): %s; pod logs:\n%s",
-			code, checkOutput, podLogs(ctx, kubeconfig))
+			code, checkOutput, podLogs(ctx, kubeconfig, nonce))
 	}
 	return "```text\n" + checkOutput + "\n```\n\nvalidation passed", nil
 }
@@ -90,8 +95,10 @@ func validateDeployment(ctx context.Context, kubeconfig *dagger.File, channelID 
 // collectDiagnostics runs best-effort kubectl commands (events, pods,
 // describe, logs) against the ephemeral cluster and returns their combined
 // output for the report. Errors are tolerated: diagnostics are best-effort.
-func collectDiagnostics(ctx context.Context, kubeconfig *dagger.File) string {
-	k3s, _, err := startK3s(ctx)
+// The nonce keeps the diagnostic execs from replaying a previous run's cached
+// output for a fresh cluster.
+func collectDiagnostics(ctx context.Context, kubeconfig *dagger.File, nonce string) string {
+	k3s, _, err := startK3s(ctx, nonce)
 	if err != nil {
 		return "collect diagnostics: " + err.Error()
 	}
@@ -104,6 +111,7 @@ func collectDiagnostics(ctx context.Context, kubeconfig *dagger.File) string {
 	base := dag.Container().From(kubectlImage).
 		WithFile("/kubeconfig.yaml", kubeconfig).
 		WithEnvVariable("KUBECONFIG", "/kubeconfig.yaml").
+		WithEnvVariable(runNonceEnv, nonce).
 		WithServiceBinding("k3s", k3s)
 
 	var b strings.Builder
@@ -117,14 +125,15 @@ func collectDiagnostics(ctx context.Context, kubeconfig *dagger.File) string {
 }
 
 // podLogs returns the server pod logs (best-effort) for validation errors.
-func podLogs(ctx context.Context, kubeconfig *dagger.File) string {
-	k3s, _, err := startK3s(ctx)
+func podLogs(ctx context.Context, kubeconfig *dagger.File, nonce string) string {
+	k3s, _, err := startK3s(ctx, nonce)
 	if err != nil {
 		return "collect pod logs: " + err.Error()
 	}
 	exec := dag.Container().From(kubectlImage).
 		WithFile("/kubeconfig.yaml", kubeconfig).
 		WithEnvVariable("KUBECONFIG", "/kubeconfig.yaml").
+		WithEnvVariable(runNonceEnv, nonce).
 		WithServiceBinding("k3s", k3s).
 		WithExec([]string{
 			"kubectl", "logs", "-l", "app.kubernetes.io/component=server",

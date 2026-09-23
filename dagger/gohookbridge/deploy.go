@@ -36,9 +36,10 @@ func writeHelmValues(_ context.Context, version string, channelID string) (*dagg
 // deployHelm installs the repo's helm/gohookbridge chart (taken from the
 // caller-provided source directory; module functions have no host access) into
 // the k3s cluster (namespace "gohookbridge") with the values file,
-// --wait --timeout 180s.
-func deployHelm(ctx context.Context, source *dagger.Directory, kubeconfig *dagger.File, values *dagger.File) error {
-	k3s, _, err := startK3s(ctx)
+// --wait --timeout 180s. The nonce is injected as an env var so the helm exec
+// never replays a previous run's cached result against a fresh cluster.
+func deployHelm(ctx context.Context, source *dagger.Directory, kubeconfig *dagger.File, values *dagger.File, nonce string) error {
+	k3s, _, err := startK3s(ctx, nonce)
 	if err != nil {
 		return err
 	}
@@ -49,6 +50,7 @@ func deployHelm(ctx context.Context, source *dagger.Directory, kubeconfig *dagge
 		WithFile("/work/values.yaml", values).
 		WithDirectory("/work/chart", chart).
 		WithEnvVariable("KUBECONFIG", "/work/kubeconfig.yaml").
+		WithEnvVariable(runNonceEnv, nonce).
 		WithExec([]string{
 			"helm", "upgrade", "--install", helmRelease, "/work/chart",
 			"--namespace", deployNamespace, "--create-namespace",

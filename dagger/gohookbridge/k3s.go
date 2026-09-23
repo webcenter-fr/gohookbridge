@@ -148,8 +148,10 @@ func startRegistry(ctx context.Context) (*dagger.Service, error) {
 // mirror for "registry:5000", and returns (service, kubeconfig) where the
 // kubeconfig has server rewritten to "https://k3s:6443" and
 // insecure-skip-tls-verify:true (ephemeral cluster only). The cluster is
-// memoized: repeated calls return the same instance.
-func startK3s(ctx context.Context) (*dagger.Service, *dagger.File, error) {
+// memoized: repeated calls return the same instance. The nonce is injected as
+// an env var on the API-server readyz wait so it never replays a previous
+// run's cached success against a fresh k3s instance.
+func startK3s(ctx context.Context, nonce string) (*dagger.Service, *dagger.File, error) {
 	k3sLock.Lock()
 	defer k3sLock.Unlock()
 	if k3sMemo != nil && kubeconfigMemo != nil {
@@ -201,6 +203,7 @@ func startK3s(ctx context.Context) (*dagger.Service, *dagger.File, error) {
 	ready := dag.Container().From(kubectlImage).
 		WithFile("/kubeconfig.yaml", kubeconfig).
 		WithEnvVariable("KUBECONFIG", "/kubeconfig.yaml").
+		WithEnvVariable(runNonceEnv, nonce).
 		WithServiceBinding("k3s", started).
 		WithExec([]string{"sh", "-c", `i=0
 until kubectl get --raw /readyz >/dev/null 2>&1; do
