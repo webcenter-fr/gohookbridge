@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -33,7 +34,10 @@ const (
 	ChannelIDPattern  = "[a-zA-Z0-9_-]{1,64}"
 	ChannelPath       = "/{channel:" + ChannelIDPattern + "}"
 	EventsPath        = "/events/{channel:" + ChannelIDPattern + "}"
+	EventIDPattern    = "[a-zA-Z0-9-]{1,64}"
 )
+
+var eventIDPatternRe = regexp.MustCompile("^" + EventIDPattern + "$")
 
 func EffectivePublicURL(publicURL, portAddr string, sslEnabled bool) string {
 	if publicURL != "" {
@@ -354,6 +358,10 @@ func HandleEventReplay(broker *nats.Broker, svc *service.Service) http.HandlerFu
 			http.Error(w, "channel and eventId required", http.StatusBadRequest)
 			return
 		}
+		if !eventIDPatternRe.MatchString(eventID) {
+			http.Error(w, "invalid eventId", http.StatusBadRequest)
+			return
+		}
 
 		ch, err := svc.ResolveChannelConfig(ctx, channel)
 		if err != nil {
@@ -365,7 +373,11 @@ func HandleEventReplay(broker *nats.Broker, svc *service.Service) http.HandlerFu
 			return
 		}
 
-		replayBody := []byte(`{"replayed":true,"original_event_id":"` + eventID + `"}`)
+		replayBody, err := json.Marshal(map[string]any{"replayed": true, "original_event_id": eventID})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		var bodyB string
 		if ch.EncryptionMode == "e2e" && ch.EncryptionPublicKey != "" {
 			pubKey, err := crypto.ParsePublicKey(ch.EncryptionPublicKey)

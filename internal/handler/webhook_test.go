@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -364,6 +365,67 @@ func createGiteaSignature(secret string, payload []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func TestHandleEventReplay(t *testing.T) {
+	broker := newNatsBroker(t, 4249)
+	svc := service.NewService(storetest.NewRaftStore(t), nil)
+
+	doReplay := func(t *testing.T, eventID string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/channels/test-channel/events/"+eventID+"/replay", nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "test-channel")
+		rctx.URLParams.Add("eventId", eventID)
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		HandleEventReplay(broker, svc)(w, req)
+		return w
+	}
+
+	t.Run("invalid event IDs rejected", func(t *testing.T) {
+		for _, id := range []string{
+			`"`,
+			`\`,
+			`/`,
+			`.`,
+			`+`,
+			`a"b`,
+			strings.Repeat("a", 65),
+		} {
+			t.Run(id, func(t *testing.T) {
+				w := doReplay(t, id)
+				assert.Equal(t, w.Code, http.StatusBadRequest)
+			})
+		}
+	})
+
+	t.Run("uuid-shaped event ID accepted and replayed safely", func(t *testing.T) {
+		eventID := "00112233-4455-6677-8899-aabbccddeeff"
+		historical, live := broker.Subscribe("test-channel", time.Time{}, 10)
+		defer broker.Unsubscribe("test-channel", live)
+
+		w := doReplay(t, eventID)
+		assert.Equal(t, w.Code, http.StatusAccepted)
+
+		select {
+		case event := <-live:
+			var eventData map[string]any
+			assert.NilError(t, json.Unmarshal(event, &eventData))
+			bodyB, _ := eventData["bodyB"].(string)
+			decoded, err := base64.StdEncoding.DecodeString(bodyB)
+			assert.NilError(t, err)
+			var replayed map[string]any
+			assert.NilError(t, json.Unmarshal(decoded, &replayed))
+			assert.Equal(t, replayed["original_event_id"], eventID)
+			assert.Equal(t, replayed["replayed"], true)
+			assert.Equal(t, 2, len(replayed), "replayed body must contain only the two expected keys")
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for replayed event")
+		}
+		assert.Equal(t, 0, len(historical))
+	})
 }
 
 func TestSensitiveHeaderForLogs(t *testing.T) {
