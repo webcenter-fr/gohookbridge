@@ -97,11 +97,12 @@ func (m *Gohookbridge) Ci(
 	// (a) Version normalization: trim a leading "v", fall back to "dev"
 	// (pure helpers, unit-tested in internal/pipeline).
 	var warnings []string
-	if trimmed := pipeline.TrimVersionTag(version); trimmed != version {
-		warnings = append(warnings, fmt.Sprintf("normalized version %q to %q", version, trimmed))
+	trimmedVersion := pipeline.TrimVersionTag(version)
+	if trimmedVersion != version {
+		warnings = append(warnings, fmt.Sprintf("normalized version %q to %q", version, trimmedVersion))
 	}
 	resolved := pipeline.ResolveVersion(version)
-	if resolved == "dev" && pipeline.TrimVersionTag(version) == "" {
+	if trimmedVersion == "" {
 		warnings = append(warnings, `empty version: falling back to "dev"`)
 	}
 
