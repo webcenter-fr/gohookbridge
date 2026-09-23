@@ -43,7 +43,7 @@ func TestRequireAuthMiddleware(t *testing.T) {
 	secret := service.DeriveSessionSecret("test-secret-for-middleware-tests-32")
 
 	r := chi.NewRouter()
-	r.Use(RequireAuth(secret))
+	r.Use(RequireAuth(secret, true))
 	r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -98,8 +98,84 @@ func TestRequireAuthMiddleware(t *testing.T) {
 	})
 }
 
+func cookieByName(t *testing.T, w *httptest.ResponseRecorder, name string) *http.Cookie {
+	t.Helper()
+	for _, c := range w.Result().Cookies() {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+func TestSessionCookieSecureFlag(t *testing.T) {
+	for _, secure := range []bool{true, false} {
+		t.Run(fmt.Sprintf("secure=%v", secure), func(t *testing.T) {
+			w := httptest.NewRecorder()
+			setSessionCookie(w, "token", secure)
+			c := cookieByName(t, w, sessionCookieName)
+			assert.Assert(t, c != nil)
+			assert.Equal(t, c.Secure, secure)
+			assert.Assert(t, c.HttpOnly)
+		})
+	}
+}
+
+func TestClearSessionCookieSecureFlag(t *testing.T) {
+	for _, secure := range []bool{true, false} {
+		t.Run(fmt.Sprintf("secure=%v", secure), func(t *testing.T) {
+			w := httptest.NewRecorder()
+			clearSessionCookie(w, secure)
+			c := cookieByName(t, w, sessionCookieName)
+			assert.Assert(t, c != nil)
+			assert.Equal(t, c.Secure, secure)
+			assert.Assert(t, c.MaxAge < 0)
+		})
+	}
+}
+
+func TestOIDCStateCookieSecureFlag(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-secure-flag-32")
+	provider := domain.OIDCProvider{
+		ID:        "test",
+		Name:      "TestProvider",
+		ClientID:  "test-client",
+		IssuerURL: "https://example.com",
+		Scopes:    []string{"openid"},
+	}
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"authorization_endpoint": "https://example.com/auth",
+				"token_endpoint":         "https://example.com/token",
+				"userinfo_endpoint":      "https://example.com/userinfo",
+			})
+		}
+	}))
+	defer mockServer.Close()
+	provider.IssuerURL = mockServer.URL
+
+	for _, secure := range []bool{true, false} {
+		t.Run(fmt.Sprintf("secure=%v", secure), func(t *testing.T) {
+			handler, err := NewOIDCHandler(provider, secret, "http://localhost:3333", secure)
+			assert.NilError(t, err)
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/oidc/test/login", nil)
+			handler.LoginHandler().ServeHTTP(w, req)
+
+			stateCookie := cookieByName(t, w, oidcStateCookieName)
+			assert.Assert(t, stateCookie != nil)
+			assert.Equal(t, stateCookie.Secure, secure)
+			assert.Assert(t, stateCookie.HttpOnly)
+		})
+	}
+}
+
 func TestLogoutHandler(t *testing.T) {
-	handler := LogoutHandler()
+	handler := LogoutHandler(true)
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/logout", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -142,7 +218,7 @@ func TestOIDCLoginHandler(t *testing.T) {
 	defer mockServer.Close()
 
 	provider.IssuerURL = mockServer.URL
-	handler, err := NewOIDCHandler(provider, secret, "http://localhost:3333")
+	handler, err := NewOIDCHandler(provider, secret, "http://localhost:3333", true)
 	assert.NilError(t, err)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/oidc/test/login?redirect=/my-channel", nil)
@@ -212,7 +288,7 @@ func TestOIDCCallbackHandler(t *testing.T) {
 		Scopes:       []string{"openid", "profile", "email"},
 	}
 
-	handler, err := NewOIDCHandler(provider, secret, mockServer.URL)
+	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
 	assert.NilError(t, err)
 
 	state := "valid-state-value"
@@ -270,7 +346,7 @@ func TestOIDCCallback_InvalidState(t *testing.T) {
 		Scopes:    []string{"openid"},
 	}
 
-	handler, err := NewOIDCHandler(provider, secret, mockServer.URL)
+	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
 	assert.NilError(t, err)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=code&state=wrong-state", mockServer.URL), nil)
@@ -330,7 +406,7 @@ func TestOIDCLoginHandler_RejectsExternalRedirect(t *testing.T) {
 	defer mockServer.Close()
 
 	provider.IssuerURL = mockServer.URL
-	handler, err := NewOIDCHandler(provider, secret, "http://localhost:3333")
+	handler, err := NewOIDCHandler(provider, secret, "http://localhost:3333", true)
 	assert.NilError(t, err)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/oidc/test/login?redirect=https%3A%2F%2Fevil.example.com%2Fphish", nil)
@@ -390,7 +466,7 @@ func TestOIDCCallbackHandler_RejectsExternalRedirect(t *testing.T) {
 		Scopes:       []string{"openid"},
 	}
 
-	handler, err := NewOIDCHandler(provider, secret, mockServer.URL)
+	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
 	assert.NilError(t, err)
 
 	state := "valid-state-value"
@@ -429,7 +505,7 @@ func TestFullProtectedFlow(t *testing.T) {
 						ExpiresAt: time.Now().Unix() + sessionMaxAge,
 					}
 					encoded, _ := service.EncodeSession(token, secret)
-					setSessionCookie(w, encoded)
+					setSessionCookie(w, encoded, true)
 					w.Header().Set("Content-Type", "application/json")
 					_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 					return
@@ -438,9 +514,9 @@ func TestFullProtectedFlow(t *testing.T) {
 		}
 		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 	})
-	r.Post("/logout", LogoutHandler())
+	r.Post("/logout", LogoutHandler(true))
 	r.Group(func(r chi.Router) {
-		r.Use(RequireAuth(secret))
+		r.Use(RequireAuth(secret, true))
 		r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("home"))

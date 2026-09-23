@@ -27,9 +27,10 @@ type OIDCHandler struct {
 	Discovery     *OIDCDiscovery
 	SessionSecret [32]byte
 	PublicURL     string
+	SecureCookies bool
 }
 
-func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, publicURL string) (*OIDCHandler, error) {
+func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, publicURL string, secureCookies bool) (*OIDCHandler, error) {
 	if provider.GroupsClaim == "" {
 		provider.GroupsClaim = "groups"
 	}
@@ -56,6 +57,7 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 		Discovery:     &disc,
 		SessionSecret: sessionSecret,
 		PublicURL:     publicURL,
+		SecureCookies: secureCookies,
 	}, nil
 }
 
@@ -97,7 +99,7 @@ func (h *OIDCHandler) LoginHandler() http.HandlerFunc {
 			Value:    stateValue,
 			Path:     "/",
 			HttpOnly: true,
-			Secure:   true,
+			Secure:   h.SecureCookies,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   300,
 		})
@@ -137,7 +139,7 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 		}
 		redirect := safeRedirectPath(parts[1])
 
-		clearOIDCStateCookie(w)
+		clearOIDCStateCookie(w, h.SecureCookies)
 
 		token, err := h.exchangeCode(code, r)
 		if err != nil {
@@ -177,7 +179,7 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		setSessionCookie(w, encoded)
+		setSessionCookie(w, encoded, h.SecureCookies)
 		http.Redirect(w, r, redirect, http.StatusFound)
 	}
 }
@@ -234,13 +236,13 @@ func (h *OIDCHandler) getUserInfo(accessToken string) (map[string]any, error) {
 	return result, nil
 }
 
-func clearOIDCStateCookie(w http.ResponseWriter) {
+func clearOIDCStateCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     oidcStateCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})

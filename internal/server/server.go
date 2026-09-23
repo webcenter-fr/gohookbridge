@@ -251,6 +251,11 @@ func NewServer(c *cli.Context) (*Server, error) {
 	portAddr := fmt.Sprintf("%s:%d", c.String("address"), c.Int("port"))
 	publicURL := handler.EffectivePublicURL(explicitPublicURL, portAddr, sslEnabled)
 
+	// Session cookies carry the Secure flag only when the effective
+	// deployment is TLS (manual certs, auto-cert, or an https public URL);
+	// plain-HTTP dev deployments keep working.
+	cookieSecure := sslEnabled || autoCert || strings.HasPrefix(publicURL, "https://")
+
 	// Session secret: the leader generates and replicates it; followers poll
 	// for the replicated value before requiring it.
 	secret := svc.SessionSecret(ctx)
@@ -329,7 +334,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	// OIDC routes (registered dynamically from Raft config)
 	providers, _ := svc.OIDCProviders(ctx)
 	for _, provider := range providers {
-		oidcHandler, err := handler.NewOIDCHandler(provider, sessionSecret, publicURL)
+		oidcHandler, err := handler.NewOIDCHandler(provider, sessionSecret, publicURL, cookieSecure)
 		if err != nil {
 			cancelStartup()
 			broker.Shutdown()
@@ -350,8 +355,8 @@ func NewServer(c *cli.Context) (*Server, error) {
 	// Public auth API routes — mounted before main /api to avoid middleware intercept
 	publicAPIRouter := chi.NewRouter()
 	publicAPIRouter.Get("/methods", handler.APIAuthMethodsHandler(svc))
-	publicAPIRouter.Post("/login", handler.APILoginHandler(svc, sessionSecret, banTrackerInst))
-	publicAPIRouter.Post("/logout", handler.APILogoutHandler())
+	publicAPIRouter.Post("/login", handler.APILoginHandler(svc, sessionSecret, banTrackerInst, cookieSecure))
+	publicAPIRouter.Post("/logout", handler.APILogoutHandler(cookieSecure))
 	mainRouter.Mount("/api/auth", publicAPIRouter)
 
 	// API routes — dynamic auth handles setup mode and authentication
@@ -359,7 +364,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	// Mutating requests must reach the Raft leader; in an HA deployment the
 	// Service load-balances over all replicas, so followers forward writes.
 	apiRouter.Use(handler.LeaderForwardMiddleware(rs, c.Int("port")))
-	apiRouter.Use(handler.RequireAuthDynamic(svc, sessionSecret))
+	apiRouter.Use(handler.RequireAuthDynamic(svc, sessionSecret, cookieSecure))
 	handler.RegisterAPIHandlers(apiRouter, svc)
 	// Channel-write-gated operational endpoints (no setup-mode bypass: in setup
 	// mode there is no session, so RequirePermission returns 401).

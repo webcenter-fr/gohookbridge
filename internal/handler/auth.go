@@ -22,31 +22,31 @@ const (
 //nolint:gosec // this is a dummy hash used for timing equalization, not a credential
 const dummyPasswordHash = "$2a$10$GB/spbww7shMhAoZAdOXKOcdUaA/W1gnFjKLZpLdW.xe6U0FUNBfe"
 
-func setSessionCookie(w http.ResponseWriter, token string) {
+func setSessionCookie(w http.ResponseWriter, token string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   sessionMaxAge,
 	})
 }
 
-func clearSessionCookie(w http.ResponseWriter) {
+func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 }
 
-func RequireAuth(secret [32]byte) func(http.Handler) http.Handler {
+func RequireAuth(secret [32]byte, secure bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie(sessionCookieName)
@@ -62,7 +62,7 @@ func RequireAuth(secret [32]byte) func(http.Handler) http.Handler {
 			}
 			token, err := service.DecodeSession(cookie.Value, secret)
 			if err != nil {
-				clearSessionCookie(w)
+				clearSessionCookie(w, secure)
 				if r.Method == http.MethodGet {
 					redirectURL := r.URL.String()
 					//nolint:gosec
@@ -83,14 +83,14 @@ func RequireAuth(secret [32]byte) func(http.Handler) http.Handler {
 	}
 }
 
-func LogoutHandler() http.HandlerFunc {
+func LogoutHandler(secure bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		clearSessionCookie(w)
+		clearSessionCookie(w, secure)
 		http.Redirect(w, r, "/", http.StatusFound)
 	}
 }
 
-func RequireAuthDynamic(svc *service.Service, secret [32]byte) func(http.Handler) http.Handler {
+func RequireAuthDynamic(svc *service.Service, secret [32]byte, secure bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cfg := svc.BuildAuthConfig(r.Context())
@@ -98,7 +98,7 @@ func RequireAuthDynamic(svc *service.Service, secret [32]byte) func(http.Handler
 				next.ServeHTTP(w, r)
 				return
 			}
-			RequireAuth(secret)(next).ServeHTTP(w, r)
+			RequireAuth(secret, secure)(next).ServeHTTP(w, r)
 		})
 	}
 }
@@ -127,7 +127,7 @@ func APIAuthMethodsHandler(svc *service.Service) http.HandlerFunc {
 	}
 }
 
-func APILoginHandler(svc *service.Service, secret [32]byte, banTracker *service.BanTracker) http.HandlerFunc {
+func APILoginHandler(svc *service.Service, secret [32]byte, banTracker *service.BanTracker, secure bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		cfg := svc.BuildAuthConfig(ctx)
@@ -171,16 +171,16 @@ func APILoginHandler(svc *service.Service, secret [32]byte, banTracker *service.
 			http.Error(w, `{"error":"failed to create session"}`, http.StatusInternalServerError)
 			return
 		}
-		setSessionCookie(w, encoded)
+		setSessionCookie(w, encoded, secure)
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	}
 }
 
-func APILogoutHandler() http.HandlerFunc {
+func APILogoutHandler(secure bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		clearSessionCookie(w)
+		clearSessionCookie(w, secure)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	}
