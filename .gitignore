@@ -11,3 +11,4 @@ web/.nuxtrc
 web/dist
 gohookbridge/web/static/
 helm/gohookbridge/values-home.yaml
+.opencode
