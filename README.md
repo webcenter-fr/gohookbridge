@@ -404,22 +404,31 @@ global:
     max_body_size: 26214400
     behind_reverse_proxy: true
   defaults:
-    webhook_signatures: ["global-webhook-secret"]
+    webhook_secret: "global-webhook-secret"
     allowed_ips: ["192.30.252.0/22"]
     replay_token: "global-replay-token"
 users:
   - username: admin
     password: "your-strong-password"
     roles: ["admin"]
-    projects: ["*"]
-projects:
+    channels: ["*"]
+channels:
   - id: my-project
-    name: My Project
+    description: My Project
     webhook_signatures: ["project-specific-secret"]
     allowed_ips: ["10.0.0.0/8"]
+    # Token mode: POST /{channel} then requires an access token.
+    access_mode: token
+    access_tokens:
+      - id: produce-token
+        name: Produce token
+        token: "my-plaintext-token" # stored hashed; the plaintext never persists
+        scope: produce              # produce | consume | both (defaults to both)
 ```
 
 The bootstrap file is read **once** on the very first boot when the Raft store is empty. After that, use the Admin UI or API to manage configuration.
+
+Channels with `access_mode: token` require an access token on `POST /{channel}` — either `?token=...` or `Authorization: Bearer <token>` — whose scope is `produce` or `both`; the plaintext `token` value is stored hashed (SHA-256), never in the clear.
 
 #### Raft Flags
 
