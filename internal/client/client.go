@@ -87,7 +87,7 @@ func getOrCreateClientID() string {
 		return strings.TrimSpace(string(data))
 	}
 
-	id := uuid.GenerateUUID()
+	id := uuid.MustGenerateUUID()
 	_ = os.WriteFile(idFile, []byte(id), 0600)
 	return id
 }

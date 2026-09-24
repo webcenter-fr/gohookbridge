@@ -1235,7 +1235,11 @@ func (rs *RaftStore) CreateRoleMapping(ctx context.Context, m *domain.RoleMappin
 			return nil // already exists, idempotent
 		}
 	}
-	m.ID = uuid.GenerateUUID()
+	id, err := uuid.GenerateUUID()
+	if err != nil {
+		return err
+	}
+	m.ID = id
 	val, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -1307,7 +1311,11 @@ func (rs *RaftStore) CreateChannelRoleMapping(ctx context.Context, m *domain.Cha
 			return nil // already exists, idempotent
 		}
 	}
-	m.ID = uuid.GenerateUUID()
+	id, err := uuid.GenerateUUID()
+	if err != nil {
+		return err
+	}
+	m.ID = id
 	if m.ChannelID == "" {
 		return fmt.Errorf("%w: channel_id required", domain.ErrInvalidArgument)
 	}

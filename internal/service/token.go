@@ -41,8 +41,12 @@ func (s *Service) CreateAccessToken(ctx context.Context, channelID string, name 
 	if err != nil {
 		return "", domain.ChannelAccessToken{}, err
 	}
+	id, err := uuid.GenerateUUID()
+	if err != nil {
+		return "", domain.ChannelAccessToken{}, err
+	}
 	t := domain.ChannelAccessToken{
-		ID:        uuid.GenerateUUID(),
+		ID:        id,
 		Name:      name,
 		TokenHash: hash,
 		Scope:     scope,

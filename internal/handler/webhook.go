@@ -259,7 +259,11 @@ func HandleWebhookPost(broker *nats.Broker, svc *service.Service, banTracker *se
 		}
 		payload["timestamp"] = fmt.Sprintf("%d", now.UnixMilli())
 		payload["bodyB"] = base64.StdEncoding.EncodeToString(payloadBytes)
-		eventID := uuid.GenerateUUID()
+		eventID, err := uuid.GenerateUUID()
+		if err != nil {
+			http.Error(w, "Failed to generate event id", http.StatusInternalServerError)
+			return
+		}
 		payload["event_id"] = eventID
 		reencoded, err := json.Marshal(payload)
 		if err != nil {
