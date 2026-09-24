@@ -69,7 +69,7 @@
 ├── api/
 │   └── openapi.yaml                  # placeholder (full spec out of scope)
 ├── config/                           # NOT a Go package — config = CLI flags + Raft-stored bootstrap.yaml
-├── dagger/gohookbridge/             # Dagger module (own go.mod) — GHCR publish + ephemeral k3s validation
+├── dagger/gohookbridge/              # Dagger module (own go.mod) — GHCR publish + ephemeral k3s validation
 ├── migrations/                       # NOT a directory — data migrations are in-code (internal/repository/migrate.go)
 ├── scripts/
 │   └── generate-release-notes.sh
