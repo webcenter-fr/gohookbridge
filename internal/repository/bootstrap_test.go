@@ -252,3 +252,30 @@ func TestLoadBootstrap_TokenChannelYAML(t *testing.T) {
 	assert.Equal(t, cfg.Channels[0].AccessTokens[0].Token, "raw-secret")
 	assert.Equal(t, cfg.Channels[0].AccessTokens[0].Scope, "produce")
 }
+
+func TestApplyBootstrap_TokenScopeDefaultsToBoth(t *testing.T) {
+	rs := newTestRaftStore(t)
+
+	cfg := &BootstrapConfig{
+		Channels: []BootstrapChannel{
+			{
+				ID:         "scopeless-channel",
+				AccessMode: "token",
+				AccessTokens: []BootstrapAccessToken{
+					// No scope: must behave like service.CreateAccessToken,
+					// which defaults any unknown scope to "both" — otherwise
+					// ValidateChannelToken silently rejects the token.
+					{ID: "tok-1", Name: "no-scope", Token: "raw-secret"},
+				},
+			},
+		},
+	}
+
+	err := rs.ApplyBootstrap(context.Background(), cfg)
+	assert.NilError(t, err)
+
+	ch, err := rs.GetChannel(context.Background(), "scopeless-channel")
+	assert.NilError(t, err)
+	assert.Equal(t, len(ch.AccessTokens), 1)
+	assert.Equal(t, ch.AccessTokens[0].Scope, "both")
+}

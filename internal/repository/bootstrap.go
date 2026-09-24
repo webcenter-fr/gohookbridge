@@ -109,11 +109,19 @@ func (rs *RaftStore) ApplyBootstrap(ctx context.Context, cfg *BootstrapConfig) e
 			if t.Token == "" {
 				return fmt.Errorf("channel %q: access token %q has an empty token value", p.ID, t.Name)
 			}
+			// Mirror service.CreateAccessToken: an unset or unknown scope
+			// defaults to "both", otherwise ValidateChannelToken (which only
+			// accepts "both" or the required scope) would silently reject the
+			// token.
+			scope := t.Scope
+			if scope != "produce" && scope != "consume" && scope != "both" {
+				scope = "both"
+			}
 			ch.AccessTokens = append(ch.AccessTokens, domain.ChannelAccessToken{
 				ID:        t.ID,
 				Name:      t.Name,
 				TokenHash: hashBootstrapToken(t.Token),
-				Scope:     t.Scope,
+				Scope:     scope,
 			})
 		}
 		domain.MigrateChannel(ch)
