@@ -289,3 +289,29 @@ func TestSplitListenerIPRestrictEnforcedOnBothListeners(t *testing.T) {
 		assert.Equal(t, status, http.StatusAccepted, "%s: unrestricted channel should relay: %s", base, body)
 	}
 }
+
+// TestSplitListenerTokenModeEnforcedOnBothListeners proves the produce-token
+// path (commit ade970b moved channel-scoped middlewares to inline r.With) on
+// BOTH listeners: a token-mode channel accepts a valid produce token (202) and
+// rejects missing / invalid / wrong-channel tokens (401).
+func TestSplitListenerTokenModeEnforcedOnBothListeners(t *testing.T) {
+	s := startServerWithBootstrap(t, freePort(t), "bootstrap-token.yaml")
+
+	for _, base := range []string{s.publicBase, s.internalBase} {
+		// No token -> 401.
+		status, body := postPayload(s.runCtx, t, base+"/itest-token-channel", s.payload)
+		assert.Equal(t, status, http.StatusUnauthorized, "%s: missing token must be rejected: %s", base, body)
+
+		// Invalid token -> 401.
+		status, body = postPayload(s.runCtx, t, base+"/itest-token-channel?token=not-the-token", s.payload)
+		assert.Equal(t, status, http.StatusUnauthorized, "%s: invalid token must be rejected: %s", base, body)
+
+		// Valid token -> 202.
+		status, body = postPayload(s.runCtx, t, base+"/itest-token-channel?token=integration-test-token", s.payload)
+		assert.Equal(t, status, http.StatusAccepted, "%s: valid token must be accepted: %s", base, body)
+
+		// Valid token on the WRONG channel -> 401 (tokens are channel-scoped).
+		status, body = postPayload(s.runCtx, t, base+"/itest-token-channel-b?token=integration-test-token", s.payload)
+		assert.Equal(t, status, http.StatusUnauthorized, "%s: token from another channel must be rejected: %s", base, body)
+	}
+}

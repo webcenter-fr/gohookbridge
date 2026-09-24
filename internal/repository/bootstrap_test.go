@@ -199,3 +199,56 @@ func TestApplyBootstrap_DoubleApplication(t *testing.T) {
 	err = rs.ApplyBootstrap(context.Background(), &BootstrapConfig{})
 	assert.ErrorContains(t, err, "FSM already has data")
 }
+
+func TestApplyBootstrap_TokenChannel(t *testing.T) {
+	rs := newTestRaftStore(t)
+
+	cfg := &BootstrapConfig{
+		Channels: []BootstrapChannel{
+			{
+				ID:         "token-channel",
+				AccessMode: "token",
+				AccessTokens: []BootstrapAccessToken{
+					{ID: "tok-1", Name: "produce", Token: "raw-secret", Scope: "produce"},
+				},
+			},
+		},
+	}
+
+	err := rs.ApplyBootstrap(context.Background(), cfg)
+	assert.NilError(t, err)
+
+	ch, err := rs.GetChannel(context.Background(), "token-channel")
+	assert.NilError(t, err)
+	assert.Equal(t, ch.AccessMode, "token")
+	assert.Equal(t, len(ch.AccessTokens), 1)
+	assert.Equal(t, ch.AccessTokens[0].ID, "tok-1")
+	assert.Equal(t, ch.AccessTokens[0].Scope, "produce")
+	// Plaintext is hashed, never persisted in the clear.
+	assert.Equal(t, ch.AccessTokens[0].TokenHash, hashBootstrapToken("raw-secret"))
+	assert.Assert(t, ch.AccessTokens[0].TokenHash != "raw-secret")
+}
+
+func TestLoadBootstrap_TokenChannelYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bootstrap.yaml")
+	content := `channels:
+  - id: proj1
+    access_mode: token
+    access_tokens:
+      - id: tok-1
+        name: produce
+        token: raw-secret
+        scope: produce
+`
+	err := os.WriteFile(path, []byte(content), 0644)
+	assert.NilError(t, err)
+
+	cfg, err := LoadBootstrap(path)
+	assert.NilError(t, err)
+	assert.Equal(t, len(cfg.Channels), 1)
+	assert.Equal(t, cfg.Channels[0].AccessMode, "token")
+	assert.Equal(t, len(cfg.Channels[0].AccessTokens), 1)
+	assert.Equal(t, cfg.Channels[0].AccessTokens[0].Token, "raw-secret")
+	assert.Equal(t, cfg.Channels[0].AccessTokens[0].Scope, "produce")
+}

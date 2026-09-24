@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -30,11 +32,24 @@ type BootstrapUser struct {
 }
 
 type BootstrapChannel struct {
-	ID                string   `json:"id"                           yaml:"id"`
-	Description       string   `json:"description,omitempty"        yaml:"description,omitempty"`
-	WebhookSecret     string   `json:"webhook_secret,omitempty"     yaml:"webhook_secret,omitempty"`
-	WebhookSignatures []string `json:"webhook_signatures,omitempty" yaml:"webhook_signatures,omitempty"`
-	AllowedIPs        []string `json:"allowed_ips,omitempty"        yaml:"allowed_ips,omitempty"`
+	ID                string                 `json:"id"                           yaml:"id"`
+	Description       string                 `json:"description,omitempty"        yaml:"description,omitempty"`
+	WebhookSecret     string                 `json:"webhook_secret,omitempty"     yaml:"webhook_secret,omitempty"`
+	WebhookSignatures []string               `json:"webhook_signatures,omitempty" yaml:"webhook_signatures,omitempty"`
+	AllowedIPs        []string               `json:"allowed_ips,omitempty"        yaml:"allowed_ips,omitempty"`
+	AccessMode        string                 `json:"access_mode,omitempty"        yaml:"access_mode,omitempty"`
+	AccessTokens      []BootstrapAccessToken `json:"access_tokens,omitempty"      yaml:"access_tokens,omitempty"`
+}
+
+// BootstrapAccessToken seeds a channel access token from bootstrap.yaml. Token
+// is the plaintext value; ApplyBootstrap hashes it into
+// domain.ChannelAccessToken.TokenHash (matching service.CreateAccessToken
+// semantics — the plaintext never persists).
+type BootstrapAccessToken struct {
+	ID    string `json:"id,omitempty"   yaml:"id,omitempty"`
+	Name  string `json:"name,omitempty" yaml:"name,omitempty"`
+	Token string `json:"token"          yaml:"token"`
+	Scope string `json:"scope"          yaml:"scope"`
 }
 
 func LoadBootstrap(path string) (*BootstrapConfig, error) {
@@ -54,6 +69,14 @@ func LoadBootstrap(path string) (*BootstrapConfig, error) {
 		}
 	}
 	return &cfg, nil
+}
+
+// hashBootstrapToken hashes a plaintext bootstrap token the same way
+// service.HashToken does (SHA-256 hex). Duplicated here because the repository
+// layer must not import service.
+func hashBootstrapToken(raw string) string {
+	h := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(h[:])
 }
 
 func (rs *RaftStore) ApplyBootstrap(ctx context.Context, cfg *BootstrapConfig) error {
@@ -80,6 +103,18 @@ func (rs *RaftStore) ApplyBootstrap(ctx context.Context, cfg *BootstrapConfig) e
 			//nolint:staticcheck // legacy field migrated in MigrateChannel
 			WebhookSignatures: p.WebhookSignatures,
 			AllowedIPs:        p.AllowedIPs,
+			AccessMode:        p.AccessMode,
+		}
+		for _, t := range p.AccessTokens {
+			if t.Token == "" {
+				return fmt.Errorf("channel %q: access token %q has an empty token value", p.ID, t.Name)
+			}
+			ch.AccessTokens = append(ch.AccessTokens, domain.ChannelAccessToken{
+				ID:        t.ID,
+				Name:      t.Name,
+				TokenHash: hashBootstrapToken(t.Token),
+				Scope:     t.Scope,
+			})
 		}
 		domain.MigrateChannel(ch)
 		payload.Channels = append(payload.Channels, ch)
