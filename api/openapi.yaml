@@ -1,0 +1,11 @@
+openapi: 3.1.0
+info:
+  title: gohookbridge API
+  version: 0.0.0
+  description: |
+    Placeholder for the gohookbridge HTTP API specification.
+
+    The full OpenAPI specification is out of scope for this repository
+    restructure. The actual HTTP surface is implemented by the handlers in
+    internal/handler (channels, users, RBAC, OIDC providers, webhooks, SSE).
+paths: {}

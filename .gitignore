@@ -9,6 +9,6 @@ web/.nuxt/
 web/.output/
 web/.nuxtrc
 web/dist
-gohookbridge/web/static/
+internal/web/static/
 helm/gohookbridge/values-home.yaml
 .opencode

@@ -45,6 +45,7 @@
 import { ref, onMounted } from 'vue'
 import { useAuthStore } from '~/stores/auth'
 import { api } from '~/utils/api'
+import { safeRedirectPath } from '~/utils/redirect'
 
 definePageMeta({ layout: false, public: true, guest: true })
 
@@ -74,7 +75,8 @@ async function handleLogin() {
   errorMsg.value = ''
   try {
     await auth.login(username.value, password.value)
-    const redirect = (route.query.redirect as string) || '/'
+    const raw = typeof route.query.redirect === 'string' ? route.query.redirect : ''
+    const redirect = safeRedirectPath(raw)
     await navigateTo(redirect)
   } catch (e: any) {
     errorMsg.value = e.message || 'Invalid credentials'
@@ -84,7 +86,8 @@ async function handleLogin() {
 }
 
 function oidcLogin(providerID: string) {
-  const redirect = route.query.redirect as string || '/'
+  const raw = typeof route.query.redirect === 'string' ? route.query.redirect : ''
+  const redirect = safeRedirectPath(raw)
   window.location.href = `/auth/oidc/${providerID}/login?redirect=${encodeURIComponent(redirect)}`
 }
 </script>

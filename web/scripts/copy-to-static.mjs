@@ -1,7 +1,7 @@
 import { cpSync, rmSync, existsSync, readdirSync } from 'node:fs'
 
 const src = '.output/public'
-const dst = '../gohookbridge/web/static'
+const dst = '../internal/web/static'
 
 if (!existsSync(src)) {
   console.error('ERROR: .output/public is missing. Did "nuxt generate" run?')

@@ -1,6 +1,6 @@
 before:
   hooks:
-    - /bin/sh -c "printf '{{ .Version }}' > gohookbridge/templates/version"
+    - /bin/sh -c "printf '{{ .Version }}' > internal/app/templates/version"
     - npm --prefix web ci
     - npm --prefix web run build
 

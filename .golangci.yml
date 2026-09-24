@@ -2,6 +2,7 @@ version: "2"
 run:
   build-tags:
     - e2e
+    - integration
 linters:
   enable:
     - asasalint
@@ -80,11 +81,15 @@ linters:
       - linters:
           - gosec
         path: _test\.go
-      - path: pkg/resolve/resolve.go
-        text: don't use `init` function
+      - linters:
+          - revive
+        text: unused-parameter
+        path: internal/repository/
+        # every repository method takes context.Context as its first
+        # parameter by design (domain.Repository); some CRUD methods do not
+        # use it internally yet.
     paths:
       - vendor
-      - pkg/provider/gitea/structs
       - third_party$
       - builtin$
       - examples$
@@ -100,7 +105,6 @@ formatters:
     generated: lax
     paths:
       - vendor
-      - pkg/provider/gitea/structs
       - third_party$
       - builtin$
       - examples$

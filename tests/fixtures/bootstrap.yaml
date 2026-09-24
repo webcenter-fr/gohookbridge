@@ -1,0 +1,19 @@
+global:
+  server:
+    max_body_size: 26214400
+    behind_reverse_proxy: false
+    cors_origin: "*"
+    rate_limit_enabled: false
+    rate_limit_requests: 100
+    rate_limit_window_seconds: 60
+    ban_enabled: false
+    ban_max_unique_failures: 5
+    ban_window_seconds: 300
+    ban_duration_seconds: 3600
+  defaults:
+    webhook_secret: ""
+    allowed_ips: []
+    message_ttl_seconds: 0
+channels:
+  - id: itest-channel
+    description: Channel used by the black-box integration test

@@ -396,11 +396,20 @@ This means an honest user who forgot their password and tries it 50 times will n
 
 ### Internal User Authentication
 
-Users authenticate with username and password on the `/login` page. Passwords are stored as bcrypt hashes in the Raft store. Session tokens are HMAC-SHA256 signed cookies with 24-hour expiry, marked `HttpOnly`, `Secure`, and `SameSite=Lax`.
+Users authenticate with username and password on the `/login` page. Passwords are stored as bcrypt hashes in the Raft store. Session tokens are HMAC-SHA256 signed cookies with 24-hour expiry, marked `HttpOnly` and `SameSite=Lax`; the `Secure` attribute is set when the deployment is served over TLS (see [Session Management](#session-management)).
 
 ### OIDC Authentication
 
 OIDC providers can be configured via the Admin API. After successful OIDC login, users are matched to internal user records by OIDC subject claims.
+
+OIDC login uses the authorization code flow with a state parameter (open-redirect protection) and a nonce. When the token endpoint returns an ID token, it is
+cryptographically verified with `coreos/go-oidc`:
+
+- signature verified against the provider's JWKS,
+- `iss`, `aud` and `exp` claims validated,
+- the `nonce` claim must match the nonce stored in the login nonce cookie.
+
+A nonce mismatch or an unverifiable ID token is a hard reject (HTTP 400) — there is **no silent downgrade** to userinfo. The userinfo fallback is used only when the provider returns no ID token at all. Providers that return an ID token must produce a verifiable one; operators using providers without a JWKS endpoint must disable that provider.
 
 ### RBAC Model
 
@@ -420,8 +429,13 @@ Users can be scoped to specific projects. A user with the `*` (admin) role and p
 
 - HMAC-SHA256 signed cookies prevent forgery
 - 24-hour session expiry
-- `HttpOnly` / `Secure` / `SameSite=Lax` cookie attributes
+- `HttpOnly` / `SameSite=Lax` cookie attributes; the `Secure` attribute reflects the effective deployment (TLS certs, auto-cert, or an https public URL) so plain-HTTP development deployments keep working
+- The session signing key is derived from `session_secret` with HKDF-SHA256 (domain-separated info string) — never the raw secret
+- `session_secret` must be at least 32 characters: enforced at bootstrap (fatal for new deployments), with a startup warning only for pre-existing weaker secrets
 - Session secret is stored in the Raft global config; configure via `bootstrap.yaml` or generate automatically on first leader boot
+- `PUT /global` rejects client-sent `session_secret` values and never echoes the stored secret
+
+> **Upgrade note:** upgrading from a version that derived the signing key with plain SHA-256 to this HKDF-based derivation changes the derived key. All sessions issued before the upgrade are invalidated once (sessions expire after 24h, so the impact is bounded to at most one re-login).
 
 ## Bootstrap Configuration Security
 
@@ -485,6 +499,8 @@ NATS inter-node cluster routes use TCP (not TLS in the current implementation).
 ## Setup Mode
 
 On first boot with no users, gohookbridge enters a **5-minute setup window** during which the Admin API is accessible without authentication. This allows the initial admin user to be created (either via `bootstrap.yaml` or the first API call). After the setup window expires, all API requests require a valid session.
+
+The operational endpoints `/api/send/{channel}`, `/api/channels/{channel}/events/{eventId}/replay` (channel write permission) and `/api/channels/{channel}/generate-encryption-key` (admin permission) are **never** reachable without an authenticated session — including in setup mode, where no session can exist yet. The login bootstrap endpoints (`/api/auth/*` and the OIDC login/callback routes) remain unauthenticated so the initial admin can always be created.
 
 To re-enter setup mode, stop the server, delete the Raft data directory, and restart.
 
