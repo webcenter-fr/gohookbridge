@@ -82,6 +82,13 @@ func resolveListenerConfig(address string, port int, publicAddress string, publi
 	return cfg, nil
 }
 
+// effectivePublicAddr builds the host:port string used as the fallback public
+// URL. It brackets IPv6 hosts via net.JoinHostPort so the fallback never
+// produces a malformed URL like http://::1:8081.
+func effectivePublicAddr(address string, port int) string {
+	return net.JoinHostPort(address, strconv.Itoa(port))
+}
+
 // buildWebhookRouter builds the POST-only webhook ingestion sub-router with the
 // ban, rate-limit, IP-restriction, and produce-scoped channel-access middleware
 // and the webhook POST handler. Shared by the internal and public routers so the
@@ -330,7 +337,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	certFile := c.String("tls-cert")
 	certKey := c.String("tls-key")
 	sslEnabled := certFile != "" && certKey != ""
-	portAddr := fmt.Sprintf("%s:%d", c.String("address"), c.Int("port"))
+	portAddr := effectivePublicAddr(c.String("address"), c.Int("port"))
 	publicURL := handler.EffectivePublicURL(explicitPublicURL, portAddr, sslEnabled)
 
 	// Session cookies carry the Secure flag only when the effective

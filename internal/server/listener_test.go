@@ -82,3 +82,10 @@ func TestResolveListenerConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestEffectivePublicAddr(t *testing.T) {
+	assert.Equal(t, effectivePublicAddr("localhost", 8081), "localhost:8081")
+	assert.Equal(t, effectivePublicAddr("127.0.0.1", 8081), "127.0.0.1:8081")
+	assert.Equal(t, effectivePublicAddr("::1", 8081), "[::1]:8081")
+	assert.Equal(t, effectivePublicAddr("", 8081), ":8081")
+}
