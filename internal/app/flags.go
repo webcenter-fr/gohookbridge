@@ -12,6 +12,7 @@ const (
 	DefaultLocalDebugURL = "http://localhost:8080"
 	DefaultServerPort    = 8081
 	DefaultServerAddress = "localhost"
+	DefaultPublicAddress = "0.0.0.0"
 )
 
 var CommonFlags = []cli.Flag{
@@ -223,6 +224,18 @@ var ServerFlags = []cli.Flag{
 		Aliases: []string{"p"},
 		Value:   DefaultServerPort,
 		Usage:   "Port to listen on",
+	},
+	&cli.IntFlag{
+		Name:    "public-port",
+		Usage:   "Port for the public (internet-facing) webhook ingestion listener. 0 disables it (single-listener mode: webhooks are served on --port).",
+		Value:   0,
+		EnvVars: []string{"GOHOOKBRIDGE_PUBLIC_PORT"},
+	},
+	&cli.StringFlag{
+		Name:    "public-address",
+		Usage:   "Bind address for the public webhook ingestion listener (ignored when --public-port is 0).",
+		Value:   DefaultPublicAddress,
+		EnvVars: []string{"GOHOOKBRIDGE_PUBLIC_ADDRESS"},
 	},
 	&cli.BoolFlag{
 		Name:  "auto-cert",

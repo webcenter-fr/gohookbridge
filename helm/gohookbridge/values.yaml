@@ -9,6 +9,11 @@ server:
   # is not reachable by kubelet probes or Services, so pods must bind 0.0.0.0.
   address: "0.0.0.0"
   port: 3333
+  # Split listener: when publicPort > 0, a second internet-facing listener
+  # serves only webhook POST + health. The internal listener (port) keeps the
+  # UI, API, SSE, and internal publish.
+  publicAddress: "0.0.0.0"
+  publicPort: 0                     # 0 = disabled (single-listener, current behavior)
   raftPort: 6001
   natsPort: 4222
   natsClusterPort: 6222

@@ -43,6 +43,12 @@ spec:
         - {{ .Values.server.address | quote }}
         - --port
         - "{{ .Values.server.port }}"
+        {{- if gt (int .Values.server.publicPort) 0 }}
+        - --public-address
+        - {{ .Values.server.publicAddress | quote }}
+        - --public-port
+        - "{{ .Values.server.publicPort }}"
+        {{- end }}
         - --public-url
         - {{ .Values.server.publicURL | quote }}
         - --raft-dir
@@ -99,6 +105,11 @@ spec:
         - name: http
           containerPort: {{ .Values.server.port }}
           protocol: TCP
+        {{- if gt (int .Values.server.publicPort) 0 }}
+        - name: public
+          containerPort: {{ .Values.server.publicPort }}
+          protocol: TCP
+        {{- end }}
         - name: raft
           containerPort: {{ .Values.server.raftPort }}
           protocol: TCP

@@ -13,6 +13,12 @@ spec:
     port: {{ .Values.server.service.port }}
     targetPort: {{ .Values.server.port }}
     protocol: TCP
+  {{- if gt (int .Values.server.publicPort) 0 }}
+  - name: public
+    port: {{ .Values.server.publicPort }}
+    targetPort: {{ .Values.server.publicPort }}
+    protocol: TCP
+  {{- end }}
   selector:
     app.kubernetes.io/name: {{ include "gohookbridge.name" . }}
     app.kubernetes.io/component: server
