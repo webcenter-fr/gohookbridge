@@ -11,7 +11,7 @@ RUN npm ci && npm run build          # emits /src/internal/web/static
 # Guard: fail the build if the static output is missing (catches nuxt generate failures)
 RUN test -f /src/internal/web/static/index.html || (echo "ERROR: static/index.html missing after nuxt generate" && exit 1)
 
-FROM --platform=$BUILDPLATFORM golang:latest AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27 AS builder
 COPY . /go/src/github.com/webcenter-fr/gohookbridge
 COPY --from=webbuild /src/internal/web/static /go/src/github.com/webcenter-fr/gohookbridge/internal/web/static
 WORKDIR /go/src/github.com/webcenter-fr/gohookbridge
