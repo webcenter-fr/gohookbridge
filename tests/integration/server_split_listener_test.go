@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -262,4 +263,29 @@ func TestSplitListenerBanSharedAcrossListeners(t *testing.T) {
 	// ...and on the internal listener (shared BanTracker: global per node).
 	status, body = postPayload(s.runCtx, t, s.internalBase+"/itest-ban-channel", s.payload)
 	assert.Equal(t, status, http.StatusForbidden, "internal listener should enforce the ban: %s", body)
+}
+
+// TestSplitListenerIPRestrictEnforcedOnBothListeners verifies that the
+// channel-scoped middlewares of buildWebhookRouter actually see the matched
+// channel: a per-channel allowed_ips restriction must be enforced on BOTH
+// listeners. (Regression: chi runs Use-registered middlewares before route
+// matching, so chi.URLParam("channel") was empty there and the restriction
+// silently resolved against the global defaults — hence the inline r.With
+// wiring in buildWebhookRouter.)
+func TestSplitListenerIPRestrictEnforcedOnBothListeners(t *testing.T) {
+	s := startServerWithBootstrap(t, freePort(t), "bootstrap-allowips.yaml")
+
+	// itest-allow-channel only allows 10.0.0.1; the tests connect from
+	// 127.0.0.1, so both listeners must reject the POST with 403.
+	for _, base := range []string{s.publicBase, s.internalBase} {
+		status, body := postPayload(s.runCtx, t, base+"/itest-allow-channel", s.payload)
+		assert.Equal(t, status, http.StatusForbidden, "%s: expected the IP restriction to reject the request: %s", base, body)
+		assert.Assert(t, strings.Contains(body, "not allowed"), "%s: expected the IP restriction error, got: %s", base, body)
+	}
+
+	// The unrestricted channel still relays on both listeners.
+	for _, base := range []string{s.publicBase, s.internalBase} {
+		status, body := postPayload(s.runCtx, t, base+"/itest-channel", s.payload)
+		assert.Equal(t, status, http.StatusAccepted, "%s: unrestricted channel should relay: %s", base, body)
+	}
 }

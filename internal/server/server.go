@@ -93,11 +93,17 @@ func buildWebhookRouter(
 	rateLimiter *service.RateLimiter,
 ) chi.Router {
 	r := chi.NewRouter()
-	r.Use(handler.BanMiddleware(banTracker, svc))
-	r.Use(handler.RateLimitMiddleware(rateLimiter, svc))
-	r.Use(handler.IPRestrictMiddleware(svc))
-	r.Use(handler.ChannelAccessMiddleware(svc, "produce", banTracker))
-	r.Post(handler.ChannelPath, handler.HandleWebhookPost(broker, svc, banTracker))
+	// Attach the middlewares inline (r.With) instead of r.Use: chi runs
+	// Use-registered middlewares BEFORE route matching, so chi.URLParam(r,
+	// "channel") is still empty there and the per-channel IP restriction and
+	// produce-token auth would silently resolve against an empty channel.
+	// With() attaches them to the route, after {channel} has been matched.
+	r.With(
+		handler.BanMiddleware(banTracker, svc),
+		handler.RateLimitMiddleware(rateLimiter, svc),
+		handler.IPRestrictMiddleware(svc),
+		handler.ChannelAccessMiddleware(svc, "produce", banTracker),
+	).Post(handler.ChannelPath, handler.HandleWebhookPost(broker, svc, banTracker))
 	return r
 }
 
