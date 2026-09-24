@@ -43,11 +43,11 @@ spec:
         - {{ .Values.server.address | quote }}
         - --port
         - "{{ .Values.server.port }}"
-        {{- if gt (int .Values.server.publicPort) 0 }}
+        {{- if gt (include "gohookbridge.publicPort" . | int) 0 }}
         - --public-address
         - {{ .Values.server.publicAddress | quote }}
         - --public-port
-        - "{{ .Values.server.publicPort }}"
+        - "{{ include "gohookbridge.publicPort" . }}"
         {{- end }}
         - --public-url
         - {{ .Values.server.publicURL | quote }}
@@ -105,9 +105,9 @@ spec:
         - name: http
           containerPort: {{ .Values.server.port }}
           protocol: TCP
-        {{- if gt (int .Values.server.publicPort) 0 }}
+        {{- if gt (include "gohookbridge.publicPort" . | int) 0 }}
         - name: public
-          containerPort: {{ .Values.server.publicPort }}
+          containerPort: {{ include "gohookbridge.publicPort" . }}
           protocol: TCP
         {{- end }}
         - name: raft

@@ -92,3 +92,33 @@ Encryption secret name
 {{- include "gohookbridge.fullname" . }}-encryption-key
 {{- end }}
 {{- end }}
+
+{{/*
+Resolve server.publicPort to a canonical integer, validating it. Accepts an
+unquoted integer (8082) or a quoted numeric string ("8082"). Fails the render
+on any non-numeric value so a misconfigured port cannot silently disable the
+public listener (sprig's int/cast.ToInt would coerce garbage to 0). 0 (or
+unset) is the disabled sentinel and renders byte-identically to the
+pre-change chart.
+*/}}
+{{- define "gohookbridge.publicPort" -}}
+{{- $raw := .Values.server.publicPort -}}
+{{- if eq (kindOf $raw) "string" -}}
+  {{- $t := trim $raw | trimAll "\"" -}}
+  {{- if regexMatch `^[0-9]+$` $t -}}
+    {{- atoi $t -}}
+  {{- else -}}
+    {{- fail (printf "server.publicPort must be a non-negative integer (0 disables the public listener), got %q" $raw) -}}
+  {{- end -}}
+{{- else if eq (kindOf $raw) "int" -}}
+  {{- $raw -}}
+{{- else if eq (kindOf $raw) "int64" -}}
+  {{- $raw -}}
+{{- else if eq (kindOf $raw) "float64" -}}
+  {{- printf "%.0f" $raw -}}
+{{- else if eq (kindOf $raw) "invalid" -}}
+  {{- "0" -}}
+{{- else -}}
+  {{- fail (printf "server.publicPort has unsupported type %s" (kindOf $raw)) -}}
+{{- end -}}
+{{- end -}}

@@ -13,10 +13,10 @@ spec:
     port: {{ .Values.server.service.port }}
     targetPort: {{ .Values.server.port }}
     protocol: TCP
-  {{- if gt (int .Values.server.publicPort) 0 }}
+  {{- if gt (include "gohookbridge.publicPort" . | int) 0 }}
   - name: public
-    port: {{ .Values.server.publicPort }}
-    targetPort: {{ .Values.server.publicPort }}
+    port: {{ include "gohookbridge.publicPort" . }}
+    targetPort: {{ include "gohookbridge.publicPort" . }}
     protocol: TCP
   {{- end }}
   selector:
