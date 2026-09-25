@@ -24,6 +24,12 @@ spec:
       serviceAccountName: {{ include "gohookbridge.fullname" . }}
       {{- end }}
       terminationGracePeriodSeconds: {{ .Values.server.terminationGracePeriodSeconds | default 60 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+      {{- range . }}
+      - name: {{ . }}
+      {{- end }}
+      {{- end }}
       containers:
       - name: server
         image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"

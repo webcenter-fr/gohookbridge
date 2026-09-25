@@ -133,5 +133,11 @@ serviceAccount:
   create: true
   name: ""
 
+# imagePullSecrets is a list of docker-registry Secret names applied to every
+# workload pod (server, client, proxy) for pulling from a PRIVATE image registry
+# (e.g. GHCR). The Secrets must already exist in the release namespace; the chart
+# does NOT create them.
+imagePullSecrets: []               # e.g. [ghcr-pull]
+
 nameOverride: ""
 fullnameOverride: ""
