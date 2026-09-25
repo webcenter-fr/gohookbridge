@@ -18,13 +18,17 @@ type safeLogFormatter struct {
 }
 
 func (l *safeLogFormatter) NewLogEntry(r *http.Request) middleware.LogEntry {
+	// The redaction below must never touch the live request: chi logs
+	// r.RequestURI, while downstream middleware (e.g. ChannelAccessMiddleware)
+	// parses r.URL.Query(), so both fields are rewritten on a detached copy.
 	clean := new(http.Request)
 	*clean = *r
-	q := r.URL.Query()
-	if q.Get("token") != "" {
-		cleanQ := q
-		cleanQ.Set("token", "<redacted>")
-		clean.URL.RawQuery = cleanQ.Encode()
+	urlCopy := *r.URL
+	clean.URL = &urlCopy
+	if q := clean.URL.Query(); q.Get("token") != "" {
+		q.Set("token", "<redacted>")
+		clean.URL.RawQuery = q.Encode()
+		clean.RequestURI = clean.URL.RequestURI()
 	}
 	return (&middleware.DefaultLogFormatter{Logger: l.Logger, NoColor: true}).NewLogEntry(clean)
 }

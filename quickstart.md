@@ -222,7 +222,9 @@ The server and client are deployed with the Helm chart (see the "Kubernetes
 with Helm" and "High Availability with Helm" sections above). The chart renders
 the server as a StatefulSet and exposes all configuration through values:
 
-- `server.publicURL`, `server.ingress` — public endpoint + Ingress/TLS
+- `server.publicURL`, `server.ingress`, `server.publicIngress` — public endpoint +
+  standard/internal Ingress/TLS + public (webhook-only) Ingress/TLS
+- `imagePullSecrets` — docker-registry Secret names for private image registries
 - `server.bootstrap.config` — admin user, projects, and global settings
   (bootstrap.yaml content, stored in a Secret)
 - `client.channelURL` / `client.targetURL` — client forwarding source/target

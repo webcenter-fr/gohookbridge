@@ -8,6 +8,7 @@
    - [NATS — Real-time Webhook Fan-out](#nats--real-time-webhook-fan-out)
    - [Ring Buffer — Late Subscriber Catch-up](#ring-buffer--late-subscriber-catch-up)
    - [SSE Endpoint — Client Subscribe/Push](#sse-endpoint--client-subscribepush)
+   - [Listener split (public vs internal)](#listener-split-public-vs-internal)
 3. [Data Flows](#data-flows)
    - [Webhook POST (Publish)](#webhook-post-publish)
    - [SSE Subscribe + Receive](#sse-subscribe--receive)
@@ -496,6 +497,17 @@ func (b *Broker) Subscribe(channel string, limit int) (historical [][]byte, live
 
 ---
 
+### Listener split (public vs internal)
+
+One process can expose two HTTP listeners (issue #17):
+
+- **Internal listener** (`--address` / `--port`) — keeps the entire route table: SPA, `/api/*`, `/events/*`, `/auth/*`, OIDC, health endpoints, **and** `POST /{channel}` (Publisher API). TLS/autocert (`--tls-cert`, `--tls-key`, `--auto-cert`) apply here only.
+- **Public listener** (`--public-address` / `--public-port`, disabled when `--public-port` is `0`) — a minimal internet-facing router with only health/readiness (`/health`, `/livez`, `/version`, `/readyz`, `/startup`) and `POST /{channel}`. No `/api`, no `/events`, no OIDC, no SPA fallback: unknown paths return 404.
+
+Both listeners mount the **same** `buildWebhookRouter` sub-router (ban → rate-limit → IP-restrict → produce-scoped channel auth → `HandleWebhookPost`), built once in `internal/server/server.go` and fed with the shared `BanTracker`, `RateLimiter`, `Service`, and NATS broker instances. Bans and rate limits are therefore global per node, and a webhook posted on the public listener fans out over the shared NATS broker to SSE consumers on the internal listener. There is deliberately **no gateway component**: re-mounting the existing webhook router avoids duplicating publish, retry, and delivery-guarantee logic. `Run` starts one `http.Server` per enabled listener and drains both on shutdown (after the Raft leadership step-down); a bind failure on either listener fails the process.
+
+---
+
 ## Data Flows
 
 ### Webhook POST (Publish)
@@ -783,7 +795,8 @@ sorts by ID so every node agrees on the same bootstrap node.
 
 | Port | Protocol | Purpose |
 |---|---|---|
-| 3333 | HTTP/HTTPS | Webhook ingestion + SSE + Admin UI + API |
+| 3333 | HTTP/HTTPS | Webhook ingestion + SSE + Admin UI + API (internal listener) |
+| `--public-port` (0 = disabled) | HTTP | Public listener: webhook ingestion + health only; plain HTTP, terminate TLS at the edge |
 | 6001 | TCP (Raft) | Configuration consensus between Raft nodes |
 | 4222 | TCP (NATS client) | NATS client connections (in-process, localhost only) |
 | 6222 | TCP (NATS cluster) | NATS inter-node cluster routes |

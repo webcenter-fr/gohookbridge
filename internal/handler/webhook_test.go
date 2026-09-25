@@ -255,6 +255,14 @@ func TestEffectivePublicURL(t *testing.T) {
 	t.Run("defaults to https address when tls is enabled", func(t *testing.T) {
 		assert.Equal(t, EffectivePublicURL("", "localhost:3333", true), "https://localhost:3333")
 	})
+
+	t.Run("brackets IPv6 fallback address over http", func(t *testing.T) {
+		assert.Equal(t, EffectivePublicURL("", "[::1]:8081", false), "http://[::1]:8081")
+	})
+
+	t.Run("brackets IPv6 fallback address over https", func(t *testing.T) {
+		assert.Equal(t, EffectivePublicURL("", "[::1]:8081", true), "https://[::1]:8081")
+	})
 }
 
 func TestHandleWebhookPostWithNATS(t *testing.T) {

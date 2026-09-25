@@ -176,9 +176,30 @@ per-pod PVCs, and a headless Service. Key values:
 
 - `server.publicURL` — the public webhook endpoint
 - `server.ingress` — Ingress with TLS (`hosts` / `tls`)
+- `server.publicIngress` — internet-facing Ingress for the public webhook-only
+  listener (`hosts` / `tls` / `className` / `annotations`); requires `server.publicPort > 0`
+- `imagePullSecrets` — list of docker-registry Secret names applied to every
+  workload pod (server, client, proxy) for private registries
 - `server.bootstrap.config` — admin user + session secret (bootstrap.yaml content)
 - `server.storage.size` — per-pod Raft data PVC size
 - `client.channelURL` / `client.targetURL` — client forwarding source/target
+
+For the organization-internal pattern, enable `server.publicPort` and
+`server.publicIngress` to expose only webhook ingestion (`POST /{channel}`) to the
+internet while the standard `server.ingress` keeps the UI, API, and SSE internal:
+
+```yaml
+server:
+  publicPort: 8082
+  publicIngress:
+    enabled: true
+    className: nginx
+    hosts: ["gohookbridge-public-test.home.webcenter.fr"]
+    tls:
+      - hosts: ["gohookbridge-public-test.home.webcenter.fr"]
+        secretName: gohookbridge-public-test-tls
+imagePullSecrets: [ghcr-pull]   # only if the image registry is private
+```
 
 When your Ingress is the sole path to gohookbridge and overwrites
 `X-Forwarded-For` / `X-Real-IP`, configure `behind_reverse_proxy` in the global
@@ -362,6 +383,30 @@ Configuration is managed through the Raft consensus store, bootstrapped via `boo
 
 There are many flags available - check them with `gohookbridge server --help`.
 
+#### Deployment patterns
+
+Two deployment patterns are supported:
+
+1. **Internet-shared (default):** expose the single listener directly; webhook ingestion, SSE, API, and UI are all served on `--port`. This is the current behavior when `--public-port` is unset (`0`) — no configuration change is needed for existing deployments.
+2. **Organization-internal:** set `--public-port` to start a second, internet-facing listener that serves **only** webhook ingestion (`POST /{channel}`) and health probes (`/health`, `/livez`, `/version`, `/readyz`, `/startup`). Expose only the public port on the firewall for webhook sources; keep the internal listener (UI + API + SSE + internal publish) on the internal network.
+
+```shell
+gohookbridge server \
+  --address 127.0.0.1 --port 3333 \
+  --public-address 0.0.0.0 --public-port 8080 \
+  --public-url https://webhook.example.com
+```
+
+> [!NOTE]
+> **Firewall guidance:** open only `--public-port` to the internet for webhook ingestion. The Publisher API (`POST /{channel}`) is also available on the internal listener, so internal services can act as webhook sources without the public port being opened to them — and without gohookbridge re-implementing publish/retry in a separate gateway. The public listener is plain HTTP: terminate TLS at the edge (ingress / load balancer / firewall). The internal listener keeps `--tls-cert` / `--tls-key` / `--auto-cert`, the Admin UI, `/api`, `/events`, and OIDC (`--public-url`) unchanged. Bans and rate limits are shared between both listeners (global per node).
+
+#### Listener flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--public-port` | `0` | Port for the public (internet-facing) webhook ingestion listener. `0` disables it (single-listener mode: webhooks are served on `--port`). Env: `GOHOOKBRIDGE_PUBLIC_PORT` |
+| `--public-address` | `0.0.0.0` | Bind address for the public webhook ingestion listener (ignored when `--public-port` is `0`). Env: `GOHOOKBRIDGE_PUBLIC_ADDRESS` |
+
 #### Bootstrap Configuration
 
 On first boot, pass a `bootstrap.yaml` file to initialize the Raft store with an admin user, projects, and global settings:
@@ -380,22 +425,31 @@ global:
     max_body_size: 26214400
     behind_reverse_proxy: true
   defaults:
-    webhook_signatures: ["global-webhook-secret"]
+    webhook_secret: "global-webhook-secret"
     allowed_ips: ["192.30.252.0/22"]
     replay_token: "global-replay-token"
 users:
   - username: admin
     password: "your-strong-password"
     roles: ["admin"]
-    projects: ["*"]
-projects:
+    channels: ["*"]
+channels:
   - id: my-project
-    name: My Project
+    description: My Project
     webhook_signatures: ["project-specific-secret"]
     allowed_ips: ["10.0.0.0/8"]
+    # Token mode: POST /{channel} then requires an access token.
+    access_mode: token
+    access_tokens:
+      - id: produce-token
+        name: Produce token
+        token: "my-plaintext-token" # stored hashed; the plaintext never persists
+        scope: produce              # produce | consume | both (defaults to both)
 ```
 
 The bootstrap file is read **once** on the very first boot when the Raft store is empty. After that, use the Admin UI or API to manage configuration.
+
+Channels with `access_mode: token` require an access token on `POST /{channel}` — either `?token=...` or `Authorization: Bearer <token>` — whose scope is `produce` or `both`; the plaintext `token` value is stored hashed (SHA-256), never in the clear.
 
 #### Raft Flags
 
@@ -557,7 +611,8 @@ When NATS is enabled (`--nats-port 4222`), each gohookbridge instance embeds a `
 
 | Port | Protocol | Purpose |
 |---|---|---|
-| 3333 | HTTP/HTTPS | Webhook ingestion + SSE + Admin UI + API |
+| 3333 | HTTP/HTTPS | Webhook ingestion + SSE + Admin UI + API (internal listener) |
+| `--public-port` (0 = disabled) | HTTP | Public listener: webhook ingestion + health only; plain HTTP, terminate TLS at the edge |
 | 6001 | TCP (Raft) | Configuration consensus between Raft nodes |
 | 4222 | TCP (NATS client) | NATS client connections (in-process, localhost only) |
 | 6222 | TCP (NATS cluster) | NATS inter-node cluster routes |

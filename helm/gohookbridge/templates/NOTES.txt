@@ -2,8 +2,14 @@ Gohookbridge installed!
 
 {{- if .Values.server.enabled }}
 Server is listening on port {{ .Values.server.port }}.
+{{- if gt (include "gohookbridge.publicPort" . | int) 0 }}
+Public webhook listener is on port {{ include "gohookbridge.publicPort" . }}.
+{{- end }}
 {{- if .Values.server.ingress.enabled }}
 Ingress is configured for: {{ join ", " .Values.server.ingress.hosts }}
+{{- end }}
+{{- if .Values.server.publicIngress.enabled }}
+Public (webhook-only) ingress is configured for: {{ join ", " .Values.server.publicIngress.hosts }}
 {{- end }}
 {{- end }}
 

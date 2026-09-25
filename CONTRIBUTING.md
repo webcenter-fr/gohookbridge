@@ -388,6 +388,10 @@ New server flags (all optional; single-node local dev needs none):
 
 Flags are defined in `internal/app/flags.go` and shared between the `server` and `client` subcommands. Add new flags there; avoid duplicating flag definitions across commands.
 
+### Listener split (public vs internal)
+
+The server can expose two HTTP listeners. The **internal** listener (`--address`/`--port`) serves the full route table (SPA, `/api/*`, `/events/*`, `/auth/*`, OIDC, health, and `POST /{channel}`); the **public** listener (`--public-address`/`--public-port`, disabled when `--public-port` is `0`) serves only health/readiness plus `POST /{channel}`. Both are assembled in `internal/server/server.go` from two helpers: `buildWebhookRouter` builds the shared POST-only webhook sub-router (ban, rate-limit, IP-restrict, produce-scoped channel auth, `HandleWebhookPost`) and `buildPublicRouter` builds the minimal public mux. Place new webhook-ingestion routes and middleware on `buildWebhookRouter` so they land on **both** listeners; place UI/API/SSE/auth routes on `mainRouter`/`apiRouter` (internal listener only). Both listeners use the same `BanTracker`/`RateLimiter`/`Service` instances, so bans and rate limits are global per node.
+
 ### Adding a new HTTP route
 
 The server router is assembled in `internal/server/server.go` (composition root). Implement handlers in `internal/handler/` (e.g., `internal/handler/oidc.go` for OIDC-related handlers) and wire them in `internal/server/server.go`.
@@ -400,7 +404,7 @@ The server router is assembled in `internal/server/server.go` (composition root)
 - **`banTracker`** — Credential failure counter with deduplication per IP. Tracks unique credential fingerprints (SHA-256 hashes) to distinguish misconfiguration from attacks. Exposes `recordFailure(ip, fingerprint)`, `banIfSuspicious(ip, maxUnique, banDuration)`, `isBanned(ip)`, `listBans()`, and `unban(ip)`.
 - **Middlewares** — `banMiddleware` (403 if banned) and `rateLimitMiddleware` (429 if over limit). Both use `getRealIP()` for proxy-aware IP resolution.
 
-The middlewares are wired into both `mainRouter` and `restrictedRouter` via chi's `Use()` method in `internal/server/server.go` (`Server.Run`).
+The middlewares are wired in `internal/server/server.go`: `banMiddleware`/`rateLimitMiddleware` on `mainRouter`, and ban + rate-limit + IP-restrict inside `buildWebhookRouter`, which is mounted on both the internal `restrictedRouter` and the public listener (see "Listener split (public vs internal)").
 
 ### Channel access token authentication
 

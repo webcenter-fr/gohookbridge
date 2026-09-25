@@ -18,6 +18,12 @@ spec:
         app.kubernetes.io/name: {{ include "gohookbridge.name" . }}
         app.kubernetes.io/component: proxy
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+      {{- range . }}
+      - name: {{ . }}
+      {{- end }}
+      {{- end }}
       containers:
       - name: proxy
         image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}"

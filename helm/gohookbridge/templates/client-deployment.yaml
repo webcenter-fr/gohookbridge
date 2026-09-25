@@ -18,6 +18,12 @@ spec:
         app.kubernetes.io/name: {{ include "gohookbridge.name" . }}
         app.kubernetes.io/component: client
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+      {{- range . }}
+      - name: {{ . }}
+      {{- end }}
+      {{- end }}
       containers:
       - name: client
         image: "{{ .Values.client.image.repository }}:{{ .Values.client.image.tag }}"

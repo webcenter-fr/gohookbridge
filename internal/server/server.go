@@ -11,9 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -37,18 +39,105 @@ var faviconSVG []byte
 // Server is the assembled application: it holds every wired component so Run
 // can serve HTTP.
 type Server struct {
-	repo          *repository.RaftStore
-	svc           *service.Service
-	broker        *nats.Broker
-	rateLimiter   *service.RateLimiter
-	banTracker    *service.BanTracker
-	sessionSecret [32]byte
-	httpServer    *http.Server
-	certFile      string
-	certKey       string
-	autoCert      bool
-	publicURL     string
-	cancelCtx     context.CancelFunc
+	repo             *repository.RaftStore
+	svc              *service.Service
+	broker           *nats.Broker
+	rateLimiter      *service.RateLimiter
+	banTracker       *service.BanTracker
+	sessionSecret    [32]byte
+	httpServer       *http.Server // internal listener (unchanged semantics)
+	publicHTTPServer *http.Server // public listener; nil when disabled
+	certFile         string
+	certKey          string
+	autoCert         bool
+	publicURL        string
+	cancelCtx        context.CancelFunc
+}
+
+// listenerConfig holds the resolved bind addresses for the internal and public
+// listeners. publicAddr is "" when the public listener is disabled.
+type listenerConfig struct {
+	internalAddr string
+	publicAddr   string
+}
+
+// resolveListenerConfig validates --port/--public-port and returns the two
+// bind addresses. Pure function, unit-tested.
+func resolveListenerConfig(address string, port int, publicAddress string, publicPort int) (*listenerConfig, error) {
+	if port <= 0 {
+		return nil, errors.New("port must be greater than 0")
+	}
+	if publicPort < 0 {
+		return nil, errors.New("public-port must be >= 0")
+	}
+	if publicPort == port {
+		return nil, fmt.Errorf("public-port (%d) must differ from port (%d)", publicPort, port)
+	}
+	cfg := &listenerConfig{
+		internalAddr: net.JoinHostPort(address, strconv.Itoa(port)),
+	}
+	if publicPort > 0 {
+		cfg.publicAddr = net.JoinHostPort(publicAddress, strconv.Itoa(publicPort))
+	}
+	return cfg, nil
+}
+
+// effectivePublicAddr builds the host:port string used as the fallback public
+// URL. It brackets IPv6 hosts via net.JoinHostPort so the fallback never
+// produces a malformed URL like http://::1:8081.
+func effectivePublicAddr(address string, port int) string {
+	return net.JoinHostPort(address, strconv.Itoa(port))
+}
+
+// buildWebhookRouter builds the POST-only webhook ingestion sub-router with the
+// ban, rate-limit, IP-restriction, and produce-scoped channel-access middleware
+// and the webhook POST handler. Shared by the internal and public routers so the
+// delivery machinery is defined once.
+func buildWebhookRouter(
+	broker *nats.Broker,
+	svc *service.Service,
+	banTracker *service.BanTracker,
+	rateLimiter *service.RateLimiter,
+) chi.Router {
+	r := chi.NewRouter()
+	// Attach the middlewares inline (r.With) instead of r.Use: chi runs
+	// Use-registered middlewares BEFORE route matching, so chi.URLParam(r,
+	// "channel") is still empty there and the per-channel IP restriction and
+	// produce-token auth would silently resolve against an empty channel.
+	// With() attaches them to the route, after {channel} has been matched.
+	r.With(
+		handler.BanMiddleware(banTracker, svc),
+		handler.RateLimitMiddleware(rateLimiter, svc),
+		handler.IPRestrictMiddleware(svc),
+		handler.ChannelAccessMiddleware(svc, "produce", banTracker),
+	).Post(handler.ChannelPath, handler.HandleWebhookPost(broker, svc, banTracker))
+	return r
+}
+
+// buildPublicRouter builds the internet-facing listener router: health/version
+// endpoints plus the webhook ingestion router. Deliberately NO /api, /events,
+// /auth, OIDC, or SPA fallback.
+func buildPublicRouter(
+	broker *nats.Broker,
+	svc *service.Service,
+	banTracker *service.BanTracker,
+	rateLimiter *service.RateLimiter,
+	rs *repository.RaftStore,
+) chi.Router {
+	publicRouter := chi.NewRouter()
+	publicRouter.Use(middleware.RequestID)
+	publicRouter.Use(handler.SafeLogger)
+	publicRouter.Use(middleware.Recoverer)
+	publicRouter.Get("/health", handler.RetVersion)
+	publicRouter.Get("/livez", handler.RetVersion)
+	publicRouter.Get("/version", handler.RetVersion)
+	publicRouter.Get("/readyz", handler.RetReadyz(rs))
+	publicRouter.Get("/startup", handler.RetStartup(rs))
+	publicRouter.Mount("/", buildWebhookRouter(broker, svc, banTracker, rateLimiter))
+	// chi's NotFound wants an http.HandlerFunc; NotFoundHandler returns the
+	// equivalent http.Handler (plain 404 — never leak the UI).
+	publicRouter.NotFound(http.NotFoundHandler().ServeHTTP)
+	return publicRouter
 }
 
 // NewServer performs the full dependency-injection wiring formerly done by
@@ -248,7 +337,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	certFile := c.String("tls-cert")
 	certKey := c.String("tls-key")
 	sslEnabled := certFile != "" && certKey != ""
-	portAddr := fmt.Sprintf("%s:%d", c.String("address"), c.Int("port"))
+	portAddr := effectivePublicAddr(c.String("address"), c.Int("port"))
 	publicURL := handler.EffectivePublicURL(explicitPublicURL, portAddr, sslEnabled)
 
 	// Session cookies carry the Secure flag only when the effective
@@ -319,9 +408,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	restrictedRouter.Use(middleware.RequestID)
 	restrictedRouter.Use(handler.SafeLogger)
 	restrictedRouter.Use(middleware.Recoverer)
-	restrictedRouter.Use(handler.BanMiddleware(banTrackerInst, svc))
-	restrictedRouter.Use(handler.RateLimitMiddleware(rateLimiterInst, svc))
-	restrictedRouter.Use(handler.IPRestrictMiddleware(svc))
+	restrictedRouter.Mount("/", buildWebhookRouter(broker, svc, banTrackerInst, rateLimiterInst))
 
 	// Unprotected routes
 	mainRouter.Get("/favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
@@ -352,10 +439,6 @@ func NewServer(c *cli.Context) (*Server, error) {
 
 	// SPA handler — all unmatched GET routes serve the SPA
 	mainRouter.NotFound(web.SPAHandler().ServeHTTP)
-
-	// POST routes on restricted router
-	restrictedRouter.Use(handler.ChannelAccessMiddleware(svc, "produce", banTrackerInst))
-	restrictedRouter.Post(handler.ChannelPath, handler.HandleWebhookPost(broker, svc, banTrackerInst))
 
 	// Public auth API routes — mounted before main /api to avoid middleware intercept
 	publicAPIRouter := chi.NewRouter()
@@ -401,7 +484,29 @@ func NewServer(c *cli.Context) (*Server, error) {
 		}
 	}))
 
+	// Fail fast on invalid listener configuration before binding anything.
+	cfg, err := resolveListenerConfig(c.String("address"), c.Int("port"), c.String("public-address"), c.Int("public-port"))
+	if err != nil {
+		cancelStartup()
+		broker.Shutdown()
+		_ = rs.Shutdown()
+		return nil, fmt.Errorf("resolve listener config: %w", err)
+	}
+
+	var publicHTTPServer *http.Server
+	if cfg.publicAddr != "" {
+		publicHTTPServer = &http.Server{
+			Addr:              cfg.publicAddr,
+			Handler:           buildPublicRouter(broker, svc, banTrackerInst, rateLimiterInst, rs),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+	}
+
 	fmt.Fprintf(os.Stdout, "Serving for webhooks on %s\n", publicURL)
+	fmt.Fprintf(os.Stdout, "Internal listener (UI, API, SSE, publish): %s\n", cfg.internalAddr)
+	if publicHTTPServer != nil {
+		fmt.Fprintf(os.Stdout, "Public listener (webhook ingestion): %s\n", publicHTTPServer.Addr)
+	}
 
 	return &Server{
 		repo:          rs,
@@ -416,15 +521,40 @@ func NewServer(c *cli.Context) (*Server, error) {
 		autoCert:      autoCert,
 		cancelCtx:     cancelStartup,
 		httpServer: &http.Server{
-			Addr:              portAddr,
+			Addr:              cfg.internalAddr,
 			Handler:           finalRouter,
 			ReadHeaderTimeout: 10 * time.Second,
 		},
+		publicHTTPServer: publicHTTPServer,
 	}, nil
 }
 
+// servers returns the HTTP servers to run: the internal listener always, plus
+// the public listener when enabled.
+func (s *Server) servers() []*http.Server {
+	servers := []*http.Server{s.httpServer}
+	if s.publicHTTPServer != nil {
+		servers = append(servers, s.publicHTTPServer)
+	}
+	return servers
+}
+
+// serve runs one server with the correct listen mode (TLS/autocert only for the
+// internal listener; public is plain HTTP).
+func (s *Server) serve(srv *http.Server) error {
+	switch {
+	case srv == s.httpServer && s.certFile != "" && s.certKey != "":
+		return srv.ListenAndServeTLS(s.certFile, s.certKey)
+	case srv == s.httpServer && s.autoCert:
+		return srv.Serve(autocert.NewListener(s.publicURL))
+	default:
+		return srv.ListenAndServe()
+	}
+}
+
 // Run serves HTTP until ctx is canceled or a signal arrives, then shuts down
-// gracefully (transferring Raft leadership).
+// gracefully (transferring Raft leadership). A bind failure on any listener
+// triggers the same graceful path and is returned as the first error.
 func (s *Server) Run(ctx context.Context) error {
 	defer func() {
 		s.cancelCtx()
@@ -435,8 +565,10 @@ func (s *Server) Run(ctx context.Context) error {
 	runCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	servers := s.servers()
+
 	// Graceful leave: on SIGTERM transfer Raft leadership before shutting the
-	// HTTP server down, so a rolling restart re-elects a leader promptly.
+	// HTTP servers down, so a rolling restart re-elects a leader promptly.
 	go func() {
 		<-runCtx.Done()
 		stepDownCtx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 10*time.Second)
@@ -446,22 +578,30 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.WithoutCancel(runCtx), 10*time.Second)
 		defer cancelShutdown()
-		_ = s.httpServer.Shutdown(shutdownCtx)
+		for _, srv := range servers {
+			_ = srv.Shutdown(shutdownCtx)
+		}
 	}()
 
+	errCh := make(chan error, len(servers))
+	for _, srv := range servers {
+		go func() {
+			errCh <- s.serve(srv)
+		}()
+	}
+
 	var serveErr error
-	switch {
-	case s.certFile != "" && s.certKey != "":
-		serveErr = s.httpServer.ListenAndServeTLS(s.certFile, s.certKey)
-	case s.autoCert:
-		serveErr = s.httpServer.Serve(autocert.NewListener(s.publicURL))
-	default:
-		serveErr = s.httpServer.ListenAndServe()
+	for range servers {
+		err := <-errCh
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			continue
+		}
+		if serveErr == nil {
+			serveErr = err
+		}
+		stop() // drain the remaining servers gracefully
 	}
-	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-		return serveErr
-	}
-	return nil
+	return serveErr
 }
 
 // applyBootstrapOnce applies bootstrap.yaml exactly once: only on the leader,

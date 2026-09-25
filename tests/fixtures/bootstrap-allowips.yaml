@@ -1,0 +1,23 @@
+global:
+  server:
+    max_body_size: 26214400
+    behind_reverse_proxy: false
+    cors_origin: "*"
+    rate_limit_enabled: false
+    rate_limit_requests: 100
+    rate_limit_window_seconds: 60
+    ban_enabled: false
+    ban_max_unique_failures: 5
+    ban_window_seconds: 300
+    ban_duration_seconds: 3600
+  defaults:
+    webhook_secret: ""
+    allowed_ips: []
+    message_ttl_seconds: 0
+channels:
+  - id: itest-allow-channel
+    description: Channel restricted to 10.0.0.1; the integration tests connect from 127.0.0.1 and must be rejected
+    allowed_ips:
+      - "10.0.0.1"
+  - id: itest-channel
+    description: Unrestricted channel used as the positive control
