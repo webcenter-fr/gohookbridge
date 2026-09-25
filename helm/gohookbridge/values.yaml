@@ -61,6 +61,16 @@ server:
     annotations: {}                 # e.g. cert-manager.io/cluster-issuer: letsencrypt-prod
     hosts: []
     tls: []
+  publicIngress:
+    # Internet-facing Ingress for the public webhook-only listener (POST /{channel}
+    # + health only). Requires publicPort > 0 — the render FAILS otherwise. The
+    # standard ingress above stays internal (UI + API + SSE on service port 3333).
+    enabled: false
+    className: ""
+    annotations: {}                 # e.g. cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts: []                       # e.g. gohookbridge-public-test.home.webcenter.fr
+    tls: []                         # e.g. - hosts: [gohookbridge-public-test.home.webcenter.fr]
+                                    #         secretName: gohookbridge-public-test-tls
   service:
     type: ClusterIP
     port: 3333
