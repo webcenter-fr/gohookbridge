@@ -176,9 +176,30 @@ per-pod PVCs, and a headless Service. Key values:
 
 - `server.publicURL` — the public webhook endpoint
 - `server.ingress` — Ingress with TLS (`hosts` / `tls`)
+- `server.publicIngress` — internet-facing Ingress for the public webhook-only
+  listener (`hosts` / `tls` / `className` / `annotations`); requires `server.publicPort > 0`
+- `imagePullSecrets` — list of docker-registry Secret names applied to every
+  workload pod (server, client, proxy) for private registries
 - `server.bootstrap.config` — admin user + session secret (bootstrap.yaml content)
 - `server.storage.size` — per-pod Raft data PVC size
 - `client.channelURL` / `client.targetURL` — client forwarding source/target
+
+For the organization-internal pattern, enable `server.publicPort` and
+`server.publicIngress` to expose only webhook ingestion (`POST /{channel}`) to the
+internet while the standard `server.ingress` keeps the UI, API, and SSE internal:
+
+```yaml
+server:
+  publicPort: 8082
+  publicIngress:
+    enabled: true
+    className: nginx
+    hosts: ["gohookbridge-public-test.home.webcenter.fr"]
+    tls:
+      - hosts: ["gohookbridge-public-test.home.webcenter.fr"]
+        secretName: gohookbridge-public-test-tls
+imagePullSecrets: [ghcr-pull]   # only if the image registry is private
+```
 
 When your Ingress is the sole path to gohookbridge and overwrites
 `X-Forwarded-For` / `X-Real-IP`, configure `behind_reverse_proxy` in the global
