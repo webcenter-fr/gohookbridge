@@ -35,10 +35,11 @@ type OIDCHandler struct {
 	SessionSecret [32]byte
 	PublicURL     string
 	SecureCookies bool
+	svc           *service.Service
 	verifier      *oidc.IDTokenVerifier
 }
 
-func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, publicURL string, secureCookies bool) (*OIDCHandler, error) {
+func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, publicURL string, secureCookies bool, svc *service.Service) (*OIDCHandler, error) {
 	if provider.GroupsClaim == "" {
 		provider.GroupsClaim = "groups"
 	}
@@ -79,8 +80,23 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 		SessionSecret: sessionSecret,
 		PublicURL:     publicURL,
 		SecureCookies: secureCookies,
+		svc:           svc,
 		verifier:      p.Verifier(&oidc.Config{ClientID: provider.ClientID}),
 	}, nil
+}
+
+// resolveOIDCUsername maps an OIDC subject to an internal user's username
+// (subject→user matching), falling back to email then sub for backward compat.
+func resolveOIDCUsername(ctx context.Context, svc *service.Service, sub, email string) string {
+	if sub != "" {
+		if u, err := svc.GetUserByOIDCSubject(ctx, sub); err == nil {
+			return u.Username
+		}
+	}
+	if email != "" {
+		return email
+	}
+	return sub
 }
 
 // safeRedirectPath validates a post-login redirect target. Only same-site
@@ -200,13 +216,8 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 				http.Error(w, "ID token validation failed", http.StatusBadRequest)
 				return
 			}
-			username := ""
-			if email, emailOK := claims["email"].(string); emailOK {
-				username = email
-			}
-			if username == "" {
-				username = idToken.Subject
-			}
+			emailClaim, _ := claims["email"].(string)
+			username := resolveOIDCUsername(r.Context(), h.svc, idToken.Subject, emailClaim)
 			groups := extractGroupsFromToken(claims, h.Provider.GroupsClaim)
 
 			sessionTok := &service.SessionToken{
@@ -236,10 +247,7 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 
 		sub, _ := userInfo["sub"].(string)
 		email, _ := userInfo["email"].(string)
-		username := email
-		if username == "" {
-			username = sub
-		}
+		username := resolveOIDCUsername(r.Context(), h.svc, sub, email)
 
 		groups := extractGroupsFromToken(userInfo, h.Provider.GroupsClaim)
 

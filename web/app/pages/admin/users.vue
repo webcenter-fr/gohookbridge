@@ -32,6 +32,9 @@
           <UFormField label="Channels">
             <UInput v-model="form.channelsStr" placeholder="* or comma-separated" class="w-full" />
           </UFormField>
+          <UFormField label="OIDC Subjects">
+            <UInput v-model="form.oidcSubjectsStr" placeholder="comma-separated sub values" class="w-full" />
+          </UFormField>
         </div>
       </template>
       <template #footer>
@@ -86,6 +89,7 @@ const form = reactive({
   password: '',
   roles: [] as string[],
   channelsStr: '',
+  oidcSubjectsStr: '',
 })
 
 const columns: TableColumn<User>[] = [
@@ -124,6 +128,7 @@ function openCreate() {
   form.password = ''
   form.roles = []
   form.channelsStr = ''
+  form.oidcSubjectsStr = ''
   showModal.value = true
 }
 
@@ -134,18 +139,20 @@ function openEdit(user: User) {
   form.password = ''
   form.roles = user.roles || []
   form.channelsStr = (user.channels || []).join(', ')
+  form.oidcSubjectsStr = (user.oidc_subjects || []).join(', ')
   showModal.value = true
 }
 
 async function handleSave() {
   const channels = form.channelsStr.split(',').map(s => s.trim()).filter(Boolean)
+  const oidcSubjects = form.oidcSubjectsStr.split(',').map(s => s.trim()).filter(Boolean)
   try {
     if (editingId.value) {
-      const payload: any = { username: form.username, roles: form.roles, channels }
+      const payload: any = { username: form.username, roles: form.roles, channels, oidc_subjects: oidcSubjects }
       if (form.password) payload.password = form.password
       await api.updateUser(editingId.value, payload)
     } else {
-      await api.createUser({ username: form.username, password: form.password, roles: form.roles, channels })
+      await api.createUser({ username: form.username, password: form.password, roles: form.roles, channels, oidc_subjects: oidcSubjects })
     }
     toast.add({ title: 'Saved', color: 'success' })
     showModal.value = false

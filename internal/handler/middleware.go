@@ -14,20 +14,24 @@ import (
 	"github.com/webcenter-fr/gohookbridge/internal/service"
 )
 
-const UsernameContextKey = "username"
-const GroupsContextKey = "oidc_groups"
+// Context keys are unexported typed values so no other package can collide
+// with or spoof them (SEC-014).
+const (
+	usernameContextKey contextKey = "username"
+	groupsContextKey   contextKey = "oidc_groups"
+)
 
 type contextKey string
 
 const contextKeyChannelID contextKey = "channel_id"
 
 func GetUsernameFromContext(ctx context.Context) string {
-	username, _ := ctx.Value(UsernameContextKey).(string)
+	username, _ := ctx.Value(usernameContextKey).(string)
 	return username
 }
 
 func GetGroupsFromContext(ctx context.Context) []string {
-	groups, _ := ctx.Value(GroupsContextKey).([]string)
+	groups, _ := ctx.Value(groupsContextKey).([]string)
 	return groups
 }
 
@@ -58,7 +62,7 @@ func RequirePermission(svc *service.Service, perm domain.Permission) func(http.H
 				channelID = pid
 			}
 
-			if !svc.UserHasPermission(r.Context(), username, perm, channelID) {
+			if !svc.UserHasPermission(r.Context(), username, perm, channelID, GetGroupsFromContext(r.Context())) {
 				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
 			}
@@ -82,12 +86,14 @@ func RequireChannelACLPermission(svc *service.Service) func(http.Handler) http.H
 				channelID = pid
 			}
 
-			if svc.UserHasPermission(r.Context(), username, domain.PermChannelWrite, channelID) {
+			// Only channel:write (or the global wildcard) manages channel ACLs;
+			// rbac:write deliberately does not (see SECURITY.md "rbac:write").
+			if svc.UserHasPermission(r.Context(), username, domain.PermChannelWrite, channelID, GetGroupsFromContext(r.Context())) {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			if svc.UserHasPermission(r.Context(), username, domain.PermAll, channelID) {
+			if svc.UserHasPermission(r.Context(), username, domain.PermAll, channelID, GetGroupsFromContext(r.Context())) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -202,12 +208,10 @@ func ChannelAccessMiddleware(svc *service.Service, requiredScope string, banTrac
 					if requiredScope == "produce" {
 						perm = domain.PermChannelWrite
 					}
-					if svc.UserHasPermission(r.Context(), token.Username, perm, channel) {
-						//nolint:revive,staticcheck // context keys are package-level string constants by design
-						ctx := context.WithValue(r.Context(), UsernameContextKey, token.Username)
+					if svc.UserHasPermission(r.Context(), token.Username, perm, channel, token.Groups) {
+						ctx := context.WithValue(r.Context(), usernameContextKey, token.Username)
 						if len(token.Groups) > 0 {
-							//nolint:revive,staticcheck // context keys are package-level string constants by design
-							ctx = context.WithValue(ctx, GroupsContextKey, token.Groups)
+							ctx = context.WithValue(ctx, groupsContextKey, token.Groups)
 						}
 						next.ServeHTTP(w, r.WithContext(ctx))
 						return

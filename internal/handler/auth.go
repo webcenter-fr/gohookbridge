@@ -14,6 +14,12 @@ const (
 	sessionMaxAge     = 86400
 )
 
+// setupWindowDuration bounds the unauthenticated bootstrap window while the
+// deployment is in setup mode (no internal users and no OIDC providers). The
+// deadline is persisted in Raft so all replicas agree; restarting the leader
+// resets it (see SECURITY.md "Setup Mode").
+const setupWindowDuration = 5 * time.Minute
+
 // dummyPasswordHash is a valid bcrypt hash of an unguessable placeholder
 // password. It is compared against the submitted password when the username is
 // unknown so that login response timing does not reveal whether an account
@@ -74,11 +80,9 @@ func RequireAuth(secret [32]byte, secure bool) func(http.Handler) http.Handler {
 				}
 				return
 			}
-			//nolint:revive,staticcheck // context keys are package-level string constants by design
-			ctx := context.WithValue(r.Context(), UsernameContextKey, token.Username)
+			ctx := context.WithValue(r.Context(), usernameContextKey, token.Username)
 			if len(token.Groups) > 0 {
-				//nolint:revive,staticcheck // context keys are package-level string constants by design
-				ctx = context.WithValue(ctx, GroupsContextKey, token.Groups)
+				ctx = context.WithValue(ctx, groupsContextKey, token.Groups)
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -92,12 +96,30 @@ func LogoutHandler(secure bool) http.HandlerFunc {
 	}
 }
 
+// RequireAuthDynamic authenticates API requests once any auth method exists
+// (users or OIDC providers). While none exists (setup mode) it enforces a
+// persisted 5-minute window, initialized lazily on first access, so an
+// unconfigured deployment stays bootstrap-able but not permanently open.
 func RequireAuthDynamic(svc *service.Service, secret [32]byte, secure bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cfg := svc.BuildAuthConfig(r.Context())
 			if cfg == nil {
-				next.ServeHTTP(w, r)
+				// Setup mode: no users and no OIDC providers. Enforce the
+				// 5-minute window; initialize it lazily on first access.
+				setupEnd := svc.GetSetupModeEndTime(r.Context())
+				if setupEnd.IsZero() {
+					setupEnd = time.Now().Add(setupWindowDuration)
+					if err := svc.SetSetupModeEndTime(r.Context(), setupEnd); err != nil {
+						writeError(w, http.StatusInternalServerError, "failed to initialize setup window")
+						return
+					}
+				}
+				if time.Now().Before(setupEnd) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				writeError(w, http.StatusUnauthorized, "setup window expired: create a user or restart the server")
 				return
 			}
 			RequireAuth(secret, secure)(next).ServeHTTP(w, r)

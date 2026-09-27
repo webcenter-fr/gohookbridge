@@ -53,6 +53,7 @@ export interface User {
   username: string
   roles: string[]
   channels: string[]
+  oidc_subjects?: string[]
 }
 
 export interface Role {
@@ -176,7 +177,7 @@ class ApiClient {
     return this.request<User>(`/users/${id}`)
   }
 
-  async createUser(user: { username: string; password: string; roles?: string[]; channels?: string[] }): Promise<User> {
+  async createUser(user: { username: string; password: string; roles?: string[]; channels?: string[]; oidc_subjects?: string[] }): Promise<User> {
     return this.request<User>('/users', { method: 'POST', body: JSON.stringify(user) })
   }
 

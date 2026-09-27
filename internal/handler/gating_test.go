@@ -42,8 +42,7 @@ func usernameMiddleware(username string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if username != "" {
-				//nolint:revive,staticcheck // context keys are package-level string constants by design
-				ctx := context.WithValue(r.Context(), UsernameContextKey, username)
+				ctx := context.WithValue(r.Context(), usernameContextKey, username)
 				r = r.WithContext(ctx)
 			}
 			next.ServeHTTP(w, r)
@@ -146,15 +145,14 @@ func TestChannelContextSetsChannelID(t *testing.T) {
 		called = true
 		channelID, _ := r.Context().Value(contextKeyChannelID).(string)
 		assert.Equal(t, channelID, "test-channel")
-		assert.Assert(t, svc.UserHasPermission(r.Context(), "admin", domain.PermChannelWrite, channelID))
+		assert.Assert(t, svc.UserHasPermission(r.Context(), "admin", domain.PermChannelWrite, channelID, nil))
 	})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/send/test-channel", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("channel", "test-channel")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	//nolint:revive,staticcheck // context keys are package-level string constants by design
-	req = req.WithContext(context.WithValue(req.Context(), UsernameContextKey, "admin"))
+	req = req.WithContext(context.WithValue(req.Context(), usernameContextKey, "admin"))
 
 	w := httptest.NewRecorder()
 	ChannelContext(next).ServeHTTP(w, req)

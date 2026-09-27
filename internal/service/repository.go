@@ -58,6 +58,10 @@ func (s *Service) GetUserByUsername(ctx context.Context, username string) (*doma
 	return s.repo.GetUserByUsername(ctx, username)
 }
 
+func (s *Service) GetUserByOIDCSubject(ctx context.Context, subject string) (*domain.User, error) {
+	return s.repo.GetUserByOIDCSubject(ctx, subject)
+}
+
 func (s *Service) ListUsers(ctx context.Context) ([]*domain.User, error) {
 	return s.repo.ListUsers(ctx)
 }

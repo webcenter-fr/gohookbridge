@@ -153,13 +153,11 @@ func (s *Service) isChannelCreator(ctx context.Context, userID string, channelID
 	return ch.CreatedBy == userID
 }
 
-func (s *Service) UserHasPermission(ctx context.Context, username string, perm domain.Permission, channelID string) bool {
+func (s *Service) UserHasPermission(ctx context.Context, username string, perm domain.Permission, channelID string, oidcGroups []string) bool {
 	user := s.getUserObject(ctx, username)
 	if user == nil {
 		return false
 	}
-
-	oidcGroups := user.OIDCSubjects
 
 	if s.checkGlobalRolePermissions(ctx, user, perm, channelID) {
 		return true
@@ -184,13 +182,11 @@ func (s *Service) UserHasPermission(ctx context.Context, username string, perm d
 	return false
 }
 
-func (s *Service) UserChannels(ctx context.Context, username string) ([]string, error) {
+func (s *Service) UserChannels(ctx context.Context, username string, oidcGroups []string) ([]string, error) {
 	user := s.getUserObject(ctx, username)
 	if user == nil {
 		return []string{}, nil
 	}
-
-	oidcGroups := user.OIDCSubjects
 
 	allChannels := func() ([]string, error) {
 		chs, err := s.repo.ListChannels(ctx)
@@ -288,26 +284,26 @@ func (s *Service) UserChannels(ctx context.Context, username string) ([]string, 
 	return result, nil
 }
 
-func (s *Service) IsAdmin(ctx context.Context, username string) bool {
-	return s.UserHasPermission(ctx, username, "*", "")
+func (s *Service) IsAdmin(ctx context.Context, username string, oidcGroups []string) bool {
+	return s.UserHasPermission(ctx, username, "*", "", oidcGroups)
 }
 
 // CanGrantRole reports whether username may assign/grant roleName: admins (global *)
 // may grant anything; everyone else may only grant roles whose permissions are a
 // subset of their own globally-effective permissions (prevents self-escalation).
-func (s *Service) CanGrantRole(ctx context.Context, username, roleName string) bool {
+func (s *Service) CanGrantRole(ctx context.Context, username, roleName string, oidcGroups []string) bool {
 	role, err := s.repo.GetRole(ctx, roleName)
 	if err != nil {
 		return false
 	}
 	for _, p := range role.Permissions {
 		if p == "*" {
-			if !s.IsAdmin(ctx, username) {
+			if !s.IsAdmin(ctx, username, oidcGroups) {
 				return false
 			}
 			continue
 		}
-		if !s.UserHasPermission(ctx, username, domain.Permission(p), "") {
+		if !s.UserHasPermission(ctx, username, domain.Permission(p), "", oidcGroups) {
 			return false
 		}
 	}
@@ -320,7 +316,7 @@ func HasChannelAccess(userChannels []string, channelID string) bool {
 	return hasChannelAccessList(userChannels, channelID)
 }
 
-func (s *Service) GetUserPermissions(ctx context.Context, username string) []string {
+func (s *Service) GetUserPermissions(ctx context.Context, username string, oidcGroups []string) []string {
 	perms := make(map[string]bool)
 	user := s.getUserObject(ctx, username)
 	if user == nil {
@@ -339,7 +335,6 @@ func (s *Service) GetUserPermissions(ctx context.Context, username string) []str
 
 	mappings, err := s.repo.ListRoleMappings(ctx)
 	if err == nil {
-		oidcGroups := user.OIDCSubjects
 		for _, m := range mappings {
 			if m.Type == "user" && m.Subject != user.ID && m.Subject != user.Username {
 				continue
@@ -373,12 +368,11 @@ func (s *Service) GetUserPermissions(ctx context.Context, username string) []str
 	return result
 }
 
-func (s *Service) HasChannelRole(ctx context.Context, username string, channelID string, role string) bool {
+func (s *Service) HasChannelRole(ctx context.Context, username string, channelID string, role string, oidcGroups []string) bool {
 	user := s.getUserObject(ctx, username)
 	if user == nil {
 		return false
 	}
-	oidcGroups := user.OIDCSubjects
 	roleLevel := func(r string) int {
 		switch r {
 		case "owner":

@@ -34,8 +34,7 @@ func setupAPI(t *testing.T) (*service.Service, *chi.Mux) {
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			//nolint:revive,staticcheck
-			ctx := context.WithValue(r.Context(), UsernameContextKey, "admin")
+			ctx := context.WithValue(r.Context(), usernameContextKey, "admin")
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	})
@@ -400,8 +399,7 @@ func TestChannelACL_NonAdminCannotAddACL(t *testing.T) {
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			//nolint:revive,staticcheck
-			ctx := context.WithValue(r.Context(), UsernameContextKey, "reader")
+			ctx := context.WithValue(r.Context(), usernameContextKey, "reader")
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	})
@@ -419,36 +417,6 @@ func TestChannelACL_NonAdminCannotAddACL(t *testing.T) {
 // setupRBACManagerAPI returns a store pre-seeded with a non-admin rbac:write
 // role plus a router acting as that user, on a store that already owns the
 // test channel.
-func setupRBACManagerAPI(t *testing.T) http.Handler {
-	t.Helper()
-	rs := storetest.NewRaftStore(t)
-	svc := service.NewService(rs, nil)
-	ctx := context.Background()
-
-	assert.NilError(t, svc.CreateRole(ctx, domain.Role{
-		Name:        "rbac_manager",
-		Permissions: []string{"rbac:read", "rbac:write", "users:read", "users:write", "channel:read"},
-	}))
-	assert.NilError(t, svc.CreateChannel(ctx, &domain.Channel{ID: "test-channel"}))
-	assert.NilError(t, svc.CreateUser(ctx, &domain.User{
-		ID:       "rbacmgr",
-		Username: "rbacmgr",
-		Roles:    []string{"rbac_manager"},
-		Channels: []string{"*"},
-	}))
-
-	r := chi.NewRouter()
-	r.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			//nolint:revive,staticcheck
-			ctx := context.WithValue(r.Context(), UsernameContextKey, "rbacmgr")
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	})
-	RegisterAPIHandlers(r, svc)
-	return r
-}
-
 // SEC-005: a rbac:write holder may only grant roles they themselves hold;
 // granting a wildcard (admin) role is refused (no self-escalation).
 func TestCreateRoleMapping_GrantGuard(t *testing.T) {
@@ -505,7 +473,7 @@ func TestCreateUser_GrantGuard(t *testing.T) {
 }
 
 // SEC-005: rbac:write alone no longer manages channel ACLs (channel:write
-// required, exercised in TestChannelACL_AddRequiresChannelWrite).
+// required, exercised in TestChannelACL_AddRequiresChannelWriteOrRBACWrite).
 func TestChannelACL_RBACWriteOnlyForbidden(t *testing.T) {
 	router := setupRBACManagerAPI(t)
 
@@ -516,4 +484,111 @@ func TestChannelACL_RBACWriteOnlyForbidden(t *testing.T) {
 		"role":    "read",
 	}))
 	assert.Equal(t, w.Code, http.StatusForbidden, "rbac:write must not grant channel-ACL management")
+}
+
+// setupRBACManagerAPI returns a store pre-seeded with a non-admin rbac:write
+// role plus a router acting as that user, on a store that already owns the
+// test channel.
+func setupRBACManagerAPI(t *testing.T) http.Handler {
+	t.Helper()
+	rs := storetest.NewRaftStore(t)
+	svc := service.NewService(rs, nil)
+	ctx := context.Background()
+
+	assert.NilError(t, svc.CreateRole(ctx, domain.Role{
+		Name:        "rbac_manager",
+		Permissions: []string{"rbac:read", "rbac:write", "users:read", "users:write", "channel:read"},
+	}))
+	assert.NilError(t, svc.CreateChannel(ctx, &domain.Channel{ID: "test-channel"}))
+	assert.NilError(t, svc.CreateUser(ctx, &domain.User{
+		ID:       "rbacmgr",
+		Username: "rbacmgr",
+		Roles:    []string{"rbac_manager"},
+		Channels: []string{"*"},
+	}))
+
+	r := chi.NewRouter()
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), usernameContextKey, "rbacmgr")
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	})
+	RegisterAPIHandlers(r, svc)
+	return r
+}
+
+// SEC-003: oidc_subjects round-trips through user CRUD and serializes as an
+// empty array (never null) when unset.
+func TestUsers_OIDCSubjectsRoundTrip(t *testing.T) {
+	_, router := setupAPI(t)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("POST", "/users", map[string]any{
+		"username":      "oidcuser",
+		"password":      "secret-password-1",
+		"oidc_subjects": []string{"sub-a", "sub-b"},
+	}))
+	assert.Equal(t, w.Code, http.StatusCreated, "body: %s", w.Body.String())
+
+	t.Run("getUser returns subjects", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, apiRequest("GET", "/users/oidcuser", nil))
+		assert.Equal(t, w.Code, http.StatusOK)
+		var got map[string]any
+		assert.NilError(t, json.Unmarshal(w.Body.Bytes(), &got))
+		subjects, ok := got["oidc_subjects"].([]any)
+		assert.Assert(t, ok, "oidc_subjects must not be null: %s", w.Body.String())
+		assert.Equal(t, len(subjects), 2)
+		assert.Equal(t, subjects[0], "sub-a")
+	})
+
+	t.Run("listUsers returns empty array for users without subjects", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, apiRequest("GET", "/users", nil))
+		assert.Equal(t, w.Code, http.StatusOK)
+		var users []map[string]any
+		assert.NilError(t, json.Unmarshal(w.Body.Bytes(), &users))
+		assert.Assert(t, len(users) >= 2)
+		for _, u := range users {
+			_, ok := u["oidc_subjects"].([]any)
+			assert.Assert(t, ok, "oidc_subjects must not be null for %v: %s", u["username"], w.Body.String())
+		}
+	})
+
+	t.Run("updateUser replaces subjects", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, apiRequest("PUT", "/users/oidcuser", map[string]any{
+			"username":      "oidcuser",
+			"oidc_subjects": []string{"sub-c"},
+		}))
+		assert.Equal(t, w.Code, http.StatusOK, "body: %s", w.Body.String())
+
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, apiRequest("GET", "/users/oidcuser", nil))
+		var got map[string]any
+		assert.NilError(t, json.Unmarshal(w.Body.Bytes(), &got))
+		subjects, ok := got["oidc_subjects"].([]any)
+		assert.Assert(t, ok, "oidc_subjects must not be null: %s", w.Body.String())
+		assert.Equal(t, len(subjects), 1)
+		assert.Equal(t, subjects[0], "sub-c")
+	})
+
+	t.Run("omitted subjects are preserved", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, apiRequest("PUT", "/users/oidcuser", map[string]any{
+			"username": "oidcuser",
+			"roles":    []string{"channel_viewer"},
+		}))
+		assert.Equal(t, w.Code, http.StatusOK, "body: %s", w.Body.String())
+
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, apiRequest("GET", "/users/oidcuser", nil))
+		var got map[string]any
+		assert.NilError(t, json.Unmarshal(w.Body.Bytes(), &got))
+		subjects, ok := got["oidc_subjects"].([]any)
+		assert.Assert(t, ok, "oidc_subjects must not be null: %s", w.Body.String())
+		assert.Equal(t, len(subjects), 1)
+		assert.Equal(t, subjects[0], "sub-c")
+	})
 }

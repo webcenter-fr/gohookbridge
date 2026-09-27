@@ -157,6 +157,20 @@ func (f *fakeRepository) GetUserByUsername(_ context.Context, username string) (
 	return &cp, nil
 }
 
+func (f *fakeRepository) GetUserByOIDCSubject(_ context.Context, subject string) (*domain.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.users {
+		for _, s := range u.OIDCSubjects {
+			if s == subject {
+				cp := *u
+				return &cp, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%w: user by oidc subject %q", domain.ErrNotFound, subject)
+}
+
 func (f *fakeRepository) ListUsers(_ context.Context) ([]*domain.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

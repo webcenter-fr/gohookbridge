@@ -26,6 +26,16 @@ func setupUsersWithRoles(t *testing.T) *Service {
 	return svc
 }
 
+// setupBareService returns a service on an empty fake repository plus a user
+// with no direct role assignments.
+func setupBareService(t *testing.T) (*Service, *domain.User) {
+	t.Helper()
+	svc := NewService(newFakeRepository(), nil)
+	u := &domain.User{ID: "bare", Username: "bare", Roles: []string{}, Channels: []string{}}
+	assert.NilError(t, svc.CreateUser(context.Background(), u))
+	return svc, u
+}
+
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {
@@ -39,64 +49,64 @@ func TestUserHasPermission_Admin_Wildcard(t *testing.T) {
 	svc := setupUsersWithRoles(t)
 	ctx := context.Background()
 
-	assert.Assert(t, svc.UserHasPermission(ctx, "admin1", "*", ""))
-	assert.Assert(t, svc.UserHasPermission(ctx, "admin1", "global:read", ""))
-	assert.Assert(t, svc.UserHasPermission(ctx, "admin1", "channel:write", "proj1"))
-	assert.Assert(t, svc.UserHasPermission(ctx, "admin1", "nonexistent:perm", ""))
+	assert.Assert(t, svc.UserHasPermission(ctx, "admin1", "*", "", nil))
+	assert.Assert(t, svc.UserHasPermission(ctx, "admin1", "global:read", "", nil))
+	assert.Assert(t, svc.UserHasPermission(ctx, "admin1", "channel:write", "proj1", nil))
+	assert.Assert(t, svc.UserHasPermission(ctx, "admin1", "nonexistent:perm", "", nil))
 }
 
 func TestUserHasPermission_GlobalWrite(t *testing.T) {
 	svc := setupUsersWithRoles(t)
 	ctx := context.Background()
 
-	assert.Assert(t, !svc.UserHasPermission(ctx, "projectadmin", "global:read", ""))
-	assert.Assert(t, !svc.UserHasPermission(ctx, "projectadmin", "global:write", ""))
-	assert.Assert(t, !svc.UserHasPermission(ctx, "projectadmin", "users:read", ""))
+	assert.Assert(t, !svc.UserHasPermission(ctx, "projectadmin", "global:read", "", nil))
+	assert.Assert(t, !svc.UserHasPermission(ctx, "projectadmin", "global:write", "", nil))
+	assert.Assert(t, !svc.UserHasPermission(ctx, "projectadmin", "users:read", "", nil))
 
-	assert.Assert(t, svc.UserHasPermission(ctx, "projectadmin", "channel:write", "proj1"))
-	assert.Assert(t, svc.UserHasPermission(ctx, "projectadmin", "channel:read", "proj1"))
+	assert.Assert(t, svc.UserHasPermission(ctx, "projectadmin", "channel:write", "proj1", nil))
+	assert.Assert(t, svc.UserHasPermission(ctx, "projectadmin", "channel:read", "proj1", nil))
 }
 
 func TestUserHasPermission_ProjectScope(t *testing.T) {
 	svc := setupUsersWithRoles(t)
 	ctx := context.Background()
 
-	assert.Assert(t, svc.UserHasPermission(ctx, "scopeduser", "channel:read", "proj1"))
-	assert.Assert(t, !svc.UserHasPermission(ctx, "scopeduser", "channel:read", "proj2"))
-	assert.Assert(t, !svc.UserHasPermission(ctx, "scopeduser", "channel:write", "proj1"))
-	assert.Assert(t, !svc.UserHasPermission(ctx, "scopeduser", "global:read", ""))
+	assert.Assert(t, svc.UserHasPermission(ctx, "scopeduser", "channel:read", "proj1", nil))
+	assert.Assert(t, !svc.UserHasPermission(ctx, "scopeduser", "channel:read", "proj2", nil))
+	assert.Assert(t, !svc.UserHasPermission(ctx, "scopeduser", "channel:write", "proj1", nil))
+	assert.Assert(t, !svc.UserHasPermission(ctx, "scopeduser", "global:read", "", nil))
 }
 
 func TestUserHasPermission_StarProjects(t *testing.T) {
 	svc := setupUsersWithRoles(t)
 	ctx := context.Background()
 
-	assert.Assert(t, svc.UserHasPermission(ctx, "staruser", "channel:read", "any-project"))
-	assert.Assert(t, svc.UserHasPermission(ctx, "staruser", "channel:read", ""))
+	assert.Assert(t, svc.UserHasPermission(ctx, "staruser", "channel:read", "any-project", nil))
+	assert.Assert(t, svc.UserHasPermission(ctx, "staruser", "channel:read", "", nil))
 }
 
 func TestUserHasPermission_UnknownUser(t *testing.T) {
 	svc := setupUsersWithRoles(t)
 	ctx := context.Background()
 
-	assert.Assert(t, !svc.UserHasPermission(ctx, "unknown", "channel:read", "proj1"))
-	assert.Assert(t, !svc.UserHasPermission(ctx, "unknown", "*", ""))
+	assert.Assert(t, !svc.UserHasPermission(ctx, "unknown", "channel:read", "proj1", nil))
+	assert.Assert(t, !svc.UserHasPermission(ctx, "unknown", "*", "", nil))
 }
 
 func TestGetUserPermissions(t *testing.T) {
 	svc := setupUsersWithRoles(t)
 	ctx := context.Background()
 
-	perms := svc.GetUserPermissions(ctx, "admin1")
+	perms := svc.GetUserPermissions(ctx, "admin1", nil)
 	assert.Equal(t, len(perms), 1)
 	assert.Equal(t, perms[0], "*")
 
-	perms = svc.GetUserPermissions(ctx, "projectadmin")
+	perms = svc.GetUserPermissions(ctx, "projectadmin", nil)
 	assert.Equal(t, len(perms), 2)
 	assert.Assert(t, contains(perms, "channel:read"), "expected project:read")
 	assert.Assert(t, contains(perms, "channel:write"), "expected project:write")
 
-	perms = svc.GetUserPermissions(ctx, "unknown")
+	perms = svc.GetUserPermissions(ctx, "unknown", nil)
 	assert.Assert(t, len(perms) == 0)
 }
 
@@ -104,11 +114,11 @@ func TestIsAdmin(t *testing.T) {
 	svc := setupUsersWithRoles(t)
 	ctx := context.Background()
 
-	assert.Assert(t, svc.IsAdmin(ctx, "admin1"))
-	assert.Assert(t, !svc.IsAdmin(ctx, "projectadmin"))
-	assert.Assert(t, !svc.IsAdmin(ctx, "scopeduser"))
-	assert.Assert(t, !svc.IsAdmin(ctx, "viewer1"))
-	assert.Assert(t, !svc.IsAdmin(ctx, "unknown"))
+	assert.Assert(t, svc.IsAdmin(ctx, "admin1", nil))
+	assert.Assert(t, !svc.IsAdmin(ctx, "projectadmin", nil))
+	assert.Assert(t, !svc.IsAdmin(ctx, "scopeduser", nil))
+	assert.Assert(t, !svc.IsAdmin(ctx, "viewer1", nil))
+	assert.Assert(t, !svc.IsAdmin(ctx, "unknown", nil))
 }
 
 func TestUserHasPermission_ChannelRoleMapping(t *testing.T) {
@@ -123,8 +133,8 @@ func TestUserHasPermission_ChannelRoleMapping(t *testing.T) {
 		Role:      "read",
 	}))
 
-	assert.Assert(t, svc.UserHasPermission(ctx, "viewer1", "channel:read", "proj1"))
-	assert.Assert(t, !svc.UserHasPermission(ctx, "viewer1", "channel:write", "proj1"))
+	assert.Assert(t, svc.UserHasPermission(ctx, "viewer1", "channel:read", "proj1", nil))
+	assert.Assert(t, !svc.UserHasPermission(ctx, "viewer1", "channel:write", "proj1", nil))
 
 	assert.NilError(t, svc.CreateChannelRoleMapping(ctx, &domain.ChannelRoleMapping{
 		ChannelID: "proj1",
@@ -132,7 +142,7 @@ func TestUserHasPermission_ChannelRoleMapping(t *testing.T) {
 		Subject:   "viewer1",
 		Role:      "write",
 	}))
-	assert.Assert(t, svc.UserHasPermission(ctx, "viewer1", "channel:write", "proj1"))
+	assert.Assert(t, svc.UserHasPermission(ctx, "viewer1", "channel:write", "proj1", nil))
 }
 
 func TestHasChannelRole(t *testing.T) {
@@ -147,19 +157,9 @@ func TestHasChannelRole(t *testing.T) {
 		Role:      "owner",
 	}))
 
-	assert.Assert(t, svc.HasChannelRole(ctx, "viewer1", "proj1", "owner"))
-	assert.Assert(t, svc.HasChannelRole(ctx, "viewer1", "proj1", "write"))
-	assert.Assert(t, !svc.HasChannelRole(ctx, "admin1", "proj1", "owner"))
-}
-
-// setupBareService returns a service on an empty fake repository plus a user
-// with no direct role assignments.
-func setupBareService(t *testing.T) (*Service, *domain.User) {
-	t.Helper()
-	svc := NewService(newFakeRepository(), nil)
-	u := &domain.User{ID: "bare", Username: "bare", Roles: []string{}, Channels: []string{}}
-	assert.NilError(t, svc.CreateUser(context.Background(), u))
-	return svc, u
+	assert.Assert(t, svc.HasChannelRole(ctx, "viewer1", "proj1", "owner", nil))
+	assert.Assert(t, svc.HasChannelRole(ctx, "viewer1", "proj1", "write", nil))
+	assert.Assert(t, !svc.HasChannelRole(ctx, "admin1", "proj1", "owner", nil))
 }
 
 func TestRoleMappingScopeMatches(t *testing.T) {
@@ -217,12 +217,45 @@ func TestUserHasPermission_RoleMappingChannelScope(t *testing.T) {
 				ChannelScope: tt.scope,
 			}))
 
-			assert.Equal(t, svc.UserHasPermission(ctx, u.Username, "*", ""), tt.wantGlobal)
-			assert.Equal(t, svc.UserHasPermission(ctx, u.Username, "channel:write", "proj1"), tt.wantProj1)
-			assert.Equal(t, svc.UserHasPermission(ctx, u.Username, "channel:write", "proj2"), tt.wantProj2)
-			assert.Equal(t, svc.IsAdmin(ctx, u.Username), tt.wantGlobal)
+			assert.Equal(t, svc.UserHasPermission(ctx, u.Username, "*", "", nil), tt.wantGlobal)
+			assert.Equal(t, svc.UserHasPermission(ctx, u.Username, "channel:write", "proj1", nil), tt.wantProj1)
+			assert.Equal(t, svc.UserHasPermission(ctx, u.Username, "channel:write", "proj2", nil), tt.wantProj2)
+			assert.Equal(t, svc.IsAdmin(ctx, u.Username, nil), tt.wantGlobal)
 		})
 	}
+}
+
+// SEC-003: group role mappings match on the session's OIDC groups claim.
+func TestUserHasPermission_GroupMapping(t *testing.T) {
+	svc, u := setupBareService(t)
+	ctx := context.Background()
+	assert.NilError(t, svc.CreateRoleMapping(ctx, &domain.RoleMapping{
+		Type:         "group",
+		Subject:      "eng",
+		Role:         "channel_admin",
+		ChannelScope: "*",
+	}))
+
+	assert.Assert(t, svc.UserHasPermission(ctx, u.Username, "channel:write", "proj1", []string{"eng"}))
+	assert.Assert(t, !svc.UserHasPermission(ctx, u.Username, "channel:write", "proj1", []string{"other"}))
+	assert.Assert(t, !svc.UserHasPermission(ctx, u.Username, "channel:write", "proj1", nil))
+}
+
+// SEC-003: group channel ACL mappings match on the session's OIDC groups claim.
+func TestUserHasPermission_GroupChannelRoleMapping(t *testing.T) {
+	svc, u := setupBareService(t)
+	ctx := context.Background()
+	assert.NilError(t, svc.CreateChannel(ctx, &domain.Channel{ID: "proj1"}))
+	assert.NilError(t, svc.CreateChannelRoleMapping(ctx, &domain.ChannelRoleMapping{
+		ChannelID: "proj1",
+		Type:      "group",
+		Subject:   "eng",
+		Role:      "read",
+	}))
+
+	assert.Assert(t, svc.UserHasPermission(ctx, u.Username, "channel:read", "proj1", []string{"eng"}))
+	assert.Assert(t, !svc.UserHasPermission(ctx, u.Username, "channel:write", "proj1", []string{"eng"}))
+	assert.Assert(t, !svc.UserHasPermission(ctx, u.Username, "channel:read", "proj1", []string{"other"}))
 }
 
 // SEC-005: non-admin callers may only grant roles they themselves hold.
@@ -245,7 +278,7 @@ func TestCanGrantRole(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, svc.CanGrantRole(ctx, tt.granter, tt.role), tt.want)
+			assert.Equal(t, svc.CanGrantRole(ctx, tt.granter, tt.role, nil), tt.want)
 		})
 	}
 }

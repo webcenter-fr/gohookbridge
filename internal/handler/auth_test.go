@@ -16,10 +16,20 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc/oidctest"
 	"github.com/go-chi/chi/v5"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
+	"github.com/webcenter-fr/gohookbridge/internal/repository/storetest"
 	"github.com/webcenter-fr/gohookbridge/internal/service"
 	"golang.org/x/crypto/bcrypt"
 	"gotest.tools/v3/assert"
 )
+
+// newOIDCHandlerForTest builds an OIDCHandler backed by an empty Raft store.
+// Tests that need users create their own service and call NewOIDCHandler.
+func newOIDCHandlerForTest(t *testing.T, provider domain.OIDCProvider, secret [32]byte, publicURL string, secure bool) *OIDCHandler {
+	t.Helper()
+	h, err := NewOIDCHandler(provider, secret, publicURL, secure, service.NewService(storetest.NewRaftStore(t), nil))
+	assert.NilError(t, err)
+	return h
+}
 
 func newTestAuthConfig() *domain.AuthConfig {
 	hash, err := bcrypt.GenerateFromPassword([]byte("testpass"), bcrypt.MinCost)
@@ -154,8 +164,7 @@ func TestOIDCStateCookieSecureFlag(t *testing.T) {
 
 	for _, secure := range []bool{true, false} {
 		t.Run(fmt.Sprintf("secure=%v", secure), func(t *testing.T) {
-			handler, err := NewOIDCHandler(provider, secret, "http://localhost:3333", secure)
-			assert.NilError(t, err)
+			handler := newOIDCHandlerForTest(t, provider, secret, "http://localhost:3333", secure)
 
 			w := httptest.NewRecorder()
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/oidc/test/login", nil)
@@ -295,8 +304,7 @@ func TestOIDCLoginHandler(t *testing.T) {
 	defer mockServer.Close()
 
 	provider.IssuerURL = mockServer.URL
-	handler, err := NewOIDCHandler(provider, secret, "http://localhost:3333", true)
-	assert.NilError(t, err)
+	handler := newOIDCHandlerForTest(t, provider, secret, "http://localhost:3333", true)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/oidc/test/login?redirect=/my-channel", nil)
 	w := httptest.NewRecorder()
@@ -349,8 +357,7 @@ func TestOIDCCallbackHandler(t *testing.T) {
 		Scopes:       []string{"openid", "profile", "email"},
 	}
 
-	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
-	assert.NilError(t, err)
+	handler := newOIDCHandlerForTest(t, provider, secret, mockServer.URL, true)
 
 	state := "valid-state-value"
 	redirectTarget := "/my-channel"
@@ -409,8 +416,7 @@ func TestOIDCCallback_IDTokenVerified(t *testing.T) {
 		Scopes:       []string{"openid"},
 	}
 
-	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
-	assert.NilError(t, err)
+	handler := newOIDCHandlerForTest(t, provider, secret, mockServer.URL, true)
 
 	state := "valid-state-value"
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
@@ -454,8 +460,7 @@ func TestOIDCCallback_IDTokenNonceMismatch(t *testing.T) {
 		Scopes:       []string{"openid"},
 	}
 
-	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
-	assert.NilError(t, err)
+	handler := newOIDCHandlerForTest(t, provider, secret, mockServer.URL, true)
 
 	state := "valid-state-value"
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
@@ -490,8 +495,7 @@ func TestOIDCCallback_IDTokenMissingNonceCookie(t *testing.T) {
 		Scopes:       []string{"openid"},
 	}
 
-	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
-	assert.NilError(t, err)
+	handler := newOIDCHandlerForTest(t, provider, secret, mockServer.URL, true)
 
 	state := "valid-state-value"
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
@@ -523,8 +527,7 @@ func TestOIDCCallback_TamperedIDTokenRejected(t *testing.T) {
 		Scopes:       []string{"openid"},
 	}
 
-	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
-	assert.NilError(t, err)
+	handler := newOIDCHandlerForTest(t, provider, secret, mockServer.URL, true)
 
 	state := "valid-state-value"
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
@@ -551,8 +554,7 @@ func TestOIDCCallback_InvalidState(t *testing.T) {
 		Scopes:    []string{"openid"},
 	}
 
-	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
-	assert.NilError(t, err)
+	handler := newOIDCHandlerForTest(t, provider, secret, mockServer.URL, true)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=code&state=wrong-state", mockServer.URL), nil)
 	req.AddCookie(&http.Cookie{
@@ -601,8 +603,7 @@ func TestOIDCLoginHandler_RejectsExternalRedirect(t *testing.T) {
 	defer mockServer.Close()
 
 	provider.IssuerURL = mockServer.URL
-	handler, err := NewOIDCHandler(provider, secret, "http://localhost:3333", true)
-	assert.NilError(t, err)
+	handler := newOIDCHandlerForTest(t, provider, secret, "http://localhost:3333", true)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/oidc/test/login?redirect=https%3A%2F%2Fevil.example.com%2Fphish", nil)
 	w := httptest.NewRecorder()
@@ -641,8 +642,7 @@ func TestOIDCCallbackHandler_RejectsExternalRedirect(t *testing.T) {
 		Scopes:       []string{"openid"},
 	}
 
-	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true)
-	assert.NilError(t, err)
+	handler := newOIDCHandlerForTest(t, provider, secret, mockServer.URL, true)
 
 	state := "valid-state-value"
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
@@ -773,5 +773,142 @@ func TestFullProtectedFlow(t *testing.T) {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		assert.Equal(t, w.Code, http.StatusOK)
+	})
+}
+
+// oidcCallbackRequest builds a callback request carrying a valid state cookie
+// for the given handler.
+func oidcCallbackRequest(mockServerURL, state string) *http.Request {
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServerURL, state), nil)
+	req.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: state + "|/", Path: "/", HttpOnly: true})
+	return req
+}
+
+// SEC-003: a session resolves to the internal user whose OIDCSubjects contain
+// the token's sub (subject→user matching).
+func TestOIDCCallback_SubjectMatching(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-subject-32")
+
+	mock := newOIDCMock(t)
+	mockServer := mock.start()
+	defer mockServer.Close()
+
+	provider := domain.OIDCProvider{
+		ID:           "test",
+		Name:         "TestProvider",
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		IssuerURL:    mockServer.URL,
+		Scopes:       []string{"openid", "email"},
+	}
+
+	svc := service.NewService(storetest.NewRaftStore(t), nil)
+	assert.NilError(t, svc.CreateUser(context.Background(), &domain.User{
+		ID:           "alice-id",
+		Username:     "alice",
+		OIDCSubjects: []string{"user123"},
+		Roles:        []string{},
+		Channels:     []string{},
+	}))
+	handler, err := NewOIDCHandler(provider, secret, mockServer.URL, true, svc)
+	assert.NilError(t, err)
+
+	w := httptest.NewRecorder()
+	handler.CallbackHandler().ServeHTTP(w, oidcCallbackRequest(mockServer.URL, "valid-state-value"))
+	assert.Equal(t, w.Code, http.StatusFound)
+
+	sessionCookie := cookieByName(t, w, sessionCookieName)
+	assert.Assert(t, sessionCookie != nil)
+	tok, err := service.DecodeSession(sessionCookie.Value, secret)
+	assert.NilError(t, err)
+	assert.Equal(t, tok.Username, "alice", "sub must resolve to the internal user")
+}
+
+// SEC-003: without a subject match the session keeps the legacy email identity.
+func TestOIDCCallback_SubjectFallbackEmail(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-fallback-32")
+
+	mock := newOIDCMock(t)
+	mockServer := mock.start()
+	defer mockServer.Close()
+
+	provider := domain.OIDCProvider{
+		ID:           "test",
+		Name:         "TestProvider",
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		IssuerURL:    mockServer.URL,
+		Scopes:       []string{"openid", "email"},
+	}
+	handler := newOIDCHandlerForTest(t, provider, secret, mockServer.URL, true)
+
+	w := httptest.NewRecorder()
+	handler.CallbackHandler().ServeHTTP(w, oidcCallbackRequest(mockServer.URL, "valid-state-value"))
+	assert.Equal(t, w.Code, http.StatusFound)
+
+	sessionCookie := cookieByName(t, w, sessionCookieName)
+	assert.Assert(t, sessionCookie != nil)
+	tok, err := service.DecodeSession(sessionCookie.Value, secret)
+	assert.NilError(t, err)
+	assert.Equal(t, tok.Username, "user@example.com")
+}
+
+// SEC-002: setup mode only opens a persisted 5-minute window; once it expires
+// (or an auth method appears) API requests must authenticate.
+func TestRequireAuthDynamic_SetupModeWindow(t *testing.T) {
+	secret := service.DeriveSessionSecret("32-char-test-secret")
+	svc := service.NewService(storetest.NewRaftStore(t), nil)
+	ctx := context.Background()
+
+	r := chi.NewRouter()
+	r.Use(RequireAuthDynamic(svc, secret, true))
+	respond := func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
+	r.Get("/res", respond)
+	r.Post("/res", respond)
+
+	do := func(method string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), method, "/res", nil))
+		return w
+	}
+
+	t.Run("no users and no providers opens the window", func(t *testing.T) {
+		w := do(http.MethodGet)
+		assert.Equal(t, w.Code, http.StatusOK)
+		assert.Assert(t, !svc.GetSetupModeEndTime(ctx).IsZero(), "first access must persist the window")
+	})
+
+	t.Run("expired window returns 401", func(t *testing.T) {
+		assert.NilError(t, svc.SetSetupModeEndTime(ctx, time.Now().Add(-time.Minute)))
+		w := do(http.MethodGet)
+		assert.Equal(t, w.Code, http.StatusUnauthorized)
+		assert.Assert(t, strings.Contains(w.Body.String(), "setup window expired"))
+	})
+
+	t.Run("an internal user requires a session", func(t *testing.T) {
+		assert.NilError(t, svc.SetSetupModeEndTime(ctx, time.Now().Add(time.Minute)))
+		assert.NilError(t, svc.CreateUser(ctx, &domain.User{
+			ID:       "bootstrap",
+			Username: "bootstrap",
+			Roles:    []string{},
+			Channels: []string{},
+		}))
+		w := do(http.MethodPost)
+		assert.Equal(t, w.Code, http.StatusUnauthorized)
+	})
+
+	t.Run("oidc-only deployment requires a session", func(t *testing.T) {
+		assert.NilError(t, svc.DeleteUser(ctx, "bootstrap"))
+		assert.NilError(t, svc.SetOIDCProviders(ctx, []domain.OIDCProvider{{
+			ID:        "test",
+			Name:      "Test",
+			ClientID:  "client",
+			IssuerURL: "https://issuer.example.com",
+		}}))
+		w := do(http.MethodPost)
+		assert.Equal(t, w.Code, http.StatusUnauthorized)
 	})
 }

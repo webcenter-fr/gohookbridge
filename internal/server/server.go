@@ -313,6 +313,15 @@ func NewServer(c *cli.Context) (*Server, error) {
 
 	svc := service.NewService(rs, &brokerTTLNotifier{broker: broker})
 
+	// Reset the setup window at each boot while no users exist: a restart always
+	// yields a fresh 5-minute setup window, so the deployment can never be
+	// permanently locked out (see SECURITY.md "Setup Mode").
+	if rs.IsLeader() && svc.IsSetupMode(ctx) {
+		if err := resetSetupWindowIfNeeded(ctx, svc); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: reset setup window: %v\n", err)
+		}
+	}
+
 	channels, _ := svc.ListChannels(ctx)
 	for _, ch := range channels {
 		resolved, _ := svc.ResolveChannelConfig(ctx, ch.ID)
@@ -426,7 +435,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	// OIDC routes (registered dynamically from Raft config)
 	providers, _ := svc.OIDCProviders(ctx)
 	for _, provider := range providers {
-		oidcHandler, err := handler.NewOIDCHandler(provider, sessionSecret, publicURL, cookieSecure)
+		oidcHandler, err := handler.NewOIDCHandler(provider, sessionSecret, publicURL, cookieSecure, svc)
 		if err != nil {
 			cancelStartup()
 			broker.Shutdown()
@@ -529,6 +538,13 @@ func NewServer(c *cli.Context) (*Server, error) {
 	}, nil
 }
 
+// Service exposes the composed service layer so integration tests can
+// manipulate persisted state (e.g. the setup-window deadline) on a running
+// server without waiting for wall-clock expiry.
+func (s *Server) Service() *service.Service {
+	return s.svc
+}
+
 // servers returns the HTTP servers to run: the internal listener always, plus
 // the public listener when enabled.
 func (s *Server) servers() []*http.Server {
@@ -602,6 +618,14 @@ func (s *Server) Run(ctx context.Context) error {
 		stop() // drain the remaining servers gracefully
 	}
 	return serveErr
+}
+
+// resetSetupWindowIfNeeded clears the persisted setup-window deadline so the
+// next unauthenticated API access starts a fresh 5-minute window. It is the
+// non-destructive lockout escape hatch: NewServer calls it on boot, leader
+// only, while the deployment is still in setup mode.
+func resetSetupWindowIfNeeded(ctx context.Context, svc *service.Service) error {
+	return svc.SetSetupModeEndTime(ctx, time.Time{})
 }
 
 // applyBootstrapOnce applies bootstrap.yaml exactly once: only on the leader,

@@ -25,6 +25,7 @@ type ChannelRepository interface {
 type UserRepository interface {
 	GetUser(ctx context.Context, id string) (*User, error)
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
+	GetUserByOIDCSubject(ctx context.Context, subject string) (*User, error)
 	ListUsers(ctx context.Context) ([]*User, error)
 	CreateUser(ctx context.Context, u *User) error
 	UpdateUser(ctx context.Context, u *User) error

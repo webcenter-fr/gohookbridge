@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
@@ -120,7 +119,7 @@ func (h *apiHandler) listChannels(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	username := GetUsernameFromContext(ctx)
-	allowedChannels, _ := h.svc.UserChannels(ctx, username)
+	allowedChannels, _ := h.svc.UserChannels(ctx, username, GetGroupsFromContext(ctx))
 
 	channels, err := h.svc.ListChannels(ctx)
 	if err != nil {
@@ -286,11 +285,16 @@ func (h *apiHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	masked := make([]map[string]any, len(users))
 	for i, u := range users {
+		subjects := u.OIDCSubjects
+		if subjects == nil {
+			subjects = []string{}
+		}
 		masked[i] = map[string]any{
-			"id":       u.ID,
-			"username": u.Username,
-			"roles":    u.Roles,
-			"channels": u.Channels,
+			"id":            u.ID,
+			"username":      u.Username,
+			"roles":         u.Roles,
+			"channels":      u.Channels,
+			"oidc_subjects": subjects,
 		}
 	}
 	writeJSON(w, http.StatusOK, masked)
@@ -299,10 +303,11 @@ func (h *apiHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var input struct {
-		Username string   `json:"username" validate:"required,min=1,max=128"`
-		Password string   `json:"password"`
-		Roles    []string `json:"roles"`
-		Channels []string `json:"channels"`
+		Username     string   `json:"username"      validate:"required,min=1,max=128"`
+		Password     string   `json:"password"`
+		Roles        []string `json:"roles"`
+		Channels     []string `json:"channels"`
+		OIDCSubjects []string `json:"oidc_subjects"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -329,6 +334,7 @@ func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 		PasswordHash: string(hash),
 		Roles:        input.Roles,
 		Channels:     input.Channels,
+		OIDCSubjects: input.OIDCSubjects,
 	}
 	if err := h.svc.CreateUser(ctx, user); err != nil {
 		if errors.Is(err, domain.ErrAlreadyExists) {
@@ -352,11 +358,16 @@ func (h *apiHandler) getUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	subjects := u.OIDCSubjects
+	if subjects == nil {
+		subjects = []string{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":       u.ID,
-		"username": u.Username,
-		"roles":    u.Roles,
-		"channels": u.Channels,
+		"id":            u.ID,
+		"username":      u.Username,
+		"roles":         u.Roles,
+		"channels":      u.Channels,
+		"oidc_subjects": subjects,
 	})
 }
 
@@ -374,8 +385,9 @@ func hasAdminRole(roles []string) bool {
 // permissions. Returns a non-empty message naming the refusal reason.
 func (h *apiHandler) checkCanGrantRoles(ctx context.Context, roles []string) string {
 	username := GetUsernameFromContext(ctx)
+	groups := GetGroupsFromContext(ctx)
 	for _, role := range roles {
-		if !h.svc.CanGrantRole(ctx, username, role) {
+		if !h.svc.CanGrantRole(ctx, username, role, groups) {
 			return "insufficient permissions to grant this role"
 		}
 	}
@@ -386,10 +398,11 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
 	var input struct {
-		Username string   `json:"username"           validate:"max=128"`
-		Password string   `json:"password,omitempty"`
-		Roles    []string `json:"roles"`
-		Channels []string `json:"channels"`
+		Username     string   `json:"username"           validate:"max=128"`
+		Password     string   `json:"password,omitempty"`
+		Roles        []string `json:"roles"`
+		Channels     []string `json:"channels"`
+		OIDCSubjects []string `json:"oidc_subjects"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -431,6 +444,9 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Channels != nil {
 		u.Channels = input.Channels
+	}
+	if input.OIDCSubjects != nil {
+		u.OIDCSubjects = input.OIDCSubjects
 	}
 	if err := h.svc.UpdateUser(ctx, u); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -546,8 +562,8 @@ func (h *apiHandler) getMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	permissions := h.svc.GetUserPermissions(ctx, username)
-	channels, _ := h.svc.UserChannels(ctx, username)
+	permissions := h.svc.GetUserPermissions(ctx, username, GetGroupsFromContext(ctx))
+	channels, _ := h.svc.UserChannels(ctx, username, GetGroupsFromContext(ctx))
 
 	providers, _ := h.svc.OIDCProviders(ctx)
 	oidcList := make([]map[string]string, 0, len(providers))
@@ -952,52 +968,4 @@ func validateStruct(s interface{}) string {
 		return strings.Join(msgs, "; ")
 	}
 	return ""
-}
-
-func SetupModeMiddleware(svc *service.Service) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if svc.IsSetupMode(r.Context()) {
-				setupEnd := svc.GetSetupModeEndTime(r.Context())
-				if setupEnd.IsZero() {
-					setupEnd = time.Now().Add(5 * time.Minute)
-					if err := svc.SetSetupModeEndTime(r.Context(), setupEnd); err != nil {
-						writeError(w, http.StatusInternalServerError, "failed to set setup mode end time")
-						return
-					}
-				}
-				if time.Now().Before(setupEnd) {
-					next.ServeHTTP(w, r)
-					return
-				}
-			}
-			http.Error(w, "Setup mode expired", http.StatusUnauthorized)
-		})
-	}
-}
-
-// AdaptiveAuthMiddleware combines setup mode and auth checks.
-// If setup mode is active, requests pass through.
-// Otherwise, requests proceed to inner middleware (RequirePermission) which handles auth.
-func AdaptiveAuthMiddleware(svc *service.Service) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if svc.IsSetupMode(r.Context()) {
-				setupEnd := svc.GetSetupModeEndTime(r.Context())
-				if setupEnd.IsZero() {
-					setupEnd = time.Now().Add(5 * time.Minute)
-					if err := svc.SetSetupModeEndTime(r.Context(), setupEnd); err != nil {
-						writeError(w, http.StatusInternalServerError, "failed to set setup mode end time")
-						return
-					}
-				}
-				if time.Now().Before(setupEnd) {
-					next.ServeHTTP(w, r)
-					return
-				}
-			}
-			// Setup mode expired or never active — pass through to RequirePermission middleware
-			next.ServeHTTP(w, r)
-		})
-	}
 }

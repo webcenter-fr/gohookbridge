@@ -1004,6 +1004,21 @@ func (rs *RaftStore) GetUserByUsername(ctx context.Context, username string) (*d
 	return rs.GetUser(ctx, idx.UserID)
 }
 
+func (rs *RaftStore) GetUserByOIDCSubject(ctx context.Context, subject string) (*domain.User, error) {
+	users, err := rs.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range users {
+		for _, s := range u.OIDCSubjects {
+			if s == subject {
+				return u, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%w: user by oidc subject %q", domain.ErrNotFound, subject)
+}
+
 func (rs *RaftStore) ListUsers(ctx context.Context) ([]*domain.User, error) {
 	keys, err := listFSMKeys(rs.db, "/users/")
 	if err != nil {
