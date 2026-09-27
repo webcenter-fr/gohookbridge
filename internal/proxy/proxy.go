@@ -60,7 +60,26 @@ func startProxy(c *cli.Context) error {
 	client := &http.Client{Transport: tr, Timeout: 60 * time.Second}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/", newProxyHandler(pubKeyBytes, targetURL, client))
+
+	srv := &http.Server{
+		Addr:              listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 30 * time.Second,
+		// ReadTimeout bounds slow-body/slow-header reads; IdleTimeout bounds keep-alive.
+		// No WriteTimeout: responses are small JSON replies, streamed as received.
+		ReadTimeout: 60 * time.Second,
+		IdleTimeout: 120 * time.Second,
+	}
+
+	fmt.Fprintf(os.Stdout, "Encrypt proxy listening on %s, forwarding to %s\n", listenAddr, targetURL)
+	return srv.ListenAndServe()
+}
+
+// newProxyHandler builds the POST-only forwarding handler: read the body,
+// encrypt it, sanitize the forwarded headers and POST to the target.
+func newProxyHandler(pubKeyBytes *[32]byte, targetURL string, client *http.Client) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "only POST is supported", http.StatusMethodNotAllowed)
 			return
@@ -87,14 +106,8 @@ func startProxy(c *cli.Context) error {
 		}
 
 		req.Header = r.Header.Clone()
+		sanitizeForwardedHeaders(req, r.RemoteAddr)
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Del("Content-Length")
-		req.Header.Del("Transfer-Encoding")
-		req.Header.Del("Connection")
-		req.Header.Del("Keep-Alive")
-		req.Header.Del("Proxy-Authorization")
-		req.Header.Del("TE")
-		req.Header.Del("Trailer")
 		req.ContentLength = int64(len(encrypted))
 
 		resp, err := client.Do(req) //nolint:gosec // user-configured URL
@@ -103,26 +116,36 @@ func startProxy(c *cli.Context) error {
 			return
 		}
 		defer resp.Body.Close()
-
-		for k, vals := range resp.Header {
-			for _, v := range vals {
-				w.Header().Add(k, v)
-			}
-		}
-		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+		copyResponse(w, resp)
 	})
+}
 
-	srv := &http.Server{
-		Addr:              listenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 30 * time.Second,
-		// ReadTimeout bounds slow-body/slow-header reads; IdleTimeout bounds keep-alive.
-		// No WriteTimeout: responses are small JSON replies, streamed as received.
-		ReadTimeout: 60 * time.Second,
-		IdleTimeout: 120 * time.Second,
+// sanitizeForwardedHeaders strips connection-state, hop-by-hop, and
+// client-identity headers and sets X-Forwarded-For to the real client (never
+// trusts a client-supplied value). Webhook signature headers (X-Hub-Signature*,
+// X-Gitlab-Token, X-Gitea-Signature) are intentionally preserved so downstream
+// signature validation keeps working.
+func sanitizeForwardedHeaders(req *http.Request, remoteAddr string) {
+	for _, h := range []string{
+		"Content-Length", "Transfer-Encoding", "Connection", "Keep-Alive",
+		"Proxy-Authorization", "TE", "Trailer", "Upgrade",
+		"Cookie", "Authorization",
+		"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Forwarded",
+	} {
+		req.Header.Del(h)
 	}
+	if clientIP, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		req.Header.Set("X-Forwarded-For", clientIP)
+	}
+}
 
-	fmt.Fprintf(os.Stdout, "Encrypt proxy listening on %s, forwarding to %s\n", listenAddr, targetURL)
-	return srv.ListenAndServe()
+// copyResponse mirrors the upstream response headers and body to the caller.
+func copyResponse(w http.ResponseWriter, resp *http.Response) {
+	for k, vals := range resp.Header {
+		for _, v := range vals {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }

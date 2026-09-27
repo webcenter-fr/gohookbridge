@@ -26,6 +26,9 @@ type RingBuffer struct {
 }
 
 func NewRingBuffer(maxSize int, maxAge time.Duration) *RingBuffer {
+	if maxSize < 1 {
+		maxSize = 1
+	}
 	return &RingBuffer{
 		entries:     make([]entry, maxSize),
 		maxSize:     maxSize,

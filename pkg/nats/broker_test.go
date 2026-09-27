@@ -1,6 +1,7 @@
 package nats
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -260,4 +261,18 @@ func TestRingBufferPerChannelTTLEvictionMixed(t *testing.T) {
 	historicalLong := rb.Get("long", time.Time{}, 0)
 	assert.Equal(t, 1, len(historicalLong), "long TTL channel should still exist")
 	assert.Equal(t, "long-lived", string(historicalLong[0]))
+}
+
+// SEC-013: non-positive buffer sizes are clamped so Append never panics with
+// an index-out-of-range on a zero-length ring.
+func TestNewRingBufferClampsSize(t *testing.T) {
+	for _, size := range []int{0, -5} {
+		t.Run(fmt.Sprintf("size=%d", size), func(t *testing.T) {
+			rb := NewRingBuffer(size, time.Hour)
+			rb.Append("ch", []byte("payload"))
+			got := rb.Get("ch", time.Time{}, 0)
+			assert.Equal(t, len(got), 1)
+			assert.Equal(t, string(got[0]), "payload")
+		})
+	}
 }

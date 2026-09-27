@@ -114,7 +114,7 @@ func parsePeers(entries []string) []RaftPeer {
 func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
 	withDefaults(&cfg)
 
-	if err := os.MkdirAll(cfg.Dir, 0o750); err != nil {
+	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create raft dir: %w", err)
 	}
 

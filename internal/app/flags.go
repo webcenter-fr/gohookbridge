@@ -418,7 +418,7 @@ var ServerFlags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "dev-admin",
-		Usage: "Auto-create an admin user on first boot when no users exist (development only). Password is written to raft-data/admin-password.txt.",
+		Usage: "DEVELOPMENT ONLY — auto-create an admin user on first boot when no users exist. Password is written to raft-data/admin-password.txt (0600). Do not use in production.",
 	},
 	&cli.StringFlag{
 		Name:  "dev-admin-password",

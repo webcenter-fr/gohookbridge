@@ -110,7 +110,7 @@ func readLocalGeneration(raftDir string) (uint64, bool) {
 
 // writeLocalGeneration records the synchronized generation on disk.
 func writeLocalGeneration(raftDir string, gen uint64) error {
-	if err := os.MkdirAll(raftDir, 0o750); err != nil {
+	if err := os.MkdirAll(raftDir, 0o700); err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(raftDir, localGenerationFile), []byte(strconv.FormatUint(gen, 10)), 0o600)

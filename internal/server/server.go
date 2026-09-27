@@ -759,6 +759,6 @@ func initDevAdmin(ctx context.Context, svc *service.Service, password, raftDir s
 	if err := os.WriteFile(passwordFile, []byte(password+"\n"), 0600); err != nil {
 		return fmt.Errorf("write password file: %w", err)
 	}
-	fmt.Fprintf(os.Stdout, "Dev admin account created. Username: admin. Password saved to %s\n", passwordFile)
+	fmt.Fprintf(os.Stdout, "WARNING: DEVELOPMENT ONLY — admin password saved to %s (delete this file after first login). Username: admin\n", passwordFile)
 	return nil
 }
