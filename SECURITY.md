@@ -234,6 +234,13 @@ To omit the header entirely (same-origin browser access only), set `cors_origin:
 
 The default `*` preserves backward compatibility for existing deployments.
 
+### Channel Token Authentication
+
+Channel access tokens are accepted via **two** mechanisms:
+
+- **`Authorization: Bearer <token>` header** — preferred for CLI clients and any caller that can set request headers; the token never appears in a URL.
+- **`?token=xxx` query parameter** — used by webhook senders and by the browser `EventSource` API, which cannot set request headers. Because the token appears in the URL, it may be captured in intermediate proxy or web-server access logs: always use TLS, prefer short-lived tokens, and note that the server's access logs redact `token=` values.
+
 ---
 
 ## Resource Protection
@@ -264,6 +271,16 @@ Raising these limits increases memory consumption proportionally. A server with 
 Channel names are capped at 64 characters across all endpoints. This guards against resource exhaustion from pathologically long names — no configuration is needed.
 
 ---
+
+## Security Response Headers
+
+Every response from the internal listener (SPA, API, SSE, auth) and the public webhook listener carries hardening headers:
+
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: DENY` (clickjacking) — mirrored by `frame-ancestors 'none'` in the CSP
+- `Referrer-Policy: no-referrer`
+- `Content-Security-Policy`: a conservative policy (`default-src 'self'`, `connect-src 'self'` so the SPA only calls same-origin `/api` and `/events`, `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`, `img-src`/`font-src` allow `'self'` and `data:`). `script-src`/`style-src` keep `'unsafe-inline'` to accommodate the Nuxt static SPA's inline bootstrap/styles — tighten to `'self'` only after verifying the built `index.html` renders without CSP violations.
+- `Strict-Transport-Security: max-age=63072000; includeSubDomains` — emitted **only** when the deployment is effectively TLS (same signal as the Secure cookie flag); the plain-HTTP public listener never sends HSTS.
 
 ## Safe Command Execution
 
@@ -400,16 +417,25 @@ Users authenticate with username and password on the `/login` page. Passwords ar
 
 ### OIDC Authentication
 
-OIDC providers can be configured via the Admin API. After successful OIDC login, users are matched to internal user records by OIDC subject claims.
+OIDC providers can be configured via the Admin API.
 
-OIDC login uses the authorization code flow with a state parameter (open-redirect protection) and a nonce. When the token endpoint returns an ID token, it is
-cryptographically verified with `coreos/go-oidc`:
+**Identity model** — two distinct concepts:
+
+- **Groups → group role mappings.** The session's `Groups` claim (from the OIDC `groups` claim, or userinfo; configurable per provider via `groups_claim`) is the **only** source of group membership. It matches `RoleMapping{type: "group"}` and `ChannelRoleMapping{type: "group"}` entries.
+- **`oidc_subjects` → subject-to-user matching.** Each internal user can list OIDC `sub` values (`oidc_subjects` in the user API). After a successful OIDC login, the server resolves the internal user whose `oidc_subjects` contains the token's `sub`; that user's `username` becomes the session identity, so the internal user's RBAC roles apply.
+- **Backward-compatible fallback.** If no subject matches, the session username falls back to the token's `email`, then to `sub` (the pre-existing behaviour). Users without `oidc_subjects` and providers without a `groups` claim keep working unchanged.
+
+OIDC login uses the authorization code flow with a state parameter (open-redirect protection), a nonce, and **PKCE (S256)**: login stores the code verifier in an `oidc_pkce` cookie, sends the S256 challenge in the authorize URL, and replays the verifier in the token exchange. A callback without the PKCE cookie is rejected (HTTP 400). All outbound OIDC HTTP calls (discovery, token exchange, userinfo) use a dedicated client with a 10-second timeout, honor request cancellation, and treat non-200 responses as errors.
+
+When the token endpoint returns an ID token, it is cryptographically verified with `coreos/go-oidc`:
 
 - signature verified against the provider's JWKS,
 - `iss`, `aud` and `exp` claims validated,
 - the `nonce` claim must match the nonce stored in the login nonce cookie.
 
 A nonce mismatch or an unverifiable ID token is a hard reject (HTTP 400) — there is **no silent downgrade** to userinfo. The userinfo fallback is used only when the provider returns no ID token at all. Providers that return an ID token must produce a verifiable one; operators using providers without a JWKS endpoint must disable that provider.
+
+`GetUserPermissions` and `UserChannels` aggregate role-mapping permissions without channel-scope filtering: they are **informational** (display/listing) paths. Enforcement runs exclusively through `UserHasPermission` and `CanGrantRole`.
 
 ### RBAC Model
 
@@ -418,12 +444,18 @@ There are three default roles:
 | Role | Permissions |
 |---|---|
 | `admin` | `*` (wildcard — all permissions) |
-| `project_admin` | `project:write`, `project:read` |
-| `project_viewer` | `project:read` |
+| `channel_admin` | `channel:write`, `channel:read` |
+| `channel_viewer` | `channel:read` |
 
-Custom roles can be created via the Admin API. Permission names follow the pattern: `global:read`, `global:write`, `users:read`, `users:write`, `rbac:read`, `rbac:write`, `project:read`, `project:write`, `project:view`.
+Custom roles can be created via the Admin API. Permission names follow the pattern: `global:read`, `global:write`, `users:read`, `users:write`, `rbac:read`, `rbac:write`, `channel:read`, `channel:write`, `channel:view`.
 
-Users can be scoped to specific projects. A user with the `*` (admin) role and project scope `["*"]` has universal access.
+Users can be scoped to specific channels. A user with the `*` (admin) role and channel scope `["*"]` has universal access.
+
+Granting rules:
+
+- **Channel-scoped role mappings never grant global permissions.** A `RoleMapping` with `channel_scope` set to a specific channel only matches checks for that channel; a global (non-channel) permission check only matches mappings scoped to `"*"`.
+- **`rbac:write` manages RBAC only.** It allows creating/deleting role mappings and updating user-role bindings. It does **not** grant channel-ACL management — editing a channel's ACL requires `channel:write` (or `*`).
+- **Self-escalation guard.** `rbac:write`/`users:write` do not imply `*`: a caller without `*` may only grant a role whose permission set is a subset of their own globally-effective permissions (`CanGrantRole`). Only admins may grant the `admin` (`*`) role. A refused grant returns 403.
 
 ### Session Management
 
@@ -491,20 +523,29 @@ Secrets.
 NATS inter-node cluster routes use TCP (not TLS in the current implementation).
 
 - The NATS client port (`--nats-port`, default `4222`) binds to `127.0.0.1` and is for in-process use only — do not expose it externally.
-- The NATS cluster port (`--nats-cluster-port`, default `6222`) binds to `0.0.0.0` for inter-node communication. Firewall this port to cluster peers only.
+- The NATS cluster port (`--nats-cluster-port`, default `6222`) binds to `0.0.0.0` for inter-node communication. Firewall this port to cluster peers only. The Helm chart ships an **opt-in NetworkPolicy** (`networkPolicy.enabled: true`, default `false`) that restricts the Raft (`6001`) and NATS cluster (`6222`) ports to peer server pods while leaving ingress HTTP (`server.port` / `server.publicPort`) open.
 - NATS cluster routes are unencrypted. In production HA deployments, use a secure overlay network (VPC, VXLAN, WireGuard) or configure NATS TLS.
 - The NATS ring buffer is in-memory only — no persistence. Upon node restart, the buffer starts empty.
 - Protected channels with end-to-end encryption are not supported when NATS mode is enabled.
 
 ## Setup Mode
 
-On first boot with no users, gohookbridge enters a **5-minute setup window** during which the Admin API is accessible without authentication. This allows the initial admin user to be created (either via `bootstrap.yaml` or the first API call). After the setup window expires, all API requests require a valid session.
+"Setup mode" means the deployment has **no internal users and no OIDC providers** (`BuildAuthConfig` returns nil). In that state, the Admin API accepts unauthenticated requests so the first admin can be created.
 
-The operational endpoints `/api/send/{channel}`, `/api/channels/{channel}/events/{eventId}/replay` (channel write permission) and `/api/channels/{channel}/generate-encryption-key` (admin permission) are **never** reachable without an authenticated session — including in setup mode, where no session can exist yet. The login bootstrap endpoints (`/api/auth/*` and the OIDC login/callback routes) remain unauthenticated so the initial admin can always be created.
+- The **5-minute setup window** starts lazily on the **first unauthenticated API request** while in setup mode. The deadline is persisted in Raft (`/meta/setup_end`) so all replicas agree.
+- Once the deadline passes with no users, API requests are rejected with `401 setup window expired: create a user or restart the server`.
+- **Restart always resets the window:** at every boot, the leader clears the persisted deadline while still in setup mode. A restart therefore yields a fresh 5-minute window — a non-destructive escape hatch (no need to delete Raft data). In an HA cluster, restart the **leader** (or the whole StatefulSet) to reset; a follower restart alone does not clear it.
+- To re-enter setup mode by deletion instead: stop the server, delete the Raft data directory, and restart.
 
-To re-enter setup mode, stop the server, delete the Raft data directory, and restart.
+The operational endpoints `/api/send/{channel}`, `/api/channels/{channel}/events/{eventId}/replay` (channel write permission) and `/api/channels/{channel}/generate-encryption-key` (admin permission) are **never** reachable without an authenticated session — including in setup mode, where no session can exist yet. The login bootstrap endpoints (`/api/auth/*` and the OIDC login/callback routes) remain mounted outside the authenticated API router and reachable at all times, so the initial admin can always be created.
 
 ---
+
+## Roadmap / Known Limitations
+
+- **At-rest encryption of the store (SEC-009):** secrets (the session secret, webhook secrets, OIDC client secrets, bcrypt password hashes) are stored **unencrypted at rest** inside the Raft/BoltDB data directory. The directory is created with `0700` permissions, but encrypting the BoltDB file or the data volume itself is documented future work. As an interim control, enable disk/volume encryption (e.g. Kubernetes `volumeEncryption`, LUKS, or an encrypted cloud volume) and restrict access to the `raft-data` PVC.
+- **Informational permission listings:** `GetUserPermissions` / `UserChannels` are display-only aggregates (see [Authentication and RBAC (ACL)](#authentication-and-rbac-acl)); enforcement is `UserHasPermission` / `CanGrantRole`.
+- **CSP tightening:** the conservative CSP keeps `'unsafe-inline'` for `script-src`/`style-src` until the built SPA is verified to be fully external-script.
 
 ## Reporting Vulnerabilities
 

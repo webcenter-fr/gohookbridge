@@ -174,7 +174,7 @@ To auto-create an admin user on first boot (no bootstrap config needed), add the
 go run ./cmd/gohookbridge server --dev-admin
 ```
 
-On first start with no users, this creates an `admin` user and writes the password to `raft-data/admin-password.txt`. Use `--dev-admin-password` to set a specific password instead of a random one.
+On first start with no users, this creates an `admin` user and writes the password to `raft-data/admin-password.txt` (file mode `0600`). Use `--dev-admin-password` to set a specific password instead of a random one. **Development only — do not use `--dev-admin` in production.**
 
 ### Running the UI (hot reload)
 
@@ -209,6 +209,20 @@ This runs in order:
 2. `go build -o bin/gohookbridge ./cmd/gohookbridge` — embeds the UI and links the binary
 
 `make build` includes a guard that fails if `internal/web/static/index.html` is missing after the web build, so a silent `go build` with an empty embed is impossible.
+
+### Container images and Helm chart versioning
+
+Base images in `Dockerfile` and `Dockerfile.goreleaser` are **pinned by digest** (`image:tag@sha256:...`) for supply-chain integrity. To refresh a pin, resolve the current digest and update the `FROM` line plus its `# update:` comment:
+
+```shell
+docker buildx imagetools inspect node:22-alpine
+docker buildx imagetools inspect golang:1.27
+docker buildx imagetools inspect registry.access.redhat.com/ubi9/ubi-minimal
+```
+
+GitHub Actions in `.github/workflows/` are pinned to the full commit SHA with a trailing `# <tag>` comment; resolve with `git ls-remote https://github.com/<owner>/<repo>.git refs/tags/<tag>` (use the `^{}` line for annotated tags).
+
+The Helm chart's image tags default to `.Chart.AppVersion` (set from the git tag by `releaser.yaml`), so chart installs track **released tags, never `main`**. Override with `--set server.image.tag=<tag>` when testing an unreleased build.
 
 The repository also produces two smaller, focused binaries:
 
@@ -410,7 +424,7 @@ The middlewares are wired in `internal/server/server.go`: `banMiddleware`/`rateL
 
 Channel access tokens are passed as a URL query parameter (`?token=xxx`) rather than an HTTP header. This is a deliberate design choice forced by GitHub webhooks: GitHub only allows configuring a webhook URL, with no ability to set custom headers. The same `--token` query-param approach is used consistently across the client, proxy, and produce CLI tools for uniformity.
 
-For SSE consumers, the token is also accepted via the `Authorization: Bearer` header as an alternative, but the query parameter remains the primary mechanism.
+For SSE consumers, the token is also accepted via the `Authorization: Bearer` header — **prefer the Bearer header for CLI clients and any caller that can set headers**: the query parameter appears in the URL and can end up in intermediate proxy access logs (server access logs redact `token=`). The browser `EventSource` API cannot set request headers, so the web UI keeps using `?token=` over TLS with short-lived tokens.
 
 ### Encryption vs Access Control
 
