@@ -1,5 +1,5 @@
 NAME  := gohookbridge
-MD_FILES := $(shell git ls-files '*.md' ':(exclude).vale/*' ':(exclude).opencode/*')
+MD_FILES := $(shell git ls-files '*.md' ':(exclude).opencode/*')
 
 LDFLAGS := -s -w
 FLAGS += -ldflags "$(LDFLAGS)" -buildvcs=true
@@ -81,13 +81,9 @@ lint-go:
 	golangci-lint run ./...
 
 .PHONY: lint-md
-lint-md: ${MD_FILES} ## runs markdownlint and vale on all markdown files
+lint-md: ${MD_FILES} ## runs markdownlint on all markdown files
 	@echo "Linting markdown files..."
 	@markdownlint $(MD_FILES)
-	@if [ -d docs/content ] && command -v vale >/dev/null 2>&1; then \
-		echo "Grammar check with vale of documentation..."; \
-		vale docs/content --minAlertLevel=error --output=line; \
-	fi
 
 dev-server:
 	reflex -r '.*\.(tmpl|go)' -s go run ./cmd/gohookbridge -- server --footer "Contact: <a href=\"https://twitter.com/me\">Me</a> - use it at your own risk"
