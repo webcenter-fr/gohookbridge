@@ -87,11 +87,6 @@ func RequireChannelACLPermission(svc *service.Service) func(http.Handler) http.H
 				return
 			}
 
-			if svc.UserHasPermission(r.Context(), username, domain.PermRBACWrite, channelID) {
-				next.ServeHTTP(w, r)
-				return
-			}
-
 			if svc.UserHasPermission(r.Context(), username, domain.PermAll, channelID) {
 				next.ServeHTTP(w, r)
 				return

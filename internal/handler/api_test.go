@@ -362,7 +362,7 @@ func TestChannelACL_ListRequiresChannelRead(t *testing.T) {
 	assert.Equal(t, w.Code, http.StatusOK)
 }
 
-func TestChannelACL_AddRequiresChannelWriteOrRBACWrite(t *testing.T) {
+func TestChannelACL_AddRequiresChannelWrite(t *testing.T) {
 	svc, router := setupAPI(t)
 
 	err := svc.CreateChannel(context.Background(), &domain.Channel{ID: "test-channel"})
@@ -414,4 +414,106 @@ func TestChannelACL_NonAdminCannotAddACL(t *testing.T) {
 		"role":    "read",
 	}))
 	assert.Equal(t, w.Code, http.StatusForbidden)
+}
+
+// setupRBACManagerAPI returns a store pre-seeded with a non-admin rbac:write
+// role plus a router acting as that user, on a store that already owns the
+// test channel.
+func setupRBACManagerAPI(t *testing.T) http.Handler {
+	t.Helper()
+	rs := storetest.NewRaftStore(t)
+	svc := service.NewService(rs, nil)
+	ctx := context.Background()
+
+	assert.NilError(t, svc.CreateRole(ctx, domain.Role{
+		Name:        "rbac_manager",
+		Permissions: []string{"rbac:read", "rbac:write", "users:read", "users:write", "channel:read"},
+	}))
+	assert.NilError(t, svc.CreateChannel(ctx, &domain.Channel{ID: "test-channel"}))
+	assert.NilError(t, svc.CreateUser(ctx, &domain.User{
+		ID:       "rbacmgr",
+		Username: "rbacmgr",
+		Roles:    []string{"rbac_manager"},
+		Channels: []string{"*"},
+	}))
+
+	r := chi.NewRouter()
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			//nolint:revive,staticcheck
+			ctx := context.WithValue(r.Context(), UsernameContextKey, "rbacmgr")
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	})
+	RegisterAPIHandlers(r, svc)
+	return r
+}
+
+// SEC-005: a rbac:write holder may only grant roles they themselves hold;
+// granting a wildcard (admin) role is refused (no self-escalation).
+func TestCreateRoleMapping_GrantGuard(t *testing.T) {
+	router := setupRBACManagerAPI(t)
+
+	t.Run("cannot grant admin", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, apiRequest("POST", "/rbac/mappings", map[string]string{
+			"type":          "user",
+			"subject":       "rbacmgr",
+			"role":          "admin",
+			"channel_scope": "*",
+		}))
+		assert.Equal(t, w.Code, http.StatusForbidden)
+		assert.Assert(t, strings.Contains(w.Body.String(), "insufficient permissions"))
+	})
+
+	t.Run("can grant own role", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, apiRequest("POST", "/rbac/mappings", map[string]string{
+			"type":          "user",
+			"subject":       "someone",
+			"role":          "rbac_manager",
+			"channel_scope": "*",
+		}))
+		assert.Equal(t, w.Code, http.StatusCreated, "body: %s", w.Body.String())
+	})
+}
+
+// SEC-005: users:write cannot be used to hand out roles the caller does not
+// hold.
+func TestCreateUser_GrantGuard(t *testing.T) {
+	router := setupRBACManagerAPI(t)
+
+	t.Run("cannot create admin", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, apiRequest("POST", "/users", map[string]any{
+			"username": "newadmin",
+			"password": "secret-password-1",
+			"roles":    []string{"admin"},
+		}))
+		assert.Equal(t, w.Code, http.StatusForbidden)
+	})
+
+	t.Run("can create holder of own role", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, apiRequest("POST", "/users", map[string]any{
+			"username": "newviewer",
+			"password": "secret-password-1",
+			"roles":    []string{"channel_viewer"},
+		}))
+		assert.Equal(t, w.Code, http.StatusCreated, "body: %s", w.Body.String())
+	})
+}
+
+// SEC-005: rbac:write alone no longer manages channel ACLs (channel:write
+// required, exercised in TestChannelACL_AddRequiresChannelWrite).
+func TestChannelACL_RBACWriteOnlyForbidden(t *testing.T) {
+	router := setupRBACManagerAPI(t)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, apiRequest("POST", "/channels/test-channel/acl", map[string]string{
+		"type":    "user",
+		"subject": "someone",
+		"role":    "read",
+	}))
+	assert.Equal(t, w.Code, http.StatusForbidden, "rbac:write must not grant channel-ACL management")
 }

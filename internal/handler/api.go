@@ -312,6 +312,10 @@ func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if msg := h.checkCanGrantRoles(ctx, input.Roles); msg != "" {
+		writeError(w, http.StatusForbidden, msg)
+		return
+	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -365,6 +369,19 @@ func hasAdminRole(roles []string) bool {
 	return false
 }
 
+// checkCanGrantRoles enforces the self-escalation guard (SEC-005): the caller
+// may only grant roles whose permissions are a subset of their own effective
+// permissions. Returns a non-empty message naming the refusal reason.
+func (h *apiHandler) checkCanGrantRoles(ctx context.Context, roles []string) string {
+	username := GetUsernameFromContext(ctx)
+	for _, role := range roles {
+		if !h.svc.CanGrantRole(ctx, username, role) {
+			return "insufficient permissions to grant this role"
+		}
+	}
+	return ""
+}
+
 func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
@@ -391,6 +408,12 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 	if input.Roles != nil && hasAdminRole(u.Roles) && !hasAdminRole(input.Roles) {
 		writeError(w, http.StatusBadRequest, "cannot remove admin role")
 		return
+	}
+	if input.Roles != nil {
+		if msg := h.checkCanGrantRoles(ctx, input.Roles); msg != "" {
+			writeError(w, http.StatusForbidden, msg)
+			return
+		}
 	}
 	if input.Username != "" {
 		u.Username = input.Username
@@ -486,6 +509,10 @@ func (h *apiHandler) updateBinding(w http.ResponseWriter, r *http.Request) {
 	}
 	if hasAdminRole(u.Roles) && !hasAdminRole(binding.Roles) {
 		writeError(w, http.StatusBadRequest, "cannot remove admin role")
+		return
+	}
+	if msg := h.checkCanGrantRoles(ctx, binding.Roles); msg != "" {
+		writeError(w, http.StatusForbidden, msg)
 		return
 	}
 	if err := h.svc.UpdateUserBinding(ctx, &binding); err != nil {
@@ -708,6 +735,10 @@ func (h *apiHandler) createRoleMapping(w http.ResponseWriter, r *http.Request) {
 	}
 	if m.ChannelScope == "" {
 		m.ChannelScope = "*"
+	}
+	if msg := h.checkCanGrantRoles(ctx, []string{m.Role}); msg != "" {
+		writeError(w, http.StatusForbidden, msg)
+		return
 	}
 	if err := h.svc.CreateRoleMapping(ctx, &m); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

@@ -151,3 +151,101 @@ func TestHasChannelRole(t *testing.T) {
 	assert.Assert(t, svc.HasChannelRole(ctx, "viewer1", "proj1", "write"))
 	assert.Assert(t, !svc.HasChannelRole(ctx, "admin1", "proj1", "owner"))
 }
+
+// setupBareService returns a service on an empty fake repository plus a user
+// with no direct role assignments.
+func setupBareService(t *testing.T) (*Service, *domain.User) {
+	t.Helper()
+	svc := NewService(newFakeRepository(), nil)
+	u := &domain.User{ID: "bare", Username: "bare", Roles: []string{}, Channels: []string{}}
+	assert.NilError(t, svc.CreateUser(context.Background(), u))
+	return svc, u
+}
+
+func TestRoleMappingScopeMatches(t *testing.T) {
+	tests := []struct {
+		name      string
+		scope     string
+		channelID string
+		want      bool
+	}{
+		{"global scope matches global check", "*", "", true},
+		{"global scope matches channel check", "*", "c1", true},
+		{"scoped matches same channel", "c1", "c1", true},
+		{"scoped does not match other channel", "c1", "c2", false},
+		{"scoped never matches global check", "c1", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, roleMappingScopeMatches(tt.scope, tt.channelID), tt.want)
+		})
+	}
+}
+
+// SEC-001: a channel-scoped role mapping must never grant global permissions.
+func TestUserHasPermission_RoleMappingChannelScope(t *testing.T) {
+	tests := []struct {
+		name       string
+		scope      string
+		wantGlobal bool
+		wantProj1  bool
+		wantProj2  bool
+	}{
+		{
+			name:       "channel-scoped mapping stays channel-scoped",
+			scope:      "proj1",
+			wantGlobal: false,
+			wantProj1:  true,
+			wantProj2:  false,
+		},
+		{
+			name:       "globally-scoped mapping grants global permissions",
+			scope:      "*",
+			wantGlobal: true,
+			wantProj1:  true,
+			wantProj2:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, u := setupBareService(t)
+			ctx := context.Background()
+			assert.NilError(t, svc.CreateRoleMapping(ctx, &domain.RoleMapping{
+				Type:         "user",
+				Subject:      u.Username,
+				Role:         "admin",
+				ChannelScope: tt.scope,
+			}))
+
+			assert.Equal(t, svc.UserHasPermission(ctx, u.Username, "*", ""), tt.wantGlobal)
+			assert.Equal(t, svc.UserHasPermission(ctx, u.Username, "channel:write", "proj1"), tt.wantProj1)
+			assert.Equal(t, svc.UserHasPermission(ctx, u.Username, "channel:write", "proj2"), tt.wantProj2)
+			assert.Equal(t, svc.IsAdmin(ctx, u.Username), tt.wantGlobal)
+		})
+	}
+}
+
+// SEC-005: non-admin callers may only grant roles they themselves hold.
+func TestCanGrantRole(t *testing.T) {
+	svc := setupUsersWithRoles(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		granter string
+		role    string
+		want    bool
+	}{
+		{"admin grants admin", "admin1", "admin", true},
+		{"channel_admin cannot grant admin", "projectadmin", "admin", false},
+		{"channel_admin grants channel_viewer subset", "projectadmin", "channel_viewer", true},
+		{"channel_admin grants channel_admin", "projectadmin", "channel_admin", true},
+		{"unknown role is refused", "admin1", "does-not-exist", false},
+		{"unknown granter is refused", "unknown", "channel_viewer", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, svc.CanGrantRole(ctx, tt.granter, tt.role), tt.want)
+		})
+	}
+}

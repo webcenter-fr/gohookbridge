@@ -28,6 +28,16 @@ func hasChannelAccessList(userChannels []string, channelID string) bool {
 	return false
 }
 
+// roleMappingScopeMatches reports whether a role mapping's channel scope grants
+// access for the requested channelID. channelID=="" denotes a global
+// (non-channel) permission check, which only matches mappings scoped to "*".
+func roleMappingScopeMatches(scope, channelID string) bool {
+	if scope == "*" {
+		return true
+	}
+	return channelID != "" && scope == channelID
+}
+
 func (s *Service) checkGlobalRolePermissions(ctx context.Context, user *domain.User, perm domain.Permission, channelID string) bool {
 	for _, roleName := range user.Roles {
 		role, err := s.repo.GetRole(ctx, roleName)
@@ -82,10 +92,7 @@ func (s *Service) checkRoleMappingPermissions(ctx context.Context, user *domain.
 		}
 		for _, p := range role.Permissions {
 			if p == string(perm) || p == "*" {
-				if m.ChannelScope == "*" || m.ChannelScope == channelID {
-					return true
-				}
-				if channelID == "" && (p == string(perm) || p == "*") {
+				if roleMappingScopeMatches(m.ChannelScope, channelID) {
 					return true
 				}
 			}
@@ -283,6 +290,28 @@ func (s *Service) UserChannels(ctx context.Context, username string) ([]string, 
 
 func (s *Service) IsAdmin(ctx context.Context, username string) bool {
 	return s.UserHasPermission(ctx, username, "*", "")
+}
+
+// CanGrantRole reports whether username may assign/grant roleName: admins (global *)
+// may grant anything; everyone else may only grant roles whose permissions are a
+// subset of their own globally-effective permissions (prevents self-escalation).
+func (s *Service) CanGrantRole(ctx context.Context, username, roleName string) bool {
+	role, err := s.repo.GetRole(ctx, roleName)
+	if err != nil {
+		return false
+	}
+	for _, p := range role.Permissions {
+		if p == "*" {
+			if !s.IsAdmin(ctx, username) {
+				return false
+			}
+			continue
+		}
+		if !s.UserHasPermission(ctx, username, domain.Permission(p), "") {
+			return false
+		}
+	}
+	return true
 }
 
 // HasChannelAccess reports whether the user's channel list grants access to
