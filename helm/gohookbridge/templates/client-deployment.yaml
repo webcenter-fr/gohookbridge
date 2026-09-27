@@ -24,10 +24,27 @@ spec:
       - name: {{ . }}
       {{- end }}
       {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: client
-        image: "{{ .Values.client.image.repository }}:{{ .Values.client.image.tag }}"
+        image: "{{ .Values.client.image.repository }}:{{ .Values.client.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.client.image.pullPolicy }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        # The root filesystem is read-only: /tmp and the client home (client-id
+        # persistence within the pod's lifetime) are emptyDirs.
+        env:
+        - name: TMPDIR
+          value: /tmp
         args:
         - client
         - {{ .Values.client.channelURL | quote }}
@@ -36,8 +53,12 @@ spec:
         - --encryption-key-file
         - {{ .Values.client.encryptionKeyFile | quote }}
         {{- end }}
-        {{- if .Values.encryption.createSecret }}
         volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: home
+          mountPath: /home/gohookbridge
+        {{- if .Values.encryption.createSecret }}
         - name: encryption-key
           mountPath: /etc/gohookbridge
           readOnly: true
@@ -46,8 +67,12 @@ spec:
         resources:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-      {{- if .Values.encryption.createSecret }}
       volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: home
+        emptyDir: {}
+      {{- if .Values.encryption.createSecret }}
       - name: encryption-key
         secret:
           secretName: {{ include "gohookbridge.encryptionSecretName" . }}

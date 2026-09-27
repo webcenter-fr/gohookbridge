@@ -24,10 +24,22 @@ spec:
       - name: {{ . }}
       {{- end }}
       {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: proxy
-        image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}"
+        image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
         args:
         - proxy
         - --listen
@@ -42,8 +54,10 @@ spec:
         - name: http
           containerPort: {{ .Values.proxy.listenPort }}
           protocol: TCP
-        {{- if .Values.encryption.createSecret }}
         volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        {{- if .Values.encryption.createSecret }}
         - name: encryption-key
           mountPath: /etc/gohookbridge
           readOnly: true
@@ -52,8 +66,10 @@ spec:
         resources:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-      {{- if .Values.encryption.createSecret }}
       volumes:
+      - name: tmp
+        emptyDir: {}
+      {{- if .Values.encryption.createSecret }}
       - name: encryption-key
         secret:
           secretName: {{ include "gohookbridge.encryptionSecretName" . }}

@@ -17,22 +17,25 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
       - name: Fetch all tags
         run: git fetch --force --tags
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         id: goreleaser
         continue-on-error: true
         with:
           distribution: goreleaser
-          version: latest
+          # Pinned goreleaser version: update by checking
+          # https://github.com/goreleaser/goreleaser/releases and refreshing
+          # this value (never "latest").
+          version: v2.18.2
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -63,8 +66,8 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v6.0.3
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: latest
       - name: Set chart version from tag

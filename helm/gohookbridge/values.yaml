@@ -3,7 +3,7 @@ server:
   replicas: 3                      # HA default
   image:
     repository: ghcr.io/webcenter-fr/gohookbridge
-    tag: main
+    # tag: <release>   # defaults to the chart appVersion (a released tag), never "main"
     pullPolicy: IfNotPresent
   # Bind address inside the container. The server defaults to localhost, which
   # is not reachable by kubelet probes or Services, so pods must bind 0.0.0.0.
@@ -102,7 +102,7 @@ client:
   replicas: 1
   image:
     repository: ghcr.io/webcenter-fr/gohookbridge
-    tag: main
+    # tag: <release>   # defaults to the chart appVersion (a released tag), never "main"
     pullPolicy: IfNotPresent
   channelURL: ""
   targetURL: ""
@@ -114,7 +114,7 @@ proxy:
   replicas: 1
   image:
     repository: ghcr.io/webcenter-fr/gohookbridge
-    tag: main
+    # tag: <release>   # defaults to the chart appVersion (a released tag), never "main"
     pullPolicy: IfNotPresent
   listenPort: 9090
   targetURL: ""
@@ -138,6 +138,13 @@ serviceAccount:
 # (e.g. GHCR). The Secrets must already exist in the release namespace; the chart
 # does NOT create them.
 imagePullSecrets: []               # e.g. [ghcr-pull]
+
+# networkPolicy restricts the server pod's peer ports: when enabled, Raft
+# (raftPort) and the NATS cluster port (natsClusterPort) only accept traffic
+# from peer server pods. Ingress HTTP (server.port / server.publicPort) stays
+# open to the cluster/ingress as before.
+networkPolicy:
+  enabled: false
 
 nameOverride: ""
 fullnameOverride: ""

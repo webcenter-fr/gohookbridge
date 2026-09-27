@@ -1,0 +1,29 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "gohookbridge.fullname" . }}-server
+  labels: {{- include "gohookbridge.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "gohookbridge.name" . }}
+      app.kubernetes.io/component: server
+  policyTypes: ["Ingress"]
+  ingress:
+    # HTTP (internal UI/API) and public webhook listener from anywhere (or ingress).
+    - ports:
+        - port: {{ .Values.server.port }}
+        {{- if gt (include "gohookbridge.publicPort" . | int) 0 }}
+        - port: {{ include "gohookbridge.publicPort" . | int }}
+        {{- end }}
+    # Raft (6001) + NATS cluster (6222) only from peer server pods.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "gohookbridge.name" . }}
+              app.kubernetes.io/component: server
+      ports:
+        - port: {{ .Values.server.raftPort }}
+        - port: {{ .Values.server.natsClusterPort }}
+{{- end }}
