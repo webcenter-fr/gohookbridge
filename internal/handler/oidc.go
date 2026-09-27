@@ -2,7 +2,11 @@ package handler
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,10 +22,19 @@ import (
 
 const oidcStateCookieName = "oidc_state"
 const oidcNonceCookieName = "oidc_nonce"
+const oidcPKCECookieName = "oidc_pkce"
 
 // oidcDiscoveryTimeout bounds the provider discovery/JWKS fetches performed at
 // startup so a hanging issuer cannot block the server from serving forever.
 const oidcDiscoveryTimeout = 10 * time.Second
+
+// oidcHTTPTimeout bounds every outbound OIDC HTTP call (discovery, token
+// exchange, userinfo) so a hanging or malicious issuer cannot stall handlers.
+const oidcHTTPTimeout = 10 * time.Second
+
+// errMissingPKCEVerifier is returned by exchangeCode when the PKCE cookie is
+// absent; the callback translates it to a 400 instead of a 500.
+var errMissingPKCEVerifier = errors.New("missing pkce code_verifier")
 
 type OIDCDiscovery struct {
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
@@ -36,6 +49,7 @@ type OIDCHandler struct {
 	PublicURL     string
 	SecureCookies bool
 	svc           *service.Service
+	client        *http.Client
 	verifier      *oidc.IDTokenVerifier
 }
 
@@ -49,12 +63,14 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 	discCtx, cancel := context.WithTimeout(context.Background(), oidcDiscoveryTimeout)
 	defer cancel()
 
+	client := &http.Client{Timeout: oidcHTTPTimeout}
+
 	discURL := strings.TrimSuffix(provider.IssuerURL, "/") + "/.well-known/openid-configuration"
 	req, err := http.NewRequestWithContext(discCtx, http.MethodGet, discURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -62,6 +78,9 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("oidc discovery returned status %d", resp.StatusCode)
 	}
 	var disc OIDCDiscovery
 	if err := json.Unmarshal(body, &disc); err != nil {
@@ -81,6 +100,7 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 		PublicURL:     publicURL,
 		SecureCookies: secureCookies,
 		svc:           svc,
+		client:        client,
 		verifier:      p.Verifier(&oidc.Config{ClientID: provider.ClientID}),
 	}, nil
 }
@@ -97,6 +117,18 @@ func resolveOIDCUsername(ctx context.Context, svc *service.Service, sub, email s
 		return email
 	}
 	return sub
+}
+
+// generatePKCE returns a PKCE (RFC 7636) verifier and its S256 challenge.
+func generatePKCE() (verifier, challenge string, err error) {
+	b := make([]byte, 32)
+	if _, err = rand.Read(b); err != nil {
+		return "", "", err
+	}
+	verifier = base64.RawURLEncoding.EncodeToString(b)
+	sum := sha256.Sum256([]byte(verifier))
+	challenge = base64.RawURLEncoding.EncodeToString(sum[:])
+	return verifier, challenge, nil
 }
 
 // safeRedirectPath validates a post-login redirect target. Only same-site
@@ -153,15 +185,32 @@ func (h *OIDCHandler) LoginHandler() http.HandlerFunc {
 			MaxAge:   300,
 		})
 
+		verifier, challenge, err := generatePKCE()
+		if err != nil {
+			http.Error(w, "Failed to generate PKCE verifier: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
+		http.SetCookie(w, &http.Cookie{
+			Name:     oidcPKCECookieName,
+			Value:    verifier,
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   h.SecureCookies,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   300,
+		})
+
 		scopes := strings.Join(h.Provider.Scopes, " ")
 		redirectURI := h.PublicURL + "/auth/oidc/" + h.Provider.ID + "/callback"
-		authURL := fmt.Sprintf("%s?response_type=code&client_id=%s&scope=%s&state=%s&nonce=%s&redirect_uri=%s",
+		authURL := fmt.Sprintf("%s?response_type=code&client_id=%s&scope=%s&state=%s&nonce=%s&redirect_uri=%s&code_challenge=%s&code_challenge_method=S256",
 			h.Discovery.AuthorizationEndpoint,
 			url.QueryEscape(h.Provider.ClientID),
 			url.QueryEscape(scopes),
 			url.QueryEscape(state),
 			url.QueryEscape(nonce),
 			url.QueryEscape(redirectURI),
+			url.QueryEscape(challenge),
 		)
 		http.Redirect(w, r, authURL, http.StatusFound)
 	}
@@ -192,9 +241,14 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 
 		token, err := h.exchangeCode(code, r)
 		if err != nil {
+			if errors.Is(err, errMissingPKCEVerifier) {
+				http.Error(w, "Missing PKCE verifier", http.StatusBadRequest)
+				return
+			}
 			http.Error(w, "Token exchange failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		clearOIDCPKCECookie(w, h.SecureCookies)
 		accessToken, ok := token["access_token"].(string)
 		if !ok {
 			http.Error(w, "No access token in response", http.StatusInternalServerError)
@@ -239,7 +293,7 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 		}
 
 		// No id_token returned: fall back to the userinfo flow (unchanged).
-		userInfo, err := h.getUserInfo(accessToken)
+		userInfo, err := h.getUserInfo(r.Context(), accessToken)
 		if err != nil {
 			http.Error(w, "Userinfo failed: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -296,12 +350,17 @@ func (h *OIDCHandler) exchangeCode(code string, r *http.Request) (map[string]any
 		"client_id":     {h.Provider.ClientID},
 		"client_secret": {h.Provider.ClientSecret},
 	}
+	pkce, err := r.Cookie(oidcPKCECookieName)
+	if err != nil || pkce.Value == "" {
+		return nil, errMissingPKCEVerifier
+	}
+	data.Add("code_verifier", pkce.Value)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, h.Discovery.TokenEndpoint, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -309,6 +368,9 @@ func (h *OIDCHandler) exchangeCode(code string, r *http.Request) (map[string]any
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("oidc token endpoint returned status %d", resp.StatusCode)
 	}
 	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -317,13 +379,13 @@ func (h *OIDCHandler) exchangeCode(code string, r *http.Request) (map[string]any
 	return result, nil
 }
 
-func (h *OIDCHandler) getUserInfo(accessToken string) (map[string]any, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.Discovery.UserinfoEndpoint, nil)
+func (h *OIDCHandler) getUserInfo(ctx context.Context, accessToken string) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.Discovery.UserinfoEndpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -331,6 +393,9 @@ func (h *OIDCHandler) getUserInfo(accessToken string) (map[string]any, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("oidc userinfo endpoint returned status %d", resp.StatusCode)
 	}
 	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -356,6 +421,19 @@ func clearOIDCNonceCookie(w http.ResponseWriter, secure bool) {
 	//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
 	http.SetCookie(w, &http.Cookie{
 		Name:     oidcNonceCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+func clearOIDCPKCECookie(w http.ResponseWriter, secure bool) {
+	//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
+	http.SetCookie(w, &http.Cookie{
+		Name:     oidcPKCECookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,

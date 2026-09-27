@@ -207,13 +207,15 @@ func TestLogoutHandler(t *testing.T) {
 // document, a JWKS endpoint (via oidctest), plus configurable token and
 // userinfo endpoints. ID tokens are signed with oidcMock.signIDToken.
 type oidcMock struct {
-	t          *testing.T
-	priv       *rsa.PrivateKey
-	keyID      string
-	issuerURL  string
-	tokenFn    func() map[string]any
-	userinfo   map[string]any
-	onUserinfo func()
+	t            *testing.T
+	priv         *rsa.PrivateKey
+	keyID        string
+	issuerURL    string
+	tokenFn      func() map[string]any
+	userinfo     map[string]any
+	userinfoCode int // non-zero forces an error status on /userinfo
+	onUserinfo   func()
+	onToken      func(r *http.Request) // observes the token-exchange request
 }
 
 func newOIDCMock(t *testing.T) *oidcMock {
@@ -270,6 +272,9 @@ func (m *oidcMock) start() *httptest.Server {
 		case "/keys":
 			oidcSrv.ServeHTTP(w, r)
 		case "/token":
+			if m.onToken != nil {
+				m.onToken(r)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			resp := map[string]any{"access_token": "mock-access-token", "token_type": "Bearer"}
 			if m.tokenFn != nil {
@@ -279,6 +284,10 @@ func (m *oidcMock) start() *httptest.Server {
 		case "/userinfo":
 			if m.onUserinfo != nil {
 				m.onUserinfo()
+			}
+			if m.userinfoCode != 0 && m.userinfoCode != http.StatusOK {
+				http.Error(w, `{"error":"server error"}`, m.userinfoCode)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(m.userinfo)
@@ -339,6 +348,18 @@ func TestOIDCLoginHandler(t *testing.T) {
 	assert.Assert(t, nonceCookie.Secure)
 	assert.Equal(t, nonceCookie.SameSite, http.SameSiteLaxMode)
 	assert.Equal(t, nonceCookie.MaxAge, 300)
+
+	// PKCE (SEC-011): the authorize URL carries an S256 challenge and the
+	// verifier is kept in an HttpOnly/Secure/SameSite=Lax cookie.
+	assert.Assert(t, strings.Contains(loc, "code_challenge="))
+	assert.Assert(t, strings.Contains(loc, "code_challenge_method=S256"))
+	pkceCookie := cookieByName(t, w, oidcPKCECookieName)
+	assert.Assert(t, pkceCookie != nil)
+	assert.Assert(t, pkceCookie.HttpOnly)
+	assert.Assert(t, pkceCookie.Secure)
+	assert.Equal(t, pkceCookie.SameSite, http.SameSiteLaxMode)
+	assert.Equal(t, pkceCookie.MaxAge, 300)
+	assert.Assert(t, pkceCookie.Value != "")
 }
 
 func TestOIDCCallbackHandler(t *testing.T) {
@@ -371,6 +392,7 @@ func TestOIDCCallbackHandler(t *testing.T) {
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	})
+	req.AddCookie(&http.Cookie{Name: oidcPKCECookieName, Value: "test-pkce-verifier", Path: "/", HttpOnly: true})
 	w := httptest.NewRecorder()
 	handler.CallbackHandler().ServeHTTP(w, req)
 	assert.Equal(t, w.Code, http.StatusFound)
@@ -421,6 +443,7 @@ func TestOIDCCallback_IDTokenVerified(t *testing.T) {
 	state := "valid-state-value"
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
 	req.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: state + "|/", Path: "/", HttpOnly: true})
+	req.AddCookie(&http.Cookie{Name: oidcPKCECookieName, Value: "test-pkce-verifier", Path: "/", HttpOnly: true})
 	req.AddCookie(&http.Cookie{Name: oidcNonceCookieName, Value: nonce, Path: "/", HttpOnly: true})
 	w := httptest.NewRecorder()
 	handler.CallbackHandler().ServeHTTP(w, req)
@@ -465,6 +488,7 @@ func TestOIDCCallback_IDTokenNonceMismatch(t *testing.T) {
 	state := "valid-state-value"
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
 	req.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: state + "|/", Path: "/", HttpOnly: true})
+	req.AddCookie(&http.Cookie{Name: oidcPKCECookieName, Value: "test-pkce-verifier", Path: "/", HttpOnly: true})
 	req.AddCookie(&http.Cookie{Name: oidcNonceCookieName, Value: "expected-nonce", Path: "/", HttpOnly: true})
 	w := httptest.NewRecorder()
 	handler.CallbackHandler().ServeHTTP(w, req)
@@ -500,6 +524,7 @@ func TestOIDCCallback_IDTokenMissingNonceCookie(t *testing.T) {
 	state := "valid-state-value"
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
 	req.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: state + "|/", Path: "/", HttpOnly: true})
+	req.AddCookie(&http.Cookie{Name: oidcPKCECookieName, Value: "test-pkce-verifier", Path: "/", HttpOnly: true})
 	w := httptest.NewRecorder()
 	handler.CallbackHandler().ServeHTTP(w, req)
 	assert.Equal(t, w.Code, http.StatusBadRequest, "id_token without nonce cookie must be rejected")
@@ -532,6 +557,7 @@ func TestOIDCCallback_TamperedIDTokenRejected(t *testing.T) {
 	state := "valid-state-value"
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServer.URL, state), nil)
 	req.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: state + "|/", Path: "/", HttpOnly: true})
+	req.AddCookie(&http.Cookie{Name: oidcPKCECookieName, Value: "test-pkce-verifier", Path: "/", HttpOnly: true})
 	req.AddCookie(&http.Cookie{Name: oidcNonceCookieName, Value: "expected-nonce", Path: "/", HttpOnly: true})
 	w := httptest.NewRecorder()
 	handler.CallbackHandler().ServeHTTP(w, req)
@@ -654,6 +680,7 @@ func TestOIDCCallbackHandler_RejectsExternalRedirect(t *testing.T) {
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	})
+	req.AddCookie(&http.Cookie{Name: oidcPKCECookieName, Value: "test-pkce-verifier", Path: "/", HttpOnly: true})
 	w := httptest.NewRecorder()
 	handler.CallbackHandler().ServeHTTP(w, req)
 	assert.Equal(t, w.Code, http.StatusFound)
@@ -776,12 +803,132 @@ func TestFullProtectedFlow(t *testing.T) {
 	})
 }
 
-// oidcCallbackRequest builds a callback request carrying a valid state cookie
-// for the given handler.
+// oidcCallbackRequest builds a callback request carrying valid state and PKCE
+// cookies for the given handler.
 func oidcCallbackRequest(mockServerURL, state string) *http.Request {
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=%s", mockServerURL, state), nil)
 	req.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: state + "|/", Path: "/", HttpOnly: true})
+	req.AddCookie(&http.Cookie{Name: oidcPKCECookieName, Value: "test-pkce-verifier", Path: "/", HttpOnly: true})
 	return req
+}
+
+// SEC-002: setup mode only opens a persisted 5-minute window; once it expires
+// (or an auth method appears) API requests must authenticate.
+func TestRequireAuthDynamic_SetupModeWindow(t *testing.T) {
+	secret := service.DeriveSessionSecret("32-char-test-secret")
+	svc := service.NewService(storetest.NewRaftStore(t), nil)
+	ctx := context.Background()
+
+	r := chi.NewRouter()
+	r.Use(RequireAuthDynamic(svc, secret, true))
+	respond := func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
+	r.Get("/res", respond)
+	r.Post("/res", respond)
+
+	do := func(method string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), method, "/res", nil))
+		return w
+	}
+
+	t.Run("no users and no providers opens the window", func(t *testing.T) {
+		w := do(http.MethodGet)
+		assert.Equal(t, w.Code, http.StatusOK)
+		assert.Assert(t, !svc.GetSetupModeEndTime(ctx).IsZero(), "first access must persist the window")
+	})
+
+	t.Run("expired window returns 401", func(t *testing.T) {
+		assert.NilError(t, svc.SetSetupModeEndTime(ctx, time.Now().Add(-time.Minute)))
+		w := do(http.MethodGet)
+		assert.Equal(t, w.Code, http.StatusUnauthorized)
+		assert.Assert(t, strings.Contains(w.Body.String(), "setup window expired"))
+	})
+
+	t.Run("an internal user requires a session", func(t *testing.T) {
+		assert.NilError(t, svc.SetSetupModeEndTime(ctx, time.Now().Add(time.Minute)))
+		assert.NilError(t, svc.CreateUser(ctx, &domain.User{
+			ID:       "bootstrap",
+			Username: "bootstrap",
+			Roles:    []string{},
+			Channels: []string{},
+		}))
+		w := do(http.MethodPost)
+		assert.Equal(t, w.Code, http.StatusUnauthorized)
+	})
+
+	t.Run("oidc-only deployment requires a session", func(t *testing.T) {
+		assert.NilError(t, svc.DeleteUser(ctx, "bootstrap"))
+		assert.NilError(t, svc.SetOIDCProviders(ctx, []domain.OIDCProvider{{
+			ID:        "test",
+			Name:      "Test",
+			ClientID:  "client",
+			IssuerURL: "https://issuer.example.com",
+		}}))
+		w := do(http.MethodPost)
+		assert.Equal(t, w.Code, http.StatusUnauthorized)
+	})
+}
+
+// SEC-011: the token exchange must send the PKCE code_verifier from the cookie.
+func TestOIDCCallback_PKCEVerifierSent(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-pkce-32")
+
+	mock := newOIDCMock(t)
+	var sentVerifier string
+	mock.onToken = func(r *http.Request) {
+		sentVerifier = r.FormValue("code_verifier")
+	}
+	mockServer := mock.start()
+	defer mockServer.Close()
+
+	provider := domain.OIDCProvider{
+		ID:           "test",
+		Name:         "TestProvider",
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		IssuerURL:    mockServer.URL,
+		Scopes:       []string{"openid"},
+	}
+	handler := newOIDCHandlerForTest(t, provider, secret, mockServer.URL, true)
+
+	w := httptest.NewRecorder()
+	handler.CallbackHandler().ServeHTTP(w, oidcCallbackRequest(mockServer.URL, "valid-state-value"))
+	assert.Equal(t, w.Code, http.StatusFound)
+	assert.Equal(t, sentVerifier, "test-pkce-verifier", "code_verifier must be sent in the token exchange")
+
+	cleared := cookieByName(t, w, oidcPKCECookieName)
+	assert.Assert(t, cleared != nil, "PKCE cookie must be cleared after the exchange")
+	assert.Assert(t, cleared.MaxAge < 0)
+}
+
+// SEC-011: a callback without the PKCE cookie is rejected (400), never
+// downgraded to an exchange without a verifier.
+func TestOIDCCallback_MissingPKCERejected(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-nopkce-32")
+
+	mock := newOIDCMock(t)
+	mockServer := mock.start()
+	defer mockServer.Close()
+
+	provider := domain.OIDCProvider{
+		ID:           "test",
+		Name:         "TestProvider",
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		IssuerURL:    mockServer.URL,
+		Scopes:       []string{"openid"},
+	}
+	handler := newOIDCHandlerForTest(t, provider, secret, mockServer.URL, true)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s/auth/oidc/test/callback?code=valid-code&state=s", mockServer.URL), nil)
+	req.AddCookie(&http.Cookie{Name: oidcStateCookieName, Value: "s|/", Path: "/", HttpOnly: true})
+	w := httptest.NewRecorder()
+	handler.CallbackHandler().ServeHTTP(w, req)
+	assert.Equal(t, w.Code, http.StatusBadRequest)
+	assert.Assert(t, cookieByName(t, w, sessionCookieName) == nil)
 }
 
 // SEC-003: a session resolves to the internal user whose OIDCSubjects contain
@@ -853,62 +1000,48 @@ func TestOIDCCallback_SubjectFallbackEmail(t *testing.T) {
 	assert.Equal(t, tok.Username, "user@example.com")
 }
 
-// SEC-002: setup mode only opens a persisted 5-minute window; once it expires
-// (or an auth method appears) API requests must authenticate.
-func TestRequireAuthDynamic_SetupModeWindow(t *testing.T) {
-	secret := service.DeriveSessionSecret("32-char-test-secret")
-	svc := service.NewService(storetest.NewRaftStore(t), nil)
-	ctx := context.Background()
+// SEC-006: userinfo must honor request cancellation instead of hanging.
+func TestOIDCGetUserInfo_ContextCanceled(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-uictx-32")
 
-	r := chi.NewRouter()
-	r.Use(RequireAuthDynamic(svc, secret, true))
-	respond := func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+	mock := newOIDCMock(t)
+	mockServer := mock.start()
+	defer mockServer.Close()
+
+	provider := domain.OIDCProvider{
+		ID:        "test",
+		Name:      "TestProvider",
+		ClientID:  "test-client",
+		IssuerURL: mockServer.URL,
+		Scopes:    []string{"openid"},
 	}
-	r.Get("/res", respond)
-	r.Post("/res", respond)
+	handler := newOIDCHandlerForTest(t, provider, secret, mockServer.URL, true)
 
-	do := func(method string) *httptest.ResponseRecorder {
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), method, "/res", nil))
-		return w
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := handler.getUserInfo(ctx, "some-token")
+	assert.Assert(t, err != nil, "canceled context must fail the userinfo call")
+}
+
+// SEC-006: a non-200 userinfo response is an error, not parsed JSON.
+func TestOIDCGetUserInfo_Non200(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-uistat-32")
+
+	mock := newOIDCMock(t)
+	mock.userinfoCode = http.StatusInternalServerError
+	mockServer := mock.start()
+	defer mockServer.Close()
+
+	provider := domain.OIDCProvider{
+		ID:        "test",
+		Name:      "TestProvider",
+		ClientID:  "test-client",
+		IssuerURL: mockServer.URL,
+		Scopes:    []string{"openid"},
 	}
+	handler := newOIDCHandlerForTest(t, provider, secret, mockServer.URL, true)
 
-	t.Run("no users and no providers opens the window", func(t *testing.T) {
-		w := do(http.MethodGet)
-		assert.Equal(t, w.Code, http.StatusOK)
-		assert.Assert(t, !svc.GetSetupModeEndTime(ctx).IsZero(), "first access must persist the window")
-	})
-
-	t.Run("expired window returns 401", func(t *testing.T) {
-		assert.NilError(t, svc.SetSetupModeEndTime(ctx, time.Now().Add(-time.Minute)))
-		w := do(http.MethodGet)
-		assert.Equal(t, w.Code, http.StatusUnauthorized)
-		assert.Assert(t, strings.Contains(w.Body.String(), "setup window expired"))
-	})
-
-	t.Run("an internal user requires a session", func(t *testing.T) {
-		assert.NilError(t, svc.SetSetupModeEndTime(ctx, time.Now().Add(time.Minute)))
-		assert.NilError(t, svc.CreateUser(ctx, &domain.User{
-			ID:       "bootstrap",
-			Username: "bootstrap",
-			Roles:    []string{},
-			Channels: []string{},
-		}))
-		w := do(http.MethodPost)
-		assert.Equal(t, w.Code, http.StatusUnauthorized)
-	})
-
-	t.Run("oidc-only deployment requires a session", func(t *testing.T) {
-		assert.NilError(t, svc.DeleteUser(ctx, "bootstrap"))
-		assert.NilError(t, svc.SetOIDCProviders(ctx, []domain.OIDCProvider{{
-			ID:        "test",
-			Name:      "Test",
-			ClientID:  "client",
-			IssuerURL: "https://issuer.example.com",
-		}}))
-		w := do(http.MethodPost)
-		assert.Equal(t, w.Code, http.StatusUnauthorized)
-	})
+	_, err := handler.getUserInfo(context.Background(), "some-token")
+	assert.Assert(t, err != nil)
+	assert.Assert(t, strings.Contains(err.Error(), "status 500"))
 }
