@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -50,6 +51,7 @@ type Server struct {
 	certFile         string
 	certKey          string
 	autoCert         bool
+	autoCertHost     string
 	publicURL        string
 	cancelCtx        context.CancelFunc
 }
@@ -128,6 +130,7 @@ func buildPublicRouter(
 	publicRouter.Use(middleware.RequestID)
 	publicRouter.Use(handler.SafeLogger)
 	publicRouter.Use(middleware.Recoverer)
+	publicRouter.Use(handler.SecurityHeaders(false))
 	publicRouter.Get("/health", handler.RetVersion)
 	publicRouter.Get("/livez", handler.RetVersion)
 	publicRouter.Get("/version", handler.RetVersion)
@@ -411,6 +414,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	mainRouter.Use(middleware.RequestID)
 	mainRouter.Use(handler.SafeLogger)
 	mainRouter.Use(middleware.Recoverer)
+	mainRouter.Use(handler.SecurityHeaders(cookieSecure))
 	mainRouter.Use(handler.BanMiddleware(banTrackerInst, svc))
 	mainRouter.Use(handler.RateLimitMiddleware(rateLimiterInst, svc))
 
@@ -504,11 +508,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 
 	var publicHTTPServer *http.Server
 	if cfg.publicAddr != "" {
-		publicHTTPServer = &http.Server{
-			Addr:              cfg.publicAddr,
-			Handler:           buildPublicRouter(broker, svc, banTrackerInst, rateLimiterInst, rs),
-			ReadHeaderTimeout: 10 * time.Second,
-		}
+		publicHTTPServer = newHTTPServer(cfg.publicAddr, buildPublicRouter(broker, svc, banTrackerInst, rateLimiterInst, rs))
 	}
 
 	fmt.Fprintf(os.Stdout, "Serving for webhooks on %s\n", publicURL)
@@ -518,24 +518,45 @@ func NewServer(c *cli.Context) (*Server, error) {
 	}
 
 	return &Server{
-		repo:          rs,
-		svc:           svc,
-		broker:        broker,
-		rateLimiter:   rateLimiterInst,
-		banTracker:    banTrackerInst,
-		sessionSecret: sessionSecret,
-		publicURL:     publicURL,
-		certFile:      certFile,
-		certKey:       certKey,
-		autoCert:      autoCert,
-		cancelCtx:     cancelStartup,
-		httpServer: &http.Server{
-			Addr:              cfg.internalAddr,
-			Handler:           finalRouter,
-			ReadHeaderTimeout: 10 * time.Second,
-		},
+		repo:             rs,
+		svc:              svc,
+		broker:           broker,
+		rateLimiter:      rateLimiterInst,
+		banTracker:       banTrackerInst,
+		sessionSecret:    sessionSecret,
+		publicURL:        publicURL,
+		autoCertHost:     autoCertHostname(publicURL),
+		certFile:         certFile,
+		certKey:          certKey,
+		autoCert:         autoCert,
+		cancelCtx:        cancelStartup,
+		httpServer:       newHTTPServer(cfg.internalAddr, finalRouter),
 		publicHTTPServer: publicHTTPServer,
 	}, nil
+}
+
+// autoCertHostname extracts the hostname from the public URL for autocert's
+// HostWhitelist. Returns "" if the URL is unparseable (autocert then uses an
+// empty allowlist and fails closed rather than issuing for a bogus name).
+func autoCertHostname(publicURL string) string {
+	u, err := url.Parse(publicURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// newHTTPServer builds an HTTP server with the shared hardening timeouts.
+// ReadTimeout bounds slow-body/slow-header reads; IdleTimeout bounds keep-alive.
+// No WriteTimeout: the SSE /events stream must stay open indefinitely.
+func newHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 }
 
 // Service exposes the composed service layer so integration tests can
@@ -562,7 +583,7 @@ func (s *Server) serve(srv *http.Server) error {
 	case srv == s.httpServer && s.certFile != "" && s.certKey != "":
 		return srv.ListenAndServeTLS(s.certFile, s.certKey)
 	case srv == s.httpServer && s.autoCert:
-		return srv.Serve(autocert.NewListener(s.publicURL))
+		return srv.Serve(autocert.NewListener(s.autoCertHost))
 	default:
 		return srv.ListenAndServe()
 	}

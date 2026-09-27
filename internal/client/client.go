@@ -806,6 +806,8 @@ func serveHealthEndpoint(port int, logger *slog.Logger, decorate bool) {
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	logger.InfoContext(context.Background(), fmt.Sprintf("%sStarting health server on %s", emoji("✓", "green+b", decorate), addr))

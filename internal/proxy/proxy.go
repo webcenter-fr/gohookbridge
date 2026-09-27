@@ -117,6 +117,10 @@ func startProxy(c *cli.Context) error {
 		Addr:              listenAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 30 * time.Second,
+		// ReadTimeout bounds slow-body/slow-header reads; IdleTimeout bounds keep-alive.
+		// No WriteTimeout: responses are small JSON replies, streamed as received.
+		ReadTimeout: 60 * time.Second,
+		IdleTimeout: 120 * time.Second,
 	}
 
 	fmt.Fprintf(os.Stdout, "Encrypt proxy listening on %s, forwarding to %s\n", listenAddr, targetURL)
