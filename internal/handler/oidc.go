@@ -20,9 +20,11 @@ import (
 	"github.com/webcenter-fr/gohookbridge/internal/service"
 )
 
-const oidcStateCookieName = "oidc_state"
-const oidcNonceCookieName = "oidc_nonce"
-const oidcPKCECookieName = "oidc_pkce"
+const (
+	oidcStateCookieName = "oidc_state"
+	oidcNonceCookieName = "oidc_nonce"
+	oidcPKCECookieName  = "oidc_pkce"
+)
 
 // oidcDiscoveryTimeout bounds the provider discovery/JWKS fetches performed at
 // startup so a hanging issuer cannot block the server from serving forever.

@@ -15,7 +15,9 @@ import (
 	"gotest.tools/v3/assert"
 )
 
-// waitForHealthy polls the health endpoint until it answers 200.
+// waitForHealthy polls the health endpoint until it answers 200 and, on that
+// real response, asserts the SEC-017 hardening headers are wired on the
+// production router (removing SecurityHeaders from server.go fails here).
 func waitForHealthy(ctx context.Context, t *testing.T, client *http.Client, url string) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -24,10 +26,16 @@ func waitForHealthy(ctx context.Context, t *testing.T, client *http.Client, url 
 		assert.NilError(t, err)
 		resp, err := client.Do(req)
 		if err == nil {
-			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
+				h := resp.Header
+				resp.Body.Close()
+				assert.Equal(t, h.Get("X-Content-Type-Options"), "nosniff")
+				assert.Assert(t, h.Get("Content-Security-Policy") != "", "CSP header must be set on real responses")
+				assert.Equal(t, h.Get("Strict-Transport-Security"), "", "no HSTS on a plain-HTTP listener")
+				t.Logf("SEC-017 headers on %s: nosniff=%q csp-set=%t hsts=%q", url, h.Get("X-Content-Type-Options"), h.Get("Content-Security-Policy") != "", h.Get("Strict-Transport-Security"))
 				return
 			}
+			resp.Body.Close()
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("server did not become ready in time: %s", url)

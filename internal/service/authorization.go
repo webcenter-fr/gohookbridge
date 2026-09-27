@@ -145,7 +145,7 @@ func (s *Service) checkChannelRoleMappingPermissions(ctx context.Context, user *
 	return false
 }
 
-func (s *Service) isChannelCreator(ctx context.Context, userID string, channelID string) bool {
+func (s *Service) isChannelCreator(ctx context.Context, userID, channelID string) bool {
 	ch, err := s.repo.GetChannel(ctx, channelID)
 	if err != nil {
 		return false
@@ -368,7 +368,7 @@ func (s *Service) GetUserPermissions(ctx context.Context, username string, oidcG
 	return result
 }
 
-func (s *Service) HasChannelRole(ctx context.Context, username string, channelID string, role string, oidcGroups []string) bool {
+func (s *Service) HasChannelRole(ctx context.Context, username, channelID, role string, oidcGroups []string) bool {
 	user := s.getUserObject(ctx, username)
 	if user == nil {
 		return false

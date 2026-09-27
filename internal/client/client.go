@@ -80,7 +80,7 @@ func getOrCreateClientID() string {
 		home = "."
 	}
 	dir := filepath.Join(home, ".gohookbridge")
-	_ = os.MkdirAll(dir, 0700)
+	_ = os.MkdirAll(dir, 0o700)
 
 	idFile := filepath.Join(dir, "client-id")
 	if data, err := os.ReadFile(idFile); err == nil {
@@ -88,7 +88,7 @@ func getOrCreateClientID() string {
 	}
 
 	id := uuid.MustGenerateUUID()
-	_ = os.WriteFile(idFile, []byte(id), 0600)
+	_ = os.WriteFile(idFile, []byte(id), 0o600)
 	return id
 }
 
@@ -478,7 +478,7 @@ func buildExecEnv(extraVarNames []string) []string {
 	return execEnv
 }
 
-func checkServerVersion(serverURL string, clientVersion string, logger *slog.Logger, decorate bool) error {
+func checkServerVersion(serverURL, clientVersion string, logger *slog.Logger, decorate bool) error {
 	baseURL := serverURL
 	if parts := strings.Split(serverURL, "/"); len(parts) > 3 {
 		baseURL = strings.Join(parts[0:3], "/")
@@ -604,7 +604,7 @@ func isOlderVersion(v1, v2 []int) bool {
 	return len(v1) < len(v2)
 }
 
-func prepareSubscription(smeeURL, encryptionKeyFile string, resume bool, clientID string, token string) (channel string, sseURL string, privateKey *[32]byte, err error) {
+func prepareSubscription(smeeURL, encryptionKeyFile string, resume bool, clientID, token string) (channel, sseURL string, privateKey *[32]byte, err error) {
 	channel = filepath.Base(smeeURL)
 	baseURL := strings.TrimSuffix(smeeURL, "/"+channel)
 

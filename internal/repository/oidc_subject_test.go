@@ -1,4 +1,4 @@
-package repository_test
+package repository
 
 import (
 	"context"
@@ -6,12 +6,11 @@ import (
 	"testing"
 
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
-	"github.com/webcenter-fr/gohookbridge/internal/repository/storetest"
 	"gotest.tools/v3/assert"
 )
 
 func TestGetUserByOIDCSubject(t *testing.T) {
-	rs := storetest.NewRaftStore(t)
+	rs := newTestRaftStore(t)
 	ctx := context.Background()
 
 	assert.NilError(t, rs.CreateUser(ctx, &domain.User{
