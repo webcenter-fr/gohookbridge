@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/disaster37/goca v1.0.7
-	github.com/go-chi/chi/v5 v5.3.0
+	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-playground/validator/v10 v10.26.0
 	github.com/google/go-github/v57 v57.0.0
 	github.com/hashicorp/go-hclog v1.6.2
