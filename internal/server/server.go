@@ -680,7 +680,7 @@ func watchSingleNodeRecovery(ctx context.Context, reader *statefulSetReplicaRead
 				continue
 			}
 			log.Printf("WARNING: no Raft leader for %s while the StatefulSet has 1 replica; restarting to force single-node recovery", leaderWaitTimeout)
-			_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+			terminateSelf()
 			return
 		}
 	}

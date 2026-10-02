@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -53,6 +54,35 @@ func NewRunNonce() (string, error) {
 		return "", fmt.Errorf("generate run nonce: %w", err)
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+// ociVersionPattern matches OCI image/chart tags (e.g. "0.0.1", "dev",
+// "1.2.3-rc.1+build5"). The pattern is deliberately narrower than the OCI
+// distribution spec so values that end up interpolated into shell commands
+// stay shell-safe.
+var ociVersionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._+-]*$`)
+
+// ociRegistryPattern matches registry hosts and repository paths (e.g.
+// "ghcr.io", "webcenter-fr/gohookbridge"). No leading slash, no spaces.
+var ociRegistryPattern = regexp.MustCompile(`^[0-9A-Za-z.-]+(/[0-9A-Za-z._-]+)*$`)
+
+// ValidateVersion reports whether version is a safe OCI tag value (after
+// trimming a leading "v"). It guards values interpolated into shell commands
+// inside pipeline containers.
+func ValidateVersion(version string) error {
+	if !ociVersionPattern.MatchString(TrimVersionTag(version)) {
+		return fmt.Errorf("invalid version %q: must match %s", version, ociVersionPattern)
+	}
+	return nil
+}
+
+// ValidateRegistryPath reports whether each component is a safe registry host
+// or repository path (e.g. "ghcr.io", "webcenter-fr/gohookbridge").
+func ValidateRegistryPath(path string) error {
+	if !ociRegistryPattern.MatchString(path) {
+		return fmt.Errorf("invalid registry/repository path %q: must match %s", path, ociRegistryPattern)
+	}
+	return nil
 }
 
 // RenderHelmValues renders the helm values-override map to YAML for the smoke

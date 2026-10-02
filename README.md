@@ -150,19 +150,19 @@ The Helm chart is published as an OCI artifact to GHCR:
 
 ```shell
 # Install the server
-helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
+helm install gohookbridge oci://ghcr.io/webcenter-fr/charts/gohookbridge \
   --set server.enabled=true \
   --set server.publicURL=https://webhook.example.com
 
 # Install with client forwarding
-helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
+helm install gohookbridge oci://ghcr.io/webcenter-fr/charts/gohookbridge \
   --set server.enabled=true \
   --set client.enabled=true \
   --set client.channelURL=https://webhook.example.com/my-channel \
   --set client.targetURL=http://my-service:8080
 
 # Install with encrypt proxy
-helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
+helm install gohookbridge oci://ghcr.io/webcenter-fr/charts/gohookbridge \
   --set proxy.enabled=true \
   --set proxy.targetURL=https://webhook.example.com/my-channel \
   --set proxy.publicKey=YOUR_PUBLIC_KEY

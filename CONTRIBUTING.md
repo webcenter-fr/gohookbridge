@@ -242,9 +242,10 @@ The repository ships a Dagger module (`dagger/gohookbridge`, Go SDK) that
 builds the container image with the caller-resolved version, pushes it to
 GHCR through `github.com/disaster37/dagger-library-go/image`, and validates
 it on an ephemeral k3s cluster deployed with the `helm/gohookbridge` chart.
-The module is invoked directly with `dagger call` — Dagger replaces the
-Makefile for image delivery: there is no Makefile target and no CI workflow
-for this pipeline, the LLM/agent is the caller.
+The module is invoked directly with `dagger call`. Individual tasks cover
+the whole release pipeline (`publish-image`, `publish-helm`, `goreleaser`)
+and the release CI workflow (`.github/workflows/releaser.yaml`) runs each
+step through `dagger call` — the LLM/agent uses the same tasks manually.
 
 Prerequisites:
 
@@ -281,6 +282,15 @@ Variants:
 | `dagger call -m dagger/gohookbridge ci --source . --version "$VERSION" --skip-k8s` | build + GHCR push |
 | `dagger call -m dagger/gohookbridge ci --source . --version "$VERSION" --skip-push` | build + ephemeral k3s validation, no GHCR credentials needed |
 | `dagger call -m dagger/gohookbridge ci --source . --version "$VERSION" --push-latest` | also publish the `:latest` tag |
+
+Individual release tasks (also wired into `.github/workflows/releaser.yaml`):
+
+| Task | Invocation | Result |
+|---|---|---|
+| `publish-image` | `dagger call -m dagger/gohookbridge publish-image --source . --version "$VERSION" --registry-username "$GHCR_USERNAME" --registry-password env:GHCR_TOKEN --push-latest` | hadolint + image build + push `<version>` and `latest` tags |
+| `publish-helm` | `dagger call -m dagger/gohookbridge publish-helm --source . --version "$VERSION" --registry-username "$GHCR_USERNAME" --registry-password env:GHCR_TOKEN` | chart version/appVersion/image tags pinned to `$VERSION`, lint, package, push to `oci://ghcr.io/webcenter-fr/charts` (`<version>` + `latest`) |
+| `goreleaser` | `dagger call -m dagger/gohookbridge goreleaser --source . --version "$VERSION" --gh-token env:GITHUB_TOKEN export --path dist` | full goreleaser release (binaries, checksums, nfpm, brew; AUR only when `--aur-key env:AUR_PRIVATE_KEY` is passed) |
+| `goreleaser --snapshot` | `dagger call -m dagger/gohookbridge goreleaser --source . --version "$VERSION" --snapshot export --path dist` | local unversioned build, no publish side effects (pipeline development) |
 
 The variants that push additionally require
 `--registry-username "$GHCR_USERNAME" --registry-password env:GHCR_TOKEN`

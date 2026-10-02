@@ -217,50 +217,22 @@ func (m *Gohookbridge) Ci(
 		passSecret = registryPassword
 	}
 
-	img := dag.Image()
-	img = img.WithBuildArg("VERSION", dagger.ImageWithBuildArgOpts{Value: resolved})
-	lintOutput, lintErr := img.Lint(ctx, source, dagger.ImageLintOpts{
-		Dockerfile: "Dockerfile",
-		Threshold:  "error",
-	})
-	if lintErr != nil {
-		// Hadolint exits non-zero only at the failure threshold, so this is a
-		// fatal Dockerfile error (below-threshold findings stay advisory).
-		return "", fmt.Errorf("lint Dockerfile (hadolint, failure threshold error): %w", lintErr)
+	res, err := buildAndPushImage(ctx, source, resolved, registry, repositoryName, userSecret, passSecret, pushLatest, skipPush)
+	if err != nil {
+		return "", err
 	}
 	lintSection := "- hadolint (failure threshold `error`): passed"
-	if findings := strings.TrimSpace(lintOutput); findings != "" {
+	if findings := strings.TrimSpace(res.lintAdvisory); findings != "" {
 		lintSection += " with advisory findings:\n\n```text\n" + findings + "\n```"
-	}
-
-	built := img.Build(source, dagger.ImageBuildOpts{Dockerfile: "Dockerfile"})
-	if _, err := built.GetContainer().Sync(ctx); err != nil {
-		return "", fmt.Errorf("build image %s: %w", imageRef, err)
 	}
 	sections = append(sections, pipeline.ReportSection{
 		Title: "Build",
-		Body:  lintSection + "\n- Built image: " + imageRef,
+		Body:  lintSection + "\n- Built image: " + res.versionRef,
 	})
-
-	if !skipPush {
-		digest, err := built.Push(ctx, repositoryName, resolved, registry, dagger.ImageBuildPushOpts{
-			WithRegistryUsername: userSecret,
-			WithRegistryPassword: passSecret,
-		})
-		if err != nil {
-			return "", fmt.Errorf("push image %s: %w", imageRef, err)
-		}
-		pushSection := "- Pushed `" + imageRef + "`: digest " + digest
-		if pushLatest {
-			latestRef := registry + "/" + repositoryName + ":latest"
-			latestDigest, err := built.Push(ctx, repositoryName, "latest", registry, dagger.ImageBuildPushOpts{
-				WithRegistryUsername: userSecret,
-				WithRegistryPassword: passSecret,
-			})
-			if err != nil {
-				return "", fmt.Errorf("push image %s: %w", latestRef, err)
-			}
-			pushSection += "\n- Pushed `" + latestRef + "`: digest " + latestDigest
+	if !res.skipped {
+		pushSection := "- Pushed `" + res.versionRef + "`: digest " + res.digest
+		if res.latestDigest != "" {
+			pushSection += "\n- Pushed `" + res.latestRef + "`: digest " + res.latestDigest
 		}
 		sections = append(sections, pipeline.ReportSection{Title: "Push", Body: pushSection})
 	}
@@ -273,7 +245,7 @@ func (m *Gohookbridge) Ci(
 			return "", err
 		}
 		localRef := localPushRef + ":" + resolved
-		if _, err := built.GetContainer().Publish(ctx, localRef, dagger.ContainerPublishOpts{
+		if _, err := res.built.GetContainer().Publish(ctx, localRef, dagger.ContainerPublishOpts{
 			RegistryService: registrySvc,
 		}); err != nil {
 			return "", fmt.Errorf("publish image %s to the in-pipeline registry: %w", localRef, err)
