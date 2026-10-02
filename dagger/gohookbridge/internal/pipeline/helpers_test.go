@@ -154,6 +154,58 @@ func TestSmokeScriptConstant(t *testing.T) {
 	}
 }
 
+func TestValidateVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"plain semver", "0.0.1", false},
+		{"v-prefixed semver", "v0.0.1", false},
+		{"prerelease and build", "1.2.3-rc.1+build5", false},
+		{"dev", "dev", false},
+		{"spaces rejected", "1.0 ; rm -rf /", true},
+		{"empty rejected", "", true},
+		{"shell metacharacters rejected", "0.0.1$(id)", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateVersion(tt.input)
+			if tt.wantErr {
+				assert.Assert(t, err != nil, "ValidateVersion(%q) should fail", tt.input)
+				return
+			}
+			assert.NilError(t, err)
+		})
+	}
+}
+
+func TestValidateRegistryPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"host only", "ghcr.io", false},
+		{"host with repository", "webcenter-fr/gohookbridge", false},
+		{"deep path", "webcenter-fr/charts/gohookbridge", false},
+		{"spaces rejected", "webcenter-fr/evil path", true},
+		{"leading slash rejected", "/ghcr.io", true},
+		{"empty rejected", "", true},
+		{"semicolon rejected", "ghcr.io;rm", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateRegistryPath(tt.input)
+			if tt.wantErr {
+				assert.Assert(t, err != nil, "ValidateRegistryPath(%q) should fail", tt.input)
+				return
+			}
+			assert.NilError(t, err)
+		})
+	}
+}
+
 // nested returns the value at key in m, failing the test when it is absent.
 func nested(t *testing.T, m map[string]any, key string) any {
 	t.Helper()

@@ -108,13 +108,13 @@ Health check available at `http://localhost:8081/health`.
 
 ```shell
 # Deploy the server
-helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
+helm install gohookbridge oci://ghcr.io/webcenter-fr/charts/gohookbridge \
   --namespace gohookbridge --create-namespace \
   --set server.enabled=true \
   --set server.publicURL=https://webhook.example.com
 
 # Deploy server + client
-helm install gohookbridge oci://ghcr.io/webcenter-fr/gohookbridge \
+helm install gohookbridge oci://ghcr.io/webcenter-fr/charts/gohookbridge \
   --namespace gohookbridge --create-namespace \
   --set server.enabled=true \
   --set server.publicURL=https://webhook.example.com \

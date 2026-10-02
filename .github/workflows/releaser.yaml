@@ -1,4 +1,4 @@
-name: goreleaser
+name: Release
 
 on:
   push:
@@ -11,70 +11,103 @@ permissions:
   packages: write
   issues: write
 
+env:
+  DAGGER_VERSION: "0.21.8"
+
 jobs:
   goreleaser:
+    name: GoReleaser (binaries + release assets)
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      -
-        name: Checkout
+      - name: Checkout
         uses: actions/checkout@v6.0.3
         with:
           fetch-depth: 0
       - name: Fetch all tags
         run: git fetch --force --tags
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
-        id: goreleaser
-        continue-on-error: true
-        with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean
+      - name: Install Dagger CLI
+        run: |
+          curl -fsSL https://dl.dagger.io/dagger/install.sh | DAGGER_VERSION="${DAGGER_VERSION}" BIN_DIR="$HOME/bin" sh
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: Run GoReleaser via Dagger
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AUR_PRIVATE_KEY: ${{ secrets.AUR_PRIVATE_KEY }}
-      - name: Verify release created
-        if: steps.goreleaser.outcome == 'failure'
         run: |
-          if gh release view "${{ github.ref_name }}" &>/dev/null; then
-            echo "::warning::GoReleaser reported failure (likely AUR push) but release was created successfully"
-          else
-            echo "::error::Release was not created"
-            exit 1
+          ARGS="goreleaser --source . --version ${GITHUB_REF_NAME} --gh-token env:GITHUB_TOKEN"
+          if [ -n "${AUR_PRIVATE_KEY}" ]; then
+            ARGS="${ARGS} --aur-key env:AUR_PRIVATE_KEY"
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Update release notes
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          ./scripts/generate-release-notes.sh
+          dagger call -m ./dagger/gohookbridge ${ARGS} export --path dist
+      - name: Upload GoReleaser dist as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: goreleaser-dist
+          path: dist/
+          if-no-files-found: error
 
-  helm-release:
+  docker:
+    name: Publish Docker image to GHCR
     runs-on: ubuntu-latest
-    needs: goreleaser
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v6.0.3
-      - uses: azure/setup-helm@v4
-        with:
-          version: latest
-      - name: Set chart version from tag
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+      - name: Install Dagger CLI
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          sed -i "s/^version:.*/version: ${VERSION}/" helm/gohookbridge/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" helm/gohookbridge/Chart.yaml
-      - name: Package Helm chart
-        run: helm package helm/gohookbridge
-      - name: Push Helm chart to GHCR
+          curl -fsSL https://dl.dagger.io/dagger/install.sh | DAGGER_VERSION="${DAGGER_VERSION}" BIN_DIR="$HOME/bin" sh
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: Build, push and validate image via Dagger
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
-          helm push gohookbridge-*.tgz oci://ghcr.io/webcenter-fr/gohookbridge
+          dagger call -m ./dagger/gohookbridge ci \
+            --source . \
+            --version "${GITHUB_REF_NAME}" \
+            --registry-username "${{ github.actor }}" \
+            --registry-password env:GITHUB_TOKEN \
+            --push-latest
+        # Full pipeline: hadolint + image build + GHCR push (version/latest) +
+        # ephemeral k3s validation (helm install + webhook/SSE smoke checks).
+
+  helm-release:
+    name: Publish Helm chart to GHCR
+    runs-on: ubuntu-latest
+    needs: docker
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+      - name: Install Dagger CLI
+        run: |
+          curl -fsSL https://dl.dagger.io/dagger/install.sh | DAGGER_VERSION="${DAGGER_VERSION}" BIN_DIR="$HOME/bin" sh
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: Publish Helm chart via Dagger
+        run: |
+          dagger call -m ./dagger/gohookbridge publish-helm \
+            --source . \
+            --version "${GITHUB_REF_NAME}" \
+            --registry-username "${{ github.actor }}" \
+            --registry-password env:GITHUB_TOKEN
+
+  release-notes:
+    name: Update release notes
+    runs-on: ubuntu-latest
+    needs: goreleaser
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+      - name: Update release notes
+        # Optional enhancement: only runs when the GEMINI_API_KEY secret is
+        # configured; a missing key must never fail a release.
+        if: env.GEMINI_API_KEY != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ./scripts/generate-release-notes.sh
