@@ -50,6 +50,10 @@ func TestDaggerPipelineEndToEnd(t *testing.T) {
 	assert.NilError(t, err, "dagger call failed:\n%s", output)
 	assert.Assert(t, strings.Contains(string(output), "validation passed"),
 		"report must contain the success marker:\n%s", output)
+	assert.Assert(t, strings.Contains(string(output), "gohookbridge-client"),
+		"report must reference the client image:\n%s", output)
+	assert.Assert(t, strings.Contains(string(output), "gohookbridge-proxy"),
+		"report must reference the proxy image:\n%s", output)
 }
 
 // resolvePipelineVersion mirrors the documented version-resolution one-liner:

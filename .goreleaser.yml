@@ -136,7 +136,10 @@ release:
   prerelease: "false"
 
 nfpms:
-  - file_name_template: >-
+  - id: gohookbridge
+    ids:
+      - gohookbridge
+    file_name_template: >-
       gohookbridge-
       {{- .Version}}_{{.Os}}-
       {{- if eq .Arch "amd64" }}x86_64
@@ -158,9 +161,54 @@ nfpms:
       - src: ./misc/gohookbridge-server.service
         dst: /etc/systemd/system/gohookbridge-server.service
         type: "config|noreplace"
+
+  - id: gohookbridge-client
+    ids:
+      - gohookbridge-client
+    file_name_template: >-
+      gohookbridge-client-
+      {{- .Version}}_{{.Os}}-
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else if eq .Arch "darwin" }}MacOS
+      {{- else if eq .Arch "linux" }}Linux
+      {{- else if eq .Arch "windows" }}Windows
+      {{- else }}{{ .Arch }}{{ end }}
+    homepage: https://github.com/webcenter-fr/gohookbridge
+    description: "gohookbridge client - webhook forwarding client"
+    maintainer: Chmouel Boudjnah <chmouel@chmouel.com>
+    license: MIT
+    formats:
+      - apk
+      - deb
+      - rpm
+    bindir: /usr/bin
+    contents:
       - src: ./misc/gohookbridge.service
         dst: /etc/systemd/system/gohookbridge-client.service
         type: "config|noreplace"
+
+  - id: gohookbridge-proxy
+    ids:
+      - gohookbridge-proxy
+    file_name_template: >-
+      gohookbridge-proxy-
+      {{- .Version}}_{{.Os}}-
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else if eq .Arch "darwin" }}MacOS
+      {{- else if eq .Arch "linux" }}Linux
+      {{- else if eq .Arch "windows" }}Windows
+      {{- else }}{{ .Arch }}{{ end }}
+    homepage: https://github.com/webcenter-fr/gohookbridge
+    description: "gohookbridge proxy - encrypting webhook relay"
+    maintainer: Chmouel Boudjnah <chmouel@chmouel.com>
+    license: MIT
+    formats:
+      - apk
+      - deb
+      - rpm
+    bindir: /usr/bin
 changelog:
   sort: asc
   use: github

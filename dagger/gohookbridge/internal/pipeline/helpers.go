@@ -85,16 +85,29 @@ func ValidateRegistryPath(path string) error {
 	return nil
 }
 
+// ImageRepositories carries the three per-component image repositories for the
+// smoke deployment (each pulled from the in-pipeline registry).
+type ImageRepositories struct {
+	Server string
+	Client string
+	Proxy  string
+}
+
+// smokeProxyPublicKey is a throwaway NaCl public key (base64url of 32 zero bytes,
+// 43 ASCII 'A' characters) so the smoke proxy pod can boot. Never used to encrypt
+// real data: the smoke proxy never receives a POST.
+const smokeProxyPublicKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" //nolint:gosec // throwaway value, not a real credential.
+
 // RenderHelmValues renders the helm values-override map to YAML for the smoke
-// deployment (single replica, raft TLS off, image pulled from the in-pipeline
-// registry, minimal bootstrap admin user). See deploy.go:writeHelmValues.
-func RenderHelmValues(repository string, version string, channelID string) (string, error) {
+// deployment: single server replica (raft TLS off), client + proxy enabled with
+// dedicated local images, and a minimal bootstrap admin user + channel.
+func RenderHelmValues(repos ImageRepositories, version string, channelID string) (string, error) {
 	values := map[string]any{
 		"fullnameOverride": "gohookbridge",
 		"server": map[string]any{
 			"replicas": 1,
 			"image": map[string]any{
-				"repository": repository,
+				"repository": repos.Server,
 				"tag":        version,
 			},
 			"raft": map[string]any{
@@ -124,6 +137,25 @@ func RenderHelmValues(repository string, version string, channelID string) (stri
 					}},
 				},
 			},
+		},
+		"client": map[string]any{
+			"enabled": true,
+			"image": map[string]any{
+				"repository": repos.Client,
+				"tag":        version,
+			},
+			"channelURL": "http://gohookbridge-server:3333/" + channelID,
+			"targetURL":  "http://127.0.0.1:1",
+		},
+		"proxy": map[string]any{
+			"enabled": true,
+			"image": map[string]any{
+				"repository": repos.Proxy,
+				"tag":        version,
+			},
+			"listenPort": 9090,
+			"targetURL":  "http://127.0.0.1:1",
+			"publicKey":  smokeProxyPublicKey,
 		},
 	}
 

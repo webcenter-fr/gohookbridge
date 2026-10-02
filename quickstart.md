@@ -130,7 +130,8 @@ helm status gohookbridge -n gohookbridge
 ### Validate with Dagger
 
 Build, push, and validate a release with the repository's Dagger module
-(requires a Docker daemon):
+(requires a Docker daemon). The pipeline builds and validates all three images
+(server, client, proxy):
 
 ```shell
 VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//'); \

@@ -71,8 +71,9 @@ jobs:
             --registry-username "${{ github.actor }}" \
             --registry-password env:GITHUB_TOKEN \
             --push-latest
-        # Full pipeline: hadolint + image build + GHCR push (version/latest) +
-        # ephemeral k3s validation (helm install + webhook/SSE smoke checks).
+        # Full pipeline: hadolint + build + GHCR push (version/latest) of all three images
+        # (server, client, proxy) + ephemeral k3s validation (server webhook/SSE smoke +
+        # client/proxy pod Ready + per-image binary boot checks).
 
   helm-release:
     name: Publish Helm chart to GHCR
