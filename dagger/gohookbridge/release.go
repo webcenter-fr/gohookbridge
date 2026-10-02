@@ -27,9 +27,20 @@ const (
 	chartName = "gohookbridge"
 )
 
+// imagePlatforms are the platforms the release image is built and published
+// for (multi-arch manifest). amd64 is first: it is the variant Ci reuses for
+// the ephemeral k3s validation.
+var imagePlatforms = []dagger.Platform{
+	"linux/amd64",
+	"linux/arm64",
+	"linux/s390x",
+	"linux/ppc64le",
+}
+
 // imagePushResult carries the outcome of buildAndPushImage back to the tasks
-// that report it (Ci and PublishImage). built is the built image (nil when
-// the build failed), reused by Ci for the in-pipeline registry publish.
+// that report it (Ci and PublishImage). built is the amd64 variant of the
+// built image (nil when the build failed), reused by Ci for the in-pipeline
+// registry publish.
 type imagePushResult struct {
 	versionRef   string
 	latestRef    string
@@ -37,15 +48,18 @@ type imagePushResult struct {
 	latestDigest string
 	lintAdvisory string
 	skipped      bool
-	built        *dagger.ImageBuild
+	built        *dagger.Container
 }
 
 // buildAndPushImage lints (hadolint, failure threshold error) and builds the
-// root Dockerfile with the resolved VERSION build-arg, then optionally pushes
-// the image to the registry under <version> and <latest>. Credentials are
-// only required when a push is requested. It is the shared core of the Ci and
+// root Dockerfile with the resolved VERSION build-arg for every platform in
+// imagePlatforms, then optionally publishes the multi-arch image to the
+// registry under <version> and <latest>. Credentials (plain username + Secret
+// password) are only required when a push is requested; they are wired into
+// the engine through Container.WithRegistryAuth, mirroring the
+// dagger-library-go image module's Push. It is the shared core of the Ci and
 // PublishImage tasks.
-func buildAndPushImage(ctx context.Context, source *dagger.Directory, resolved, registry, repositoryName string, userSecret, passSecret *dagger.Secret, pushLatest, skipPush bool) (imagePushResult, error) {
+func buildAndPushImage(ctx context.Context, source *dagger.Directory, resolved, registry, repositoryName, registryUsername string, passSecret *dagger.Secret, pushLatest, skipPush bool) (imagePushResult, error) {
 	imageRef := registry + "/" + repositoryName + ":" + resolved
 	result := imagePushResult{versionRef: imageRef}
 
@@ -61,31 +75,40 @@ func buildAndPushImage(ctx context.Context, source *dagger.Directory, resolved, 
 	}
 	result.lintAdvisory = lintOutput
 
-	built := img.Build(source, dagger.ImageBuildOpts{Dockerfile: "Dockerfile"})
-	if _, err := built.GetContainer().Sync(ctx); err != nil {
-		return result, fmt.Errorf("build image %s: %w", imageRef, err)
+	variants := make([]*dagger.Container, 0, len(imagePlatforms))
+	for _, platform := range imagePlatforms {
+		variant := source.DockerBuild(dagger.DirectoryDockerBuildOpts{
+			Dockerfile: "Dockerfile",
+			Platform:   platform,
+			BuildArgs:  []dagger.BuildArg{{Name: "VERSION", Value: resolved}},
+		})
+		if _, err := variant.Sync(ctx); err != nil {
+			return result, fmt.Errorf("build image %s for %s: %w", imageRef, platform, err)
+		}
+		if !skipPush {
+			variant = variant.WithRegistryAuth(registry, registryUsername, passSecret)
+		}
+		variants = append(variants, variant)
 	}
-	result.built = built
+	result.built = variants[0]
 
 	if skipPush {
 		result.skipped = true
 		return result, nil
 	}
 
-	digest, err := built.Push(ctx, repositoryName, resolved, registry, dagger.ImageBuildPushOpts{
-		WithRegistryUsername: userSecret,
-		WithRegistryPassword: passSecret,
+	ref, err := variants[0].Publish(ctx, imageRef, dagger.ContainerPublishOpts{
+		PlatformVariants: variants[1:],
 	})
 	if err != nil {
 		return result, fmt.Errorf("push image %s: %w", imageRef, err)
 	}
-	result.digest = digest
+	result.digest = ref
 
 	if pushLatest {
 		latestRef := registry + "/" + repositoryName + ":latest"
-		latestDigest, err := built.Push(ctx, repositoryName, "latest", registry, dagger.ImageBuildPushOpts{
-			WithRegistryUsername: userSecret,
-			WithRegistryPassword: passSecret,
+		latestDigest, err := variants[0].Publish(ctx, latestRef, dagger.ContainerPublishOpts{
+			PlatformVariants: variants[1:],
 		})
 		if err != nil {
 			return result, fmt.Errorf("push image %s: %w", latestRef, err)
@@ -142,16 +165,15 @@ func (m *Gohookbridge) PublishImage(
 		return "", err
 	}
 
-	var userSecret, passSecret *dagger.Secret
+	var passSecret *dagger.Secret
 	if !skipPush {
 		if registryUsername == "" || registryPassword == nil {
 			return "", errors.New("push requested but registry credentials are missing: pass --registry-username <name> and --registry-password env:VAR (or file:path); credential values are never logged")
 		}
-		userSecret = dag.SetSecret("registry-username", registryUsername)
 		passSecret = registryPassword
 	}
 
-	res, err := buildAndPushImage(ctx, source, resolved, registry, repositoryName, userSecret, passSecret, pushLatest, skipPush)
+	res, err := buildAndPushImage(ctx, source, resolved, registry, repositoryName, registryUsername, passSecret, pushLatest, skipPush)
 	if err != nil {
 		return "", err
 	}

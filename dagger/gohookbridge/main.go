@@ -202,22 +202,22 @@ func (m *Gohookbridge) Ci(
 		return pipeline.BuildReport(sections...), nil
 	}
 
-	// (b) Build + push through github.com/disaster37/dagger-library-go/image.
-	// Registry credentials are fatal only when a push is requested; --skip-push
-	// still allows build + k8s validation. The username is wrapped into a
-	// Dagger secret here; the password already IS a Dagger Secret (see the
+	// (b) Build + push (multi-arch) with the engine's registry auth wired
+	// through Container.WithRegistryAuth. Registry credentials are fatal only
+	// when a push is requested; --skip-push still allows build + k8s
+	// validation. The username is a plain string (it is never logged by the
+	// engine); the password already IS a Dagger Secret (see the
 	// registryPassword parameter doc). Neither value is ever logged or placed
 	// in the report.
-	var userSecret, passSecret *dagger.Secret
+	var passSecret *dagger.Secret
 	if !skipPush {
 		if registryUsername == "" || registryPassword == nil {
 			return "", errors.New("push requested but registry credentials are missing: pass --registry-username <name> and --registry-password env:VAR (or file:path); credential values are never logged")
 		}
-		userSecret = dag.SetSecret("registry-username", registryUsername)
 		passSecret = registryPassword
 	}
 
-	res, err := buildAndPushImage(ctx, source, resolved, registry, repositoryName, userSecret, passSecret, pushLatest, skipPush)
+	res, err := buildAndPushImage(ctx, source, resolved, registry, repositoryName, registryUsername, passSecret, pushLatest, skipPush)
 	if err != nil {
 		return "", err
 	}
@@ -245,7 +245,7 @@ func (m *Gohookbridge) Ci(
 			return "", err
 		}
 		localRef := localPushRef + ":" + resolved
-		if _, err := res.built.GetContainer().Publish(ctx, localRef, dagger.ContainerPublishOpts{
+		if _, err := res.built.Publish(ctx, localRef, dagger.ContainerPublishOpts{
 			RegistryService: registrySvc,
 		}); err != nil {
 			return "", fmt.Errorf("publish image %s to the in-pipeline registry: %w", localRef, err)
