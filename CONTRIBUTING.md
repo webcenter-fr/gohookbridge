@@ -287,7 +287,7 @@ Individual release tasks (also wired into `.github/workflows/releaser.yaml`):
 
 | Task | Invocation | Result |
 |---|---|---|
-| `publish-image` | `dagger call -m dagger/gohookbridge publish-image --source . --version "$VERSION" --registry-username "$GHCR_USERNAME" --registry-password env:GHCR_TOKEN --push-latest` | hadolint + image build + push `<version>` and `latest` tags |
+| `publish-image` | `dagger call -m dagger/gohookbridge publish-image --source . --version "$VERSION" --registry-username "$GHCR_USERNAME" --registry-password env:GHCR_TOKEN --push-latest` | hadolint + multi-arch image build (amd64/arm64/s390x/ppc64le) + push `<version>` and `latest` tags |
 | `publish-helm` | `dagger call -m dagger/gohookbridge publish-helm --source . --version "$VERSION" --registry-username "$GHCR_USERNAME" --registry-password env:GHCR_TOKEN` | chart version/appVersion/image tags pinned to `$VERSION`, lint, package, push to `oci://ghcr.io/webcenter-fr/charts` (`<version>` + `latest`) |
 | `goreleaser` | `dagger call -m dagger/gohookbridge goreleaser --source . --version "$VERSION" --gh-token env:GITHUB_TOKEN export --path dist` | full goreleaser release (binaries, checksums, nfpm, brew; AUR only when `--aur-key env:AUR_PRIVATE_KEY` is passed) |
 | `goreleaser --snapshot` | `dagger call -m dagger/gohookbridge goreleaser --source . --version "$VERSION" --snapshot export --path dist` | local unversioned build, no publish side effects (pipeline development) |
