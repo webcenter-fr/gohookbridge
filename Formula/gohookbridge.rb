@@ -9,7 +9,7 @@ class Gohookbridge < Formula
 
   on_macos do
     url "https://github.com/webcenter-fr/gohookbridge/releases/download/0.0.1/gohookbridge_0.0.1_darwin_all.tar.gz"
-    sha256 "f545dd55e67b3da80a96df64e8cc1c4b5d9546d8cbd7ab432bfb6245574babc6"
+    sha256 "d5b29f3dedfba8a3d0b50510ecaa70461e6304092cf0cc64365a46694fffbbb2"
 
     define_method(:install) do
       bin.install "gohookbridge" => "gohookbridge"
@@ -26,7 +26,7 @@ class Gohookbridge < Formula
   on_linux do
     if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
       url "https://github.com/webcenter-fr/gohookbridge/releases/download/0.0.1/gohookbridge_0.0.1_linux_x86_64.tar.gz"
-      sha256 "adf8848650eccb5226a8db9001f6ace1b469c6c9fdbf3cc445cecb84dbed2c7f"
+      sha256 "2a542760fa0e93e15ad2de0878f5fa8f0e4bfa0aabfba770dc39763b0f309df9"
       define_method(:install) do
         bin.install "gohookbridge" => "gohookbridge"
         output = Utils.popen_read("SHELL=bash #{bin}/gohookbridge completion bash")
@@ -40,7 +40,7 @@ class Gohookbridge < Formula
     end
     if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
       url "https://github.com/webcenter-fr/gohookbridge/releases/download/0.0.1/gohookbridge_0.0.1_linux_arm64.tar.gz"
-      sha256 "00d5143944348e202967b0cf71c2d807d1be939517552e2ca43d82c21016386f"
+      sha256 "e217c06cd0a4092484ffcceb3d25e37e51b3936334de54c5eded027198a6405e"
       define_method(:install) do
         bin.install "gohookbridge" => "gohookbridge"
         output = Utils.popen_read("SHELL=bash #{bin}/gohookbridge completion bash")
