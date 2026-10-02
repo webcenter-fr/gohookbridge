@@ -33,6 +33,7 @@ jobs:
           echo "$HOME/bin" >> "$GITHUB_PATH"
       - name: Run GoReleaser via Dagger
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AUR_PRIVATE_KEY: ${{ secrets.AUR_PRIVATE_KEY }}
         run: |
           ARGS="goreleaser --source . --version ${GITHUB_REF_NAME} --gh-token env:GITHUB_TOKEN"
@@ -61,6 +62,8 @@ jobs:
           curl -fsSL https://dl.dagger.io/dagger/install.sh | DAGGER_VERSION="${DAGGER_VERSION}" BIN_DIR="$HOME/bin" sh
           echo "$HOME/bin" >> "$GITHUB_PATH"
       - name: Build, push and validate image via Dagger
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           dagger call -m ./dagger/gohookbridge ci \
             --source . \
@@ -86,6 +89,8 @@ jobs:
           curl -fsSL https://dl.dagger.io/dagger/install.sh | DAGGER_VERSION="${DAGGER_VERSION}" BIN_DIR="$HOME/bin" sh
           echo "$HOME/bin" >> "$GITHUB_PATH"
       - name: Publish Helm chart via Dagger
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           dagger call -m ./dagger/gohookbridge publish-helm \
             --source . \
