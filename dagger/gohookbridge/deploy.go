@@ -23,10 +23,16 @@ const (
 )
 
 // writeHelmValues renders the values override file for the smoke deployment:
-// replicas 1, raft TLS off, image -> registry:5000/gohookbridge:<version>, and
-// a minimal bootstrap admin user. Returns a *dagger.File to mount into helm.
+// replicas 1, raft TLS off, server/client/proxy images pulled from the
+// in-pipeline registry, and a minimal bootstrap admin user. Returns a
+// *dagger.File to mount into helm.
 func writeHelmValues(_ context.Context, version string, channelID string) (*dagger.File, error) {
-	rendered, err := pipeline.RenderHelmValues(localImageRef, version, channelID)
+	repos := pipeline.ImageRepositories{
+		Server: localRegistryHost + "/" + localRepositoryName(""),
+		Client: localRegistryHost + "/" + localRepositoryName("-client"),
+		Proxy:  localRegistryHost + "/" + localRepositoryName("-proxy"),
+	}
+	rendered, err := pipeline.RenderHelmValues(repos, version, channelID)
 	if err != nil {
 		return nil, err
 	}

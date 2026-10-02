@@ -25,12 +25,15 @@ const (
 	// repository path is identical, so both sides address
 	// gohookbridge:<version>.
 	pushRegistryHost = "localhost:5000"
-	// localImageRef is where the freshly built image is published so the
-	// ephemeral cluster can pull it (GHCR packages are private by default).
-	localImageRef = localRegistryHost + "/gohookbridge"
-	// localPushRef is the ref the engine publishes to (see pushRegistryHost).
-	localPushRef = pushRegistryHost + "/gohookbridge"
 )
+
+// localPushRefFor returns the engine-publish ref for a component suffix in the
+// in-pipeline registry (pushRegistryHost uses localhost:5000; see the
+// pushRegistryHost comment). The cluster-side pull ref is built by
+// RenderHelmValues/writeHelmValues using localRegistryHost.
+func localPushRefFor(suffix, version string) string {
+	return pushRegistryHost + "/" + localRepositoryName(suffix) + ":" + version
+}
 
 // registriesMirror is the k3s containerd mirror config that resolves the
 // "registry:5000" image prefix to the plain-HTTP in-pipeline registry.

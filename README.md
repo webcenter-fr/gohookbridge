@@ -94,21 +94,33 @@ yay -S gohookbridge-bin
 
 ### Docker
 
-#### Gohookbridge client with Docker
-
-```shell
-docker run ghcr.io/webcenter-fr/gohookbridge:latest
-```
-
 #### Gohookbridge server with Docker
 
 ```shell
-docker run -d -p 3026:3026 --restart always --name example.org ghcr.io/webcenter-fr/gohookbridge:latest server --port 3026 --address 0.0.0.0 --public-url https://example.org
+docker run -d -p 3026:3026 --restart always --name example.org \
+  ghcr.io/webcenter-fr/gohookbridge:latest server --port 3026 --address 0.0.0.0 --public-url https://example.org
 ```
+
+#### Gohookbridge client with Docker
+
+```shell
+docker run --rm ghcr.io/webcenter-fr/gohookbridge-client:latest client https://smee.io/YOUR_CHANNEL_ID http://host.docker.internal:8080
+```
+
+#### Gohookbridge proxy with Docker
+
+```shell
+docker run --rm -p 9090:9090 ghcr.io/webcenter-fr/gohookbridge-proxy:latest \
+  proxy --listen :9090 --target https://example.org/my-channel --pubkey <public-key>
+```
+
+Three images are published: `ghcr.io/webcenter-fr/gohookbridge` (server + UI + NATS),
+`ghcr.io/webcenter-fr/gohookbridge-client` (client only), and
+`ghcr.io/webcenter-fr/gohookbridge-proxy` (encrypting relay proxy).
 
 ## Dagger pipeline (CI/CD)
 
-- Build, publish to GHCR, and validate on an ephemeral k3s cluster with `dagger call -m dagger/gohookbridge ci --source . --version <v>` (a Dagger module consuming `disaster37/dagger-library-go/image`; image tagged with the caller-resolved version).
+- Build, publish to GHCR, and validate on an ephemeral k3s cluster with `dagger call -m dagger/gohookbridge ci --source . --version <v>` (a Dagger module consuming `disaster37/dagger-library-go/image`; all three images — server, client, proxy — tagged with the caller-resolved version).
 - Requires a Docker daemon; the GHCR push reads `--registry-username`/`--registry-password`, with the password passed as a Dagger Secret reference such as `--registry-password env:GHCR_TOKEN` (or `file:./token.txt`) — never a plaintext value.
 - Validation report redirected to `tmp/dagger-validation-report.md`.
 
