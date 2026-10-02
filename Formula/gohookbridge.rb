@@ -5,11 +5,11 @@
 class Gohookbridge < Formula
   desc "gohookbridge - A webhook and https://smee.io forwarder"
   homepage "https://github.com/webcenter-fr/gohookbridge"
-  version "0.31.1"
+  version "0.0.1"
 
   on_macos do
-    url "https://github.com/webcenter-fr/gohookbridge/releases/download/v0.31.1/gohookbridge_0.31.1_darwin_all.tar.gz"
-    sha256 "f2a30deea8ad8f1c0f6395ef6543db3fd2b32a574a18c01f4bc35d6ce9c18367"
+    url "https://github.com/webcenter-fr/gohookbridge/releases/download/0.0.1/gohookbridge_0.0.1_darwin_all.tar.gz"
+    sha256 "f545dd55e67b3da80a96df64e8cc1c4b5d9546d8cbd7ab432bfb6245574babc6"
 
     define_method(:install) do
       bin.install "gohookbridge" => "gohookbridge"
@@ -25,8 +25,8 @@ class Gohookbridge < Formula
 
   on_linux do
     if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
-      url "https://github.com/webcenter-fr/gohookbridge/releases/download/v0.31.1/gohookbridge_0.31.1_linux_x86_64.tar.gz"
-      sha256 "8da9bb9511e6fd5399e80c256b12635da88b3bc831347c5500c0dd88c4361771"
+      url "https://github.com/webcenter-fr/gohookbridge/releases/download/0.0.1/gohookbridge_0.0.1_linux_x86_64.tar.gz"
+      sha256 "adf8848650eccb5226a8db9001f6ace1b469c6c9fdbf3cc445cecb84dbed2c7f"
       define_method(:install) do
         bin.install "gohookbridge" => "gohookbridge"
         output = Utils.popen_read("SHELL=bash #{bin}/gohookbridge completion bash")
@@ -39,8 +39,8 @@ class Gohookbridge < Formula
       end
     end
     if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-      url "https://github.com/webcenter-fr/gohookbridge/releases/download/v0.31.1/gohookbridge_0.31.1_linux_arm64.tar.gz"
-      sha256 "4486eeff0c8ea2d9c1d54a951ebcac1978b6343bb89796d8b00f87e4e559c0a9"
+      url "https://github.com/webcenter-fr/gohookbridge/releases/download/0.0.1/gohookbridge_0.0.1_linux_arm64.tar.gz"
+      sha256 "00d5143944348e202967b0cf71c2d807d1be939517552e2ca43d82c21016386f"
       define_method(:install) do
         bin.install "gohookbridge" => "gohookbridge"
         output = Utils.popen_read("SHELL=bash #{bin}/gohookbridge completion bash")
