@@ -55,6 +55,26 @@ server:
   bootstrap:
     enabled: true
     config: {}                      # bootstrap.yaml content (admin user + session secret), stored in a Secret
+  auth:
+    internal:
+      # Enable/disable the built-in username/password login. At least one auth
+      # provider must remain enabled: setting this to false requires at least
+      # one entry in auth.oidc.providers, otherwise the render fails.
+      enabled: true
+    oidc:
+      # OIDC/OAuth providers seeded at first boot. Provider fields are
+      # snake_case to match the bootstrap.yaml schema. client_secret is NEVER
+      # set inline - reference an existing K8s Secret via client_secret_ref.
+      providers: []
+      # - id: google
+      #   name: Google
+      #   client_id: ""
+      #   client_secret_ref:
+      #     name: my-oidc-secrets
+      #     key: google-client-secret
+      #   issuer_url: "https://accounts.google.com"
+      #   scopes: ["openid", "profile", "email"]
+      #   groups_claim: groups
   ingress:
     enabled: false
     className: ""

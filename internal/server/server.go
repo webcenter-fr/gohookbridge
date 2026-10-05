@@ -284,7 +284,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	}
 
 	// Apply bootstrap.yaml exactly once, on the leader, when the FSM is empty.
-	if err := applyBootstrapOnce(ctx, rs, c.String("bootstrap-config-file")); err != nil {
+	if err := applyBootstrapOnce(ctx, rs, c.String("bootstrap-config-file"), effectiveNamespace(c)); err != nil {
 		cancelStartup()
 		_ = rs.Shutdown()
 		return nil, err
@@ -394,6 +394,13 @@ func NewServer(c *cli.Context) (*Server, error) {
 		sessionSecret = service.DeriveSessionSecret(secret)
 	}
 
+	if err := svc.ValidateAuthConfig(ctx); err != nil {
+		cancelStartup()
+		broker.Shutdown()
+		_ = rs.Shutdown()
+		return nil, fmt.Errorf("auth configuration: %w", err)
+	}
+
 	handler.Version = app.Version
 
 	mainRouter := chi.NewRouter()
@@ -440,12 +447,13 @@ func NewServer(c *cli.Context) (*Server, error) {
 	// SPA handler — all unmatched GET routes serve the SPA
 	mainRouter.NotFound(web.SPAHandler().ServeHTTP)
 
-	// Public auth API routes — mounted before main /api to avoid middleware intercept
-	publicAPIRouter := chi.NewRouter()
-	publicAPIRouter.Get("/methods", handler.APIAuthMethodsHandler(svc))
-	publicAPIRouter.Post("/login", handler.APILoginHandler(svc, sessionSecret, banTrackerInst, cookieSecure))
-	publicAPIRouter.Post("/logout", handler.APILogoutHandler(cookieSecure))
-	mainRouter.Mount("/api/auth", publicAPIRouter)
+	// Public auth API routes — registered directly on mainRouter (before the
+	// /api mount) so they bypass RequireAuthDynamic. They must NOT be mounted
+	// at /api/auth: that mount would shadow the admin /api/auth/internal route
+	// registered by RegisterAPIHandlers on the /api subrouter.
+	mainRouter.Get("/api/auth/methods", handler.APIAuthMethodsHandler(svc))
+	mainRouter.Post("/api/auth/login", handler.APILoginHandler(svc, sessionSecret, banTrackerInst, cookieSecure))
+	mainRouter.Post("/api/auth/logout", handler.APILogoutHandler(cookieSecure))
 
 	// API routes — dynamic auth handles setup mode and authentication
 	apiRouter := chi.NewRouter()
@@ -607,7 +615,7 @@ func (s *Server) Run(ctx context.Context) error {
 // applyBootstrapOnce applies bootstrap.yaml exactly once: only on the leader,
 // and only while the FSM is still empty. ApplyBootstrap also guards HasData
 // internally; the leader-only + once semantics guarantee a single application.
-func applyBootstrapOnce(ctx context.Context, rs *repository.RaftStore, path string) error {
+func applyBootstrapOnce(ctx context.Context, rs *repository.RaftStore, path, namespace string) error {
 	if path == "" || !rs.IsLeader() {
 		return nil
 	}
@@ -621,6 +629,15 @@ func applyBootstrapOnce(ctx context.Context, rs *repository.RaftStore, path stri
 	cfg, err := repository.LoadBootstrap(path)
 	if err != nil {
 		return fmt.Errorf("load bootstrap: %w", err)
+	}
+	if hasBootstrapSecretRefs(cfg) {
+		clientset, err := newK8sClientset()
+		if err != nil {
+			return fmt.Errorf("resolve bootstrap secrets: %w", err)
+		}
+		if err := resolveBootstrapSecretRefs(ctx, cfg, clientset, namespace); err != nil {
+			return fmt.Errorf("resolve bootstrap secrets: %w", err)
+		}
 	}
 	if cfg.Global != nil && cfg.Global.Server.SessionSecret != "" {
 		if err := service.ValidateSessionSecret(cfg.Global.Server.SessionSecret); err != nil {

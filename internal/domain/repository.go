@@ -49,6 +49,11 @@ type ConfigRepository interface {
 	UpdateGlobalConfig(ctx context.Context, cfg *GlobalConfig) error
 	OIDCProviders(ctx context.Context) ([]OIDCProvider, error)
 	SetOIDCProviders(ctx context.Context, providers []OIDCProvider) error
+	// InternalAuthEnabled returns the persisted internal-auth flag: nil when
+	// unset (the service then derives it from the presence of users), otherwise
+	// a pointer to the stored boolean.
+	InternalAuthEnabled(ctx context.Context) (*bool, error)
+	SetInternalAuthEnabled(ctx context.Context, enabled bool) error
 	GetClientCursor(ctx context.Context, channel, clientID string) (*ClientCursor, error)
 	SetClientCursor(ctx context.Context, cursor *ClientCursor) error
 	GetSetupModeEndTime(ctx context.Context) time.Time

@@ -174,6 +174,27 @@ func TestServerEndToEndWebhookRelay(t *testing.T) {
 	}
 }
 
+// TestServerRejectsZeroAuthProviders boots the real server wiring with a
+// bootstrap config that disables internal auth and declares no OIDC providers;
+// NewServer must fail fast on the "at least one auth provider" invariant.
+func TestServerRejectsZeroAuthProviders(t *testing.T) {
+	fixturesDir, err := filepath.Abs("../fixtures")
+	assert.NilError(t, err)
+
+	ctx := newServerContext(t,
+		"--address", "127.0.0.1",
+		"--port", fmt.Sprintf("%d", freePort(t)),
+		"--raft-dir", t.TempDir(),
+		"--raft-bind-addr", freeTCPAddr(t),
+		"--nats-port", fmt.Sprintf("%d", freePort(t)),
+		"--nats-cluster-port", fmt.Sprintf("%d", freePort(t)),
+		"--bootstrap-config-file", filepath.Join(fixturesDir, "bootstrap-auth-invalid.yaml"),
+	)
+
+	_, err = server.NewServer(ctx)
+	assert.ErrorContains(t, err, "at least one auth provider")
+}
+
 // readRelayedBody scans SSE data lines until it finds a webhook event, then
 // returns the base64-decoded bodyB payload.
 func readRelayedBody(t *testing.T, r io.Reader) ([]byte, bool) {

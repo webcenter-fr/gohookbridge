@@ -104,6 +104,12 @@ func RegisterAPIHandlers(r chi.Router, svc *service.Service) {
 		r.Delete("/providers/{id}", h.deleteOIDCProvider)
 	})
 
+	r.Route("/auth", func(r chi.Router) {
+		r.Use(RequirePermission(svc, domain.PermGlobalWrite))
+		r.Get("/internal", h.getInternalAuth)
+		r.Put("/internal", h.setInternalAuth)
+	})
+
 	r.Get("/me", h.getMe)
 }
 
@@ -527,7 +533,6 @@ func (h *apiHandler) getMe(w http.ResponseWriter, r *http.Request) {
 	for _, p := range providers {
 		oidcList = append(oidcList, map[string]string{"id": p.ID, "name": p.Name})
 	}
-	users, _ := h.svc.ListUsers(ctx)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"username":    user.Username,
@@ -536,7 +541,7 @@ func (h *apiHandler) getMe(w http.ResponseWriter, r *http.Request) {
 		"permissions": permissions,
 		"auth_methods": map[string]any{
 			"oidc_providers": oidcList,
-			"local_enabled":  len(users) > 0,
+			"local_enabled":  h.svc.IsInternalAuthEnabled(ctx),
 		},
 	})
 }
@@ -806,6 +811,10 @@ func (h *apiHandler) updateAllOIDCProviders(w http.ResponseWriter, r *http.Reque
 			providers[i].GroupsClaim = "groups"
 		}
 	}
+	if !h.svc.IsInternalAuthEnabled(ctx) && len(providers) == 0 {
+		writeError(w, http.StatusBadRequest, "cannot remove the last OIDC provider while internal auth is disabled: at least one auth provider is required")
+		return
+	}
 	if err := h.svc.SetOIDCProviders(ctx, providers); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -864,11 +873,40 @@ func (h *apiHandler) deleteOIDCProvider(w http.ResponseWriter, r *http.Request) 
 			updated = append(updated, p)
 		}
 	}
+	if !h.svc.IsInternalAuthEnabled(ctx) && len(updated) == 0 {
+		writeError(w, http.StatusBadRequest, "cannot remove the last OIDC provider while internal auth is disabled: at least one auth provider is required")
+		return
+	}
 	if err := h.svc.SetOIDCProviders(ctx, updated); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *apiHandler) getInternalAuth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"enabled": h.svc.IsInternalAuthEnabled(r.Context()),
+	})
+}
+
+func (h *apiHandler) setInternalAuth(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := h.svc.SetInternalAuthEnabled(r.Context(), body.Enabled); err != nil {
+		if errors.Is(err, domain.ErrInvalidArgument) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"enabled": body.Enabled})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

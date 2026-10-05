@@ -23,6 +23,8 @@ type fakeRepository struct {
 	providers []domain.OIDCProvider
 	cursors   map[string]*domain.ClientCursor
 	setupEnd  time.Time
+
+	internalAuthEnabled *bool
 }
 
 func newFakeRepository() *fakeRepository {
@@ -354,6 +356,23 @@ func (f *fakeRepository) SetOIDCProviders(_ context.Context, providers []domain.
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.providers = append([]domain.OIDCProvider(nil), providers...)
+	return nil
+}
+
+func (f *fakeRepository) InternalAuthEnabled(_ context.Context) (*bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.internalAuthEnabled == nil {
+		return nil, nil
+	}
+	cp := *f.internalAuthEnabled
+	return &cp, nil
+}
+
+func (f *fakeRepository) SetInternalAuthEnabled(_ context.Context, enabled bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.internalAuthEnabled = &enabled
 	return nil
 }
 

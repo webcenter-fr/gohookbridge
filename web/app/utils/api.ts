@@ -228,6 +228,17 @@ class ApiClient {
     return this.request<OIDCProvider[]>('/oidc/providers')
   }
 
+  async getInternalAuth(): Promise<{ enabled: boolean }> {
+    return this.request<{ enabled: boolean }>('/auth/internal')
+  }
+
+  async setInternalAuth(enabled: boolean): Promise<{ enabled: boolean }> {
+    return this.request<{ enabled: boolean }>('/auth/internal', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    })
+  }
+
   async updateOIDCProvider(id: string, provider: Partial<OIDCProvider>): Promise<OIDCProvider> {
     return this.request<OIDCProvider>(`/oidc/providers/${id}`, { method: 'PUT', body: JSON.stringify(provider) })
   }

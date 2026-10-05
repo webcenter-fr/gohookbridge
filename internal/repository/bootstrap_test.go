@@ -31,7 +31,7 @@ users:
 channels:
   - id: proj1
 `
-	err := os.WriteFile(path, []byte(content), 0644)
+	err := os.WriteFile(path, []byte(content), 0o644)
 	assert.NilError(t, err)
 
 	cfg, err := LoadBootstrap(path)
@@ -72,7 +72,7 @@ func TestLoadBootstrap_JSON(t *testing.T) {
 			{"id": "proj1"}
 		]
 	}`
-	err := os.WriteFile(path, []byte(content), 0644)
+	err := os.WriteFile(path, []byte(content), 0o644)
 	assert.NilError(t, err)
 
 	cfg, err := LoadBootstrap(path)
@@ -93,7 +93,7 @@ func TestLoadBootstrap_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yaml")
 	content := `{{{{{invalid yaml`
-	err := os.WriteFile(path, []byte(content), 0644)
+	err := os.WriteFile(path, []byte(content), 0o644)
 	assert.NilError(t, err)
 
 	_, err = LoadBootstrap(path)
@@ -241,7 +241,7 @@ func TestLoadBootstrap_TokenChannelYAML(t *testing.T) {
         token: raw-secret
         scope: produce
 `
-	err := os.WriteFile(path, []byte(content), 0644)
+	err := os.WriteFile(path, []byte(content), 0o644)
 	assert.NilError(t, err)
 
 	cfg, err := LoadBootstrap(path)
@@ -278,4 +278,202 @@ func TestApplyBootstrap_TokenScopeDefaultsToBoth(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, len(ch.AccessTokens), 1)
 	assert.Equal(t, ch.AccessTokens[0].Scope, "both")
+}
+
+func TestApplyBootstrap_InternalDisabledNoOIDC(t *testing.T) {
+	rs := newTestRaftStore(t)
+
+	cfg := &BootstrapConfig{
+		Auth: &BootstrapAuth{
+			Internal: &BootstrapInternalAuth{Enabled: false},
+		},
+	}
+
+	err := rs.ApplyBootstrap(context.Background(), cfg)
+	assert.ErrorContains(t, err, "at least one auth provider")
+}
+
+func TestApplyBootstrap_InternalDisabledWithOIDC(t *testing.T) {
+	rs := newTestRaftStore(t)
+
+	cfg := &BootstrapConfig{
+		Auth: &BootstrapAuth{
+			Internal: &BootstrapInternalAuth{Enabled: false},
+			OIDC: &BootstrapOIDCAuth{
+				Providers: []BootstrapOIDCProvider{
+					{
+						ID:           "google",
+						Name:         "Google",
+						ClientID:     "client-id",
+						ClientSecret: "client-secret",
+						IssuerURL:    "https://accounts.google.com",
+						Scopes:       []string{"openid", "email"},
+					},
+				},
+			},
+		},
+	}
+
+	err := rs.ApplyBootstrap(context.Background(), cfg)
+	assert.NilError(t, err)
+
+	flag, err := rs.InternalAuthEnabled(context.Background())
+	assert.NilError(t, err)
+	assert.Assert(t, flag != nil)
+	assert.Equal(t, *flag, false)
+
+	providers, err := rs.OIDCProviders(context.Background())
+	assert.NilError(t, err)
+	assert.Equal(t, len(providers), 1)
+	assert.Equal(t, providers[0].ID, "google")
+	assert.Equal(t, providers[0].ClientSecret, "client-secret")
+	assert.Equal(t, providers[0].GroupsClaim, "groups")
+}
+
+func TestApplyBootstrap_InternalEnabledFlag(t *testing.T) {
+	rs := newTestRaftStore(t)
+
+	cfg := &BootstrapConfig{
+		Auth: &BootstrapAuth{
+			Internal: &BootstrapInternalAuth{Enabled: true},
+		},
+	}
+
+	err := rs.ApplyBootstrap(context.Background(), cfg)
+	assert.NilError(t, err)
+
+	flag, err := rs.InternalAuthEnabled(context.Background())
+	assert.NilError(t, err)
+	assert.Assert(t, flag != nil)
+	assert.Equal(t, *flag, true)
+}
+
+func TestApplyBootstrap_OIDCOnlyDefaultsInternal(t *testing.T) {
+	rs := newTestRaftStore(t)
+
+	cfg := &BootstrapConfig{
+		Auth: &BootstrapAuth{
+			OIDC: &BootstrapOIDCAuth{
+				Providers: []BootstrapOIDCProvider{
+					{
+						ID:           "google",
+						ClientID:     "client-id",
+						ClientSecret: "client-secret",
+						IssuerURL:    "https://accounts.google.com",
+					},
+				},
+			},
+		},
+	}
+
+	err := rs.ApplyBootstrap(context.Background(), cfg)
+	assert.NilError(t, err)
+
+	flag, err := rs.InternalAuthEnabled(context.Background())
+	assert.NilError(t, err)
+	assert.Assert(t, flag == nil)
+
+	providers, err := rs.OIDCProviders(context.Background())
+	assert.NilError(t, err)
+	assert.Equal(t, len(providers), 1)
+	assert.Equal(t, providers[0].ID, "google")
+}
+
+func TestApplyBootstrap_ProviderValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		provide BootstrapOIDCProvider
+		wantErr string
+	}{
+		{
+			name:    "missing id",
+			provide: BootstrapOIDCProvider{IssuerURL: "https://issuer", ClientID: "c", ClientSecret: "s"},
+			wantErr: "id is required",
+		},
+		{
+			name:    "missing issuer_url",
+			provide: BootstrapOIDCProvider{ID: "p", ClientID: "c", ClientSecret: "s"},
+			wantErr: "issuer_url is required",
+		},
+		{
+			name:    "missing client_id",
+			provide: BootstrapOIDCProvider{ID: "p", IssuerURL: "https://issuer", ClientSecret: "s"},
+			wantErr: "client_id is required",
+		},
+		{
+			name:    "missing client_secret",
+			provide: BootstrapOIDCProvider{ID: "p", IssuerURL: "https://issuer", ClientID: "c"},
+			wantErr: "client_secret is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rs := newTestRaftStore(t)
+			cfg := &BootstrapConfig{
+				Auth: &BootstrapAuth{
+					OIDC: &BootstrapOIDCAuth{Providers: []BootstrapOIDCProvider{tt.provide}},
+				},
+			}
+			err := rs.ApplyBootstrap(context.Background(), cfg)
+			assert.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestApplyBootstrap_UnresolvedSecretRef(t *testing.T) {
+	rs := newTestRaftStore(t)
+
+	cfg := &BootstrapConfig{
+		Auth: &BootstrapAuth{
+			OIDC: &BootstrapOIDCAuth{
+				Providers: []BootstrapOIDCProvider{
+					{
+						ID:              "google",
+						ClientID:        "client-id",
+						ClientSecretRef: &SecretRef{Name: "s", Key: "k"},
+						IssuerURL:       "https://accounts.google.com",
+					},
+				},
+			},
+		},
+	}
+
+	err := rs.ApplyBootstrap(context.Background(), cfg)
+	assert.ErrorContains(t, err, "client_secret_ref is unresolved")
+}
+
+func TestLoadBootstrap_AuthYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bootstrap.yaml")
+	content := `auth:
+  internal:
+    enabled: false
+  oidc:
+    providers:
+      - id: google
+        name: Google
+        client_id: "123-abc.apps.googleusercontent.com"
+        client_secret: "inline-secret"
+        issuer_url: "https://accounts.google.com"
+        scopes: ["openid", "profile", "email"]
+        groups_claim: groups
+`
+	err := os.WriteFile(path, []byte(content), 0o644)
+	assert.NilError(t, err)
+
+	cfg, err := LoadBootstrap(path)
+	assert.NilError(t, err)
+	assert.Assert(t, cfg.Auth != nil)
+	assert.Assert(t, cfg.Auth.Internal != nil)
+	assert.Equal(t, cfg.Auth.Internal.Enabled, false)
+	assert.Assert(t, cfg.Auth.OIDC != nil)
+	assert.Equal(t, len(cfg.Auth.OIDC.Providers), 1)
+	p := cfg.Auth.OIDC.Providers[0]
+	assert.Equal(t, p.ID, "google")
+	assert.Equal(t, p.Name, "Google")
+	assert.Equal(t, p.ClientID, "123-abc.apps.googleusercontent.com")
+	assert.Equal(t, p.ClientSecret, "inline-secret")
+	assert.Equal(t, p.IssuerURL, "https://accounts.google.com")
+	assert.DeepEqual(t, p.Scopes, []string{"openid", "profile", "email"})
+	assert.Equal(t, p.GroupsClaim, "groups")
 }

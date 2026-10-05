@@ -11,6 +11,10 @@ Ingress is configured for: {{ join ", " .Values.server.ingress.hosts }}
 {{- if .Values.server.publicIngress.enabled }}
 Public (webhook-only) ingress is configured for: {{ join ", " .Values.server.publicIngress.hosts }}
 {{- end }}
+Auth: internal {{ if .Values.server.auth.internal.enabled }}enabled{{ else }}disabled{{ end }}.
+{{- range .Values.server.auth.oidc.providers }}
+OIDC provider: {{ .id }} ({{ .issuer_url }})
+{{- end }}
 {{- end }}
 
 {{- if .Values.client.enabled }}

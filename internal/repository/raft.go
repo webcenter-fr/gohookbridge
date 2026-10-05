@@ -1135,6 +1135,29 @@ func (rs *RaftStore) SetOIDCProviders(ctx context.Context, providers []domain.OI
 	return rs.applyCommand("set-json", "/global/auth/oidc_providers", val)
 }
 
+func (rs *RaftStore) InternalAuthEnabled(ctx context.Context) (*bool, error) {
+	val, err := getFSMValue(rs.db, "/global/auth/internal_enabled")
+	if err != nil {
+		return nil, err
+	}
+	if val == nil {
+		return nil, nil
+	}
+	var enabled bool
+	if err := json.Unmarshal(val, &enabled); err != nil {
+		return nil, err
+	}
+	return &enabled, nil
+}
+
+func (rs *RaftStore) SetInternalAuthEnabled(ctx context.Context, enabled bool) error {
+	val, err := json.Marshal(enabled)
+	if err != nil {
+		return err
+	}
+	return rs.applyCommand("set-json", "/global/auth/internal_enabled", val)
+}
+
 func (rs *RaftStore) GetRole(ctx context.Context, name string) (*domain.Role, error) {
 	val, err := getFSMValue(rs.db, "/rbac/roles/"+name+"/")
 	if err != nil {

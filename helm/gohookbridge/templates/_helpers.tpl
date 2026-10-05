@@ -122,3 +122,19 @@ pre-change chart.
   {{- fail (printf "server.publicPort has unsupported type %s" (kindOf $raw)) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Validate the auth configuration: at least one provider is required. Fails the
+render when internal auth is disabled and no OIDC providers are configured, or
+when a stale "auth" key is nested inside bootstrap.config.
+*/}}
+{{- define "gohookbridge.validateAuth" -}}
+{{- $internal := .Values.server.auth.internal.enabled -}}
+{{- $providers := .Values.server.auth.oidc.providers | default list -}}
+{{- if and (not $internal) (eq (len $providers) 0) -}}
+{{- fail "server.auth: at least one auth provider is required - set server.auth.internal.enabled=true or configure at least one server.auth.oidc.providers entry" -}}
+{{- end -}}
+{{- if hasKey .Values.server.bootstrap.config "auth" -}}
+{{- fail "server.bootstrap.config must not contain an 'auth' key - use server.auth.* instead" -}}
+{{- end -}}
+{{- end -}}

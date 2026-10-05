@@ -402,6 +402,13 @@ Users authenticate with username and password on the `/login` page. Passwords ar
 
 OIDC providers can be configured via the Admin API. After successful OIDC login, users are matched to internal user records by OIDC subject claims.
 
+For Helm deployments, OIDC client secrets are supplied via a Kubernetes Secret
+reference (`client_secret_ref` name + key) and resolved by the server at first
+boot; they are never inline in chart values. The chart grants the server
+ServiceAccount `get` on the referenced Secret names only. Inline
+`client_secret` remains supported in a direct `bootstrap.yaml` (non-Helm) and
+via the Admin OIDC API, where the secret is stored in Raft.
+
 OIDC login uses the authorization code flow with a state parameter (open-redirect protection) and a nonce. When the token endpoint returns an ID token, it is
 cryptographically verified with `coreos/go-oidc`:
 
@@ -468,6 +475,13 @@ projects:
 - File should have permissions `0600` when it contains passwords/secrets
 - Session secret and OIDC client secrets should be pre-configured in bootstrap
 - Delete or archive the bootstrap file after initial cluster setup
+
+The optional `auth` block configures the auth providers. The effective auth
+configuration must have **at least one provider**: internal auth enabled, or at
+least one OIDC provider. A bootstrap config that disables internal auth
+(`auth.internal.enabled: false`) with zero OIDC providers is rejected at
+bootstrap, at server startup, and by the runtime API (HTTP 400). The Helm chart
+also fails the render for the same condition.
 
 ## Raft Cluster Security
 

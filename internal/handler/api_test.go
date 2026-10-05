@@ -415,3 +415,97 @@ func TestChannelACL_NonAdminCannotAddACL(t *testing.T) {
 	}))
 	assert.Equal(t, w.Code, http.StatusForbidden)
 }
+
+func TestInternalAuthHandlers(t *testing.T) {
+	t.Run("GET returns enabled derived from users", func(t *testing.T) {
+		_, r := setupAPI(t)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, apiRequest("GET", "/auth/internal", nil))
+		assert.Equal(t, w.Code, http.StatusOK)
+
+		var body map[string]bool
+		assert.NilError(t, json.Unmarshal(w.Body.Bytes(), &body))
+		assert.Equal(t, body["enabled"], true)
+	})
+
+	t.Run("PUT toggles the flag", func(t *testing.T) {
+		svc, r := setupAPI(t)
+		ctx := context.Background()
+
+		err := svc.SetOIDCProviders(ctx, []domain.OIDCProvider{{ID: "google"}})
+		assert.NilError(t, err)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, apiRequest("PUT", "/auth/internal", map[string]bool{"enabled": false}))
+		assert.Equal(t, w.Code, http.StatusOK)
+
+		var body map[string]bool
+		assert.NilError(t, json.Unmarshal(w.Body.Bytes(), &body))
+		assert.Equal(t, body["enabled"], false)
+
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, apiRequest("GET", "/auth/internal", nil))
+		assert.Equal(t, w.Code, http.StatusOK)
+		assert.NilError(t, json.Unmarshal(w.Body.Bytes(), &body))
+		assert.Equal(t, body["enabled"], false)
+	})
+
+	t.Run("PUT disabling with zero providers is rejected", func(t *testing.T) {
+		_, r := setupAPI(t)
+
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, apiRequest("PUT", "/auth/internal", map[string]bool{"enabled": false}))
+		assert.Equal(t, w.Code, http.StatusBadRequest)
+	})
+}
+
+func TestDeleteOIDCProvider_LastProviderInternalDisabled(t *testing.T) {
+	svc, r := setupAPI(t)
+	ctx := context.Background()
+
+	err := svc.SetOIDCProviders(ctx, []domain.OIDCProvider{{ID: "google"}})
+	assert.NilError(t, err)
+	err = svc.SetInternalAuthEnabled(ctx, false)
+	assert.NilError(t, err)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, apiRequest("DELETE", "/oidc/providers/google", nil))
+	assert.Equal(t, w.Code, http.StatusBadRequest)
+}
+
+func TestUpdateAllOIDCProviders_LastProviderInternalDisabled(t *testing.T) {
+	svc, r := setupAPI(t)
+	ctx := context.Background()
+
+	err := svc.SetOIDCProviders(ctx, []domain.OIDCProvider{{ID: "google"}})
+	assert.NilError(t, err)
+	err = svc.SetInternalAuthEnabled(ctx, false)
+	assert.NilError(t, err)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, apiRequest("PUT", "/oidc/providers", []domain.OIDCProvider{}))
+	assert.Equal(t, w.Code, http.StatusBadRequest)
+}
+
+func TestGetMe_LocalEnabledReflectsFlag(t *testing.T) {
+	svc, r := setupAPI(t)
+	ctx := context.Background()
+
+	err := svc.SetOIDCProviders(ctx, []domain.OIDCProvider{{ID: "google"}})
+	assert.NilError(t, err)
+	err = svc.SetInternalAuthEnabled(ctx, false)
+	assert.NilError(t, err)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, apiRequest("GET", "/me", nil))
+	assert.Equal(t, w.Code, http.StatusOK)
+
+	var body struct {
+		AuthMethods struct {
+			LocalEnabled bool `json:"local_enabled"`
+		} `json:"auth_methods"`
+	}
+	assert.NilError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, body.AuthMethods.LocalEnabled, false)
+}

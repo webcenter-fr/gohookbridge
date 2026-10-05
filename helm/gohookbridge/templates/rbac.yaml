@@ -1,10 +1,19 @@
-{{- if and .Values.server.enabled .Values.serviceAccount.create .Values.server.raft.tls.enabled }}
+{{- $oidcRefs := list -}}
+{{- range .Values.server.auth.oidc.providers | default list -}}
+  {{- if .client_secret_ref -}}
+    {{- if .client_secret_ref.name -}}
+      {{- $oidcRefs = append $oidcRefs .client_secret_ref.name -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- if and .Values.server.enabled .Values.serviceAccount.create (or .Values.server.raft.tls.enabled (gt (len $oidcRefs) 0)) }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "gohookbridge.fullname" . }}-server
   labels: {{- include "gohookbridge.labels" . | nindent 4 }}
 rules:
+{{- if .Values.server.raft.tls.enabled }}
 # create cannot be scoped by resourceNames (the name does not exist yet), so
 # it is granted on the secrets collection. get is scoped to the raft CA Secret
 # only, so a compromised server cannot read unrelated Secrets in the namespace.
@@ -17,6 +26,18 @@ rules:
   # get: read the shared CA; update: bump the recovery generation on the
   # bootstrap node so stale nodes fence themselves off and rejoin.
   verbs: ["get", "update"]
+{{- end }}
+{{- if $oidcRefs }}
+# Read the OIDC client_secret_ref Secrets at bootstrap. Scoped to the
+# referenced names only.
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames:
+  {{- range uniq $oidcRefs }}
+  - {{ . | quote }}
+  {{- end }}
+  verbs: ["get"]
+{{- end }}
 # The bootstrap node reads spec.replicas to authorize collapsing the Raft
 # configuration to a single voter after an explicit scale-down to 1 replica.
 - apiGroups: ["apps"]

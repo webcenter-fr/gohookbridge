@@ -181,8 +181,38 @@ per-pod PVCs, and a headless Service. Key values:
 - `imagePullSecrets` — list of docker-registry Secret names applied to every
   workload pod (server, client, proxy) for private registries
 - `server.bootstrap.config` — admin user + session secret (bootstrap.yaml content)
+- `server.auth.internal.enabled` — enable/disable username/password login
+- `server.auth.oidc.providers` — OIDC providers seeded at first boot
+  (`client_secret` via `client_secret_ref`)
 - `server.storage.size` — per-pod Raft data PVC size
 - `client.channelURL` / `client.targetURL` — client forwarding source/target
+
+At least one auth provider must remain enabled: setting
+`server.auth.internal.enabled=false` requires at least one
+`server.auth.oidc.providers` entry, otherwise the Helm render fails. OIDC
+client secrets are never inline in `values.yaml`; reference a pre-existing
+Kubernetes Secret in the release namespace:
+
+```yaml
+server:
+  auth:
+    internal:
+      enabled: false
+    oidc:
+      providers:
+        - id: google
+          name: Google
+          client_id: "123-abc.apps.googleusercontent.com"
+          client_secret_ref:
+            name: my-oidc-secrets        # must pre-exist in the release namespace
+            key: google-client-secret
+          issuer_url: "https://accounts.google.com"
+          scopes: ["openid", "profile", "email"]
+          groups_claim: groups
+```
+
+The chart grants the server ServiceAccount `get` on the referenced Secret
+names only.
 
 For the organization-internal pattern, enable `server.publicPort` and
 `server.publicIngress` to expose only webhook ingestion (`POST /{channel}`) to the
@@ -448,6 +478,28 @@ channels:
 ```
 
 The bootstrap file is read **once** on the very first boot when the Raft store is empty. After that, use the Admin UI or API to manage configuration.
+
+The optional `auth` block controls the auth providers. At least one provider
+(internal or OIDC) is required; a config that disables internal auth with no
+OIDC providers is rejected at bootstrap:
+
+```yaml
+auth:
+  internal:
+    enabled: false            # disable username/password login
+  oidc:
+    providers:
+      - id: google
+        name: Google
+        client_id: "123-abc.apps.googleusercontent.com"
+        client_secret: "inline-or-ref"      # direct bootstrap.yaml only
+        issuer_url: "https://accounts.google.com"
+        scopes: ["openid", "profile", "email"]
+        groups_claim: groups
+```
+
+In a direct `bootstrap.yaml` use `client_secret`; via Helm use
+`client_secret_ref` only (see the Helm section above).
 
 Channels with `access_mode: token` require an access token on `POST /{channel}` — either `?token=...` or `Authorization: Bearer <token>` — whose scope is `produce` or `both`; the plaintext `token` value is stored hashed (SHA-256), never in the clear.
 

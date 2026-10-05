@@ -1,4 +1,5 @@
 {{- if .Values.server.enabled }}
+{{- include "gohookbridge.validateAuth" . }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:

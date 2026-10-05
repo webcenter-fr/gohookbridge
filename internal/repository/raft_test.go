@@ -502,3 +502,31 @@ func TestClientCursorCRUD(t *testing.T) {
 	assert.Assert(t, got != nil)
 	assert.Equal(t, got.LastTimestampMs, int64(1234567899999))
 }
+
+func TestInternalAuthEnabled_UnsetNil(t *testing.T) {
+	rs := newTestRaftStore(t)
+
+	flag, err := rs.InternalAuthEnabled(context.Background())
+	assert.NilError(t, err)
+	assert.Assert(t, flag == nil)
+}
+
+func TestSetInternalAuthEnabled_RoundTrip(t *testing.T) {
+	rs := newTestRaftStore(t)
+
+	err := rs.SetInternalAuthEnabled(context.Background(), false)
+	assert.NilError(t, err)
+
+	flag, err := rs.InternalAuthEnabled(context.Background())
+	assert.NilError(t, err)
+	assert.Assert(t, flag != nil)
+	assert.Equal(t, *flag, false)
+
+	err = rs.SetInternalAuthEnabled(context.Background(), true)
+	assert.NilError(t, err)
+
+	flag, err = rs.InternalAuthEnabled(context.Background())
+	assert.NilError(t, err)
+	assert.Assert(t, flag != nil)
+	assert.Equal(t, *flag, true)
+}
