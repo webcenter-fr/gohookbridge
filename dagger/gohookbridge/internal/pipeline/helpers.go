@@ -88,7 +88,7 @@ func ValidateRegistryPath(path string) error {
 // RenderHelmValues renders the helm values-override map to YAML for the smoke
 // deployment (single replica, raft TLS off, image pulled from the in-pipeline
 // registry, minimal bootstrap admin user). See deploy.go:writeHelmValues.
-func RenderHelmValues(repository string, version string, channelID string) (string, error) {
+func RenderHelmValues(repository, version, channelID string) (string, error) {
 	values := map[string]any{
 		"fullnameOverride": "gohookbridge",
 		"server": map[string]any{

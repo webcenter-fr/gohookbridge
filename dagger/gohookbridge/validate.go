@@ -16,7 +16,7 @@ import (
 // injected as an env var on every exec (kubectl wait, port-forward, smoke,
 // diagnostics) so none of them can replay a previous run's cached result
 // against a fresh cluster.
-func validateDeployment(ctx context.Context, kubeconfig *dagger.File, channelID string, version string, nonce string) (string, error) {
+func validateDeployment(ctx context.Context, kubeconfig *dagger.File, channelID, version, nonce string) (string, error) {
 	k3s, _, err := startK3s(ctx, nonce)
 	if err != nil {
 		return "collect cluster state: " + err.Error(), err

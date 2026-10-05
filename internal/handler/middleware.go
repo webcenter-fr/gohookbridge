@@ -14,8 +14,10 @@ import (
 	"github.com/webcenter-fr/gohookbridge/internal/service"
 )
 
-const UsernameContextKey = "username"
-const GroupsContextKey = "oidc_groups"
+const (
+	UsernameContextKey = "username"
+	GroupsContextKey   = "oidc_groups"
+)
 
 type contextKey string
 

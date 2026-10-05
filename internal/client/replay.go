@@ -93,7 +93,8 @@ func (r *replayOpts) replayHooks(ctx context.Context, hookid int64) error {
 					"%s forwarding message with headers '%s' - %s\n",
 					ansi.Color("ERROR", "red+b"),
 					pm.headers,
-					err.Error())
+					err.Error(),
+				)
 				r.logger.ErrorContext(context.Background(), s)
 				continue
 			}

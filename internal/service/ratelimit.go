@@ -49,7 +49,7 @@ func (rl *RateLimiter) maybeSweep(now time.Time, windowSeconds int) {
 	rl.sweep(now, windowSeconds)
 }
 
-func (rl *RateLimiter) Allow(ip string, maxRequests int, windowSeconds int) bool {
+func (rl *RateLimiter) Allow(ip string, maxRequests, windowSeconds int) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
