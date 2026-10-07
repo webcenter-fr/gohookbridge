@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 ExecStartPre=/bin/sh -c 'until curl -s http://localhost:8080; do sleep 5; done'
-ExecStart=gohookbridge client --output=json https://smee.io/abcdef http://localhost:8080
+ExecStart=gohookbridge-client client --output=json https://smee.io/abcdef http://localhost:8080
 EnvironmentFile=/etc/gohookbridge.env
 Restart=on-failure
 RestartSec=10

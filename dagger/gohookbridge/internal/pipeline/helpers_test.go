@@ -58,7 +58,11 @@ func TestNewRunNonce(t *testing.T) {
 }
 
 func TestRenderHelmValues(t *testing.T) {
-	rendered, err := RenderHelmValues("registry:5000/gohookbridge", "1.2.3", "dagger-smoke")
+	rendered, err := RenderHelmValues(ImageRepositories{
+		Server: "registry:5000/gohookbridge",
+		Client: "registry:5000/gohookbridge-client",
+		Proxy:  "registry:5000/gohookbridge-proxy",
+	}, "1.2.3", "dagger-smoke")
 	assert.NilError(t, err)
 
 	var values map[string]any
@@ -90,6 +94,20 @@ func TestRenderHelmValues(t *testing.T) {
 	channel, ok := channels[0].(map[string]any)
 	assert.Assert(t, ok, "channel must be a map, got %T", channels[0])
 	assert.Equal(t, "dagger-smoke", nested(t, channel, "id"))
+
+	client := nestedMap(t, values, "client")
+	assert.Equal(t, true, nested(t, client, "enabled"))
+	assert.Equal(t, "registry:5000/gohookbridge-client", nested(t, nestedMap(t, client, "image"), "repository"))
+	assert.Equal(t, "1.2.3", nested(t, nestedMap(t, client, "image"), "tag"))
+	assert.Equal(t, "http://gohookbridge-server:3333/dagger-smoke", nested(t, client, "channelURL"))
+	assert.Equal(t, "http://127.0.0.1:1", nested(t, client, "targetURL"))
+
+	proxy := nestedMap(t, values, "proxy")
+	assert.Equal(t, true, nested(t, proxy, "enabled"))
+	assert.Equal(t, "registry:5000/gohookbridge-proxy", nested(t, nestedMap(t, proxy, "image"), "repository"))
+	assert.Equal(t, "1.2.3", nested(t, nestedMap(t, proxy, "image"), "tag"))
+	assert.Assert(t, nested(t, proxy, "publicKey") != "", "proxy publicKey must be set")
+	assert.Equal(t, "http://127.0.0.1:1", nested(t, proxy, "targetURL"))
 
 	assert.Assert(t, strings.Contains(rendered, "fullnameOverride: gohookbridge"))
 }
