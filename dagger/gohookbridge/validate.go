@@ -9,9 +9,10 @@ import (
 	"dagger/gohookbridge/internal/pipeline"
 )
 
-// validateDeployment waits for the server pod to be Ready, port-forwards the
-// <release>-server Service, runs the smoke script, and returns a Markdown
-// report string. On failure it captures kubectl describe/logs into the report
+// validateDeployment waits for the server/client/proxy pods to be Ready,
+// port-forwards the <release>-server Service, runs the smoke script, and
+// returns a Markdown report string. On failure it captures kubectl
+// describe/logs into the report
 // and returns an error carrying the failing check (and pod logs). The nonce is
 // injected as an env var on every exec (kubectl wait, port-forward, smoke,
 // diagnostics) so none of them can replay a previous run's cached result
@@ -29,21 +30,23 @@ func validateDeployment(ctx context.Context, kubeconfig *dagger.File, channelID,
 			WithServiceBinding("k3s", k3s)
 	}
 
-	// Wait for the server pod to be Ready (belt and braces after helm --wait).
-	wait := kubectlBase().WithExec([]string{
-		"kubectl", "wait", "--for=condition=Ready", "pods",
-		"-l", "app.kubernetes.io/component=server",
-		"--namespace", deployNamespace, "--timeout=180s",
-	}, dagger.ContainerWithExecOpts{Expect: dagger.ReturnTypeAny})
-	waitCode, err := wait.ExitCode(ctx)
-	if err != nil {
-		return "kubectl wait failed to run: " + err.Error(),
-			fmt.Errorf("wait for server pod: %w", err)
-	}
-	if waitCode != 0 {
-		waitOut := combined(ctx, wait)
-		details := "server pod never became Ready\n\n```text\n" + waitOut + "\n```\n\n" + collectDiagnostics(ctx, kubeconfig, nonce)
-		return details, fmt.Errorf("server pod not ready within 180s: %s", waitOut)
+	// Wait for each component's pods to be Ready (belt and braces after helm --wait).
+	for _, comp := range []string{"server", "client", "proxy"} {
+		wait := kubectlBase().WithExec([]string{
+			"kubectl", "wait", "--for=condition=Ready", "pods",
+			"-l", "app.kubernetes.io/component=" + comp,
+			"--namespace", deployNamespace, "--timeout=180s",
+		}, dagger.ContainerWithExecOpts{Expect: dagger.ReturnTypeAny})
+		waitCode, err := wait.ExitCode(ctx)
+		if err != nil {
+			return "kubectl wait failed to run: " + err.Error(),
+				fmt.Errorf("wait for %s pods: %w", comp, err)
+		}
+		if waitCode != 0 {
+			waitOut := combined(ctx, wait)
+			details := comp + " pods never became Ready\n\n```text\n" + waitOut + "\n```\n\n" + collectDiagnostics(ctx, kubeconfig, nonce)
+			return details, fmt.Errorf("%s pods not ready within 180s: %s", comp, waitOut)
+		}
 	}
 
 	// Port-forward the server Service inside a dedicated service.
@@ -92,6 +95,33 @@ func validateDeployment(ctx context.Context, kubeconfig *dagger.File, channelID,
 	return "```text\n" + checkOutput + "\n```\n\nvalidation passed", nil
 }
 
+// validateComponentBinaries runs the built client/proxy containers' --version and
+// --help once each, returning a Markdown report. It is the deterministic proof that
+// the dedicated images contain the correct, executable binary with the injected
+// version (the server is instead exercised by the webhook/SSE smoke).
+func validateComponentBinaries(ctx context.Context, results []imagePushResult, resolved string) (string, error) {
+	var b strings.Builder
+	for _, res := range results {
+		if res.component == "server" {
+			continue
+		}
+		// UseEntrypoint prepends the image ENTRYPOINT (the component binary);
+		// without it WithExec would try to run "--version" as the executable.
+		versionOut, err := res.built.WithExec([]string{"--version"}, dagger.ContainerWithExecOpts{UseEntrypoint: true}).Stdout(ctx)
+		if err != nil {
+			return "", fmt.Errorf("%s --version: %w", res.component, err)
+		}
+		if !strings.Contains(versionOut, resolved) {
+			return "", fmt.Errorf("%s --version did not report %q: %s", res.component, resolved, versionOut)
+		}
+		if _, err := res.built.WithExec([]string{"--help"}, dagger.ContainerWithExecOpts{UseEntrypoint: true}).Stdout(ctx); err != nil {
+			return "", fmt.Errorf("%s --help: %w", res.component, err)
+		}
+		b.WriteString(fmt.Sprintf("- %s: `--version` reports %s, `--help` OK\n", res.component, resolved))
+	}
+	return b.String(), nil
+}
+
 // collectDiagnostics runs best-effort kubectl commands (events, pods,
 // describe, logs) against the ephemeral cluster and returns their combined
 // output for the report. Errors are tolerated: diagnostics are best-effort.
@@ -105,8 +135,8 @@ func collectDiagnostics(ctx context.Context, kubeconfig *dagger.File, nonce stri
 	commands := [][]string{
 		{"kubectl", "get", "events", "--namespace", deployNamespace, "--sort-by=.lastTimestamp"},
 		{"kubectl", "get", "pods", "-o", "wide", "--namespace", deployNamespace},
-		{"kubectl", "describe", "pods", "-l", "app.kubernetes.io/component=server", "--namespace", deployNamespace},
-		{"kubectl", "logs", "-l", "app.kubernetes.io/component=server", "--namespace", deployNamespace, "--tail=200", "--prefix=true"},
+		{"kubectl", "describe", "pods", "-l", "app.kubernetes.io/name=gohookbridge", "--namespace", deployNamespace},
+		{"kubectl", "logs", "-l", "app.kubernetes.io/name=gohookbridge", "--all-containers", "--namespace", deployNamespace, "--tail=200", "--prefix=true"},
 	}
 	base := dag.Container().From(kubectlImage).
 		WithFile("/kubeconfig.yaml", kubeconfig).
@@ -124,7 +154,7 @@ func collectDiagnostics(ctx context.Context, kubeconfig *dagger.File, nonce stri
 	return b.String()
 }
 
-// podLogs returns the server pod logs (best-effort) for validation errors.
+// podLogs returns the release pods' logs (best-effort) for validation errors.
 func podLogs(ctx context.Context, kubeconfig *dagger.File, nonce string) string {
 	k3s, _, err := startK3s(ctx, nonce)
 	if err != nil {
@@ -136,7 +166,7 @@ func podLogs(ctx context.Context, kubeconfig *dagger.File, nonce string) string 
 		WithEnvVariable(runNonceEnv, nonce).
 		WithServiceBinding("k3s", k3s).
 		WithExec([]string{
-			"kubectl", "logs", "-l", "app.kubernetes.io/component=server",
+			"kubectl", "logs", "-l", "app.kubernetes.io/name=gohookbridge", "--all-containers",
 			"--namespace", deployNamespace, "--tail=200", "--prefix=true",
 		}, dagger.ContainerWithExecOpts{Expect: dagger.ReturnTypeAny})
 	return combined(ctx, exec)

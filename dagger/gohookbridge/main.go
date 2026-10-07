@@ -217,24 +217,26 @@ func (m *Gohookbridge) Ci(
 		passSecret = registryPassword
 	}
 
-	res, err := buildAndPushImage(ctx, source, resolved, registry, repositoryName, registryUsername, passSecret, pushLatest, skipPush)
+	results, err := buildAndPushAll(ctx, source, resolved, registry, repositoryName, registryUsername, passSecret, pushLatest, skipPush)
 	if err != nil {
 		return "", err
 	}
-	lintSection := "- hadolint (failure threshold `error`): passed"
-	if findings := strings.TrimSpace(res.lintAdvisory); findings != "" {
-		lintSection += " with advisory findings:\n\n```text\n" + findings + "\n```"
-	}
-	sections = append(sections, pipeline.ReportSection{
-		Title: "Build",
-		Body:  lintSection + "\n- Built image: " + res.versionRef,
-	})
-	if !res.skipped {
-		pushSection := "- Pushed `" + res.versionRef + "`: digest " + res.digest
-		if res.latestDigest != "" {
-			pushSection += "\n- Pushed `" + res.latestRef + "`: digest " + res.latestDigest
+	for _, res := range results {
+		lintSection := "- hadolint (failure threshold `error`): passed"
+		if findings := strings.TrimSpace(res.lintAdvisory); findings != "" {
+			lintSection += " with advisory findings:\n\n```text\n" + findings + "\n```"
 		}
-		sections = append(sections, pipeline.ReportSection{Title: "Push", Body: pushSection})
+		sections = append(sections, pipeline.ReportSection{
+			Title: "Build: " + res.component,
+			Body:  lintSection + "\n- Built image: " + res.versionRef,
+		})
+		if !res.skipped {
+			pushSection := "- Pushed `" + res.versionRef + "`: digest " + res.digest
+			if res.latestDigest != "" {
+				pushSection += "\n- Pushed `" + res.latestRef + "`: digest " + res.latestDigest
+			}
+			sections = append(sections, pipeline.ReportSection{Title: "Push: " + res.component, Body: pushSection})
+		}
 	}
 
 	// (c) Ephemeral cluster validation: in-pipeline registry:2 + k3s + helm
@@ -244,11 +246,13 @@ func (m *Gohookbridge) Ci(
 		if err != nil {
 			return "", err
 		}
-		localRef := localPushRef + ":" + resolved
-		if _, err := res.built.Publish(ctx, localRef, dagger.ContainerPublishOpts{
-			RegistryService: registrySvc,
-		}); err != nil {
-			return "", fmt.Errorf("publish image %s to the in-pipeline registry: %w", localRef, err)
+		// Publish every component's amd64 variant to the in-pipeline registry.
+		for _, res := range results {
+			if _, err := res.built.Publish(ctx, localPushRefFor(res.suffix, resolved), dagger.ContainerPublishOpts{
+				RegistryService: registrySvc,
+			}); err != nil {
+				return "", fmt.Errorf("publish image %s to the in-pipeline registry: %w", res.component, err)
+			}
 		}
 
 		_, kubeconfig, err := startK3s(ctx, nonce)
@@ -264,10 +268,18 @@ func (m *Gohookbridge) Ci(
 		if err := deployHelm(ctx, source, kubeconfig, values, nonce); err != nil {
 			sections = append(sections, pipeline.ReportSection{
 				Title: "Ephemeral Kubernetes validation",
-				Body: fmt.Sprintf("helm install failed: %s\n\n%s",
-					err, collectDiagnostics(ctx, kubeconfig, nonce)),
+				Body:  fmt.Sprintf("helm install failed: %s\n\n%s", err, collectDiagnostics(ctx, kubeconfig, nonce)),
 			})
 			return pipeline.BuildReport(sections...), fmt.Errorf("deploy helm chart %q: %w", helmRelease, err)
+		}
+
+		// Deterministic binary boot checks for client & proxy (server is fully
+		// covered by the webhook/SSE smoke below).
+		bootReport, bootErr := validateComponentBinaries(ctx, results, resolved)
+		if bootErr == nil {
+			sections = append(sections, pipeline.ReportSection{Title: "Binary boot checks", Body: bootReport})
+		} else {
+			return pipeline.BuildReport(sections...), bootErr
 		}
 
 		k8sReport, err := validateDeployment(ctx, kubeconfig, channelID, resolved, nonce)

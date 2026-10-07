@@ -92,7 +92,9 @@
 │   ├── nuxt.config.ts                # Nuxt build + dev proxy config
 │   └── tsconfig.json
 ├── Makefile                          # Build, test, lint targets (3 binary targets)
-├── Dockerfile                        # Multi-stage container build
+├── Dockerfile                        # Multi-stage server container build (server + UI + NATS)
+├── Dockerfile.client                 # Client-only container build (no web stage)
+├── Dockerfile.proxy                  # Proxy-only container build (no web stage)
 ├── misc/                             # System service files (systemd/launchd) + replay helper
 └── helm/                             # Helm chart for Kubernetes deployments
 ```
@@ -239,9 +241,10 @@ curl -X POST "$CHANNEL" \
 ### Dagger pipeline (build, push, validate)
 
 The repository ships a Dagger module (`dagger/gohookbridge`, Go SDK) that
-builds the container image with the caller-resolved version, pushes it to
-GHCR through `github.com/disaster37/dagger-library-go/image`, and validates
-it on an ephemeral k3s cluster deployed with the `helm/gohookbridge` chart.
+builds the three component container images (server, client, proxy) with the
+caller-resolved version, pushes them to GHCR through
+`github.com/disaster37/dagger-library-go/image`, and validates them on an
+ephemeral k3s cluster deployed with the `helm/gohookbridge` chart.
 The module is invoked directly with `dagger call`. Individual tasks cover
 the whole release pipeline (`publish-image`, `publish-helm`, `goreleaser`)
 and the release CI workflow (`.github/workflows/releaser.yaml`) runs each
@@ -287,7 +290,7 @@ Individual release tasks (also wired into `.github/workflows/releaser.yaml`):
 
 | Task | Invocation | Result |
 |---|---|---|
-| `publish-image` | `dagger call -m dagger/gohookbridge publish-image --source . --version "$VERSION" --registry-username "$GHCR_USERNAME" --registry-password env:GHCR_TOKEN --push-latest` | hadolint + multi-arch image build (amd64/arm64/s390x/ppc64le) + push `<version>` and `latest` tags |
+| `publish-image` | `dagger call -m dagger/gohookbridge publish-image --source . --version "$VERSION" --registry-username "$GHCR_USERNAME" --registry-password env:GHCR_TOKEN --push-latest` | hadolint + multi-arch build of all three images (server amd64/arm64/s390x/ppc64le; client/proxy amd64/arm64) + push `<version>` and `latest` tags |
 | `publish-helm` | `dagger call -m dagger/gohookbridge publish-helm --source . --version "$VERSION" --registry-username "$GHCR_USERNAME" --registry-password env:GHCR_TOKEN` | chart version/appVersion/image tags pinned to `$VERSION`, lint, package, push to `oci://ghcr.io/webcenter-fr/charts` (`<version>` + `latest`) |
 | `goreleaser` | `dagger call -m dagger/gohookbridge goreleaser --source . --version "$VERSION" --gh-token env:GITHUB_TOKEN export --path dist` | full goreleaser release (binaries, checksums, nfpm, brew; AUR only when `--aur-key env:AUR_PRIVATE_KEY` is passed) |
 | `goreleaser --snapshot` | `dagger call -m dagger/gohookbridge goreleaser --source . --version "$VERSION" --snapshot export --path dist` | local unversioned build, no publish side effects (pipeline development) |
@@ -297,7 +300,10 @@ The variants that push additionally require
 (the password is a Dagger Secret reference — `env:VAR` or `file:path` —
 never a plaintext value).
 
-The ephemeral k3s cluster is torn down automatically when the call ends.
+The ephemeral k3s cluster is torn down automatically when the call ends. The
+smoke validation waits for the server, client, and proxy pods to be Ready,
+runs the server webhook/SSE smoke, and additionally runs per-image binary boot
+checks (`--version`/`--help`) against the built client and proxy images.
 
 ## Backend conventions
 

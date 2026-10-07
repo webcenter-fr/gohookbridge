@@ -27,7 +27,7 @@ const (
 	chartName = "gohookbridge"
 )
 
-// imagePlatforms are the platforms the release image is built and published
+// imagePlatforms are the platforms the server image is built and published
 // for (multi-arch manifest). amd64 is first: it is the variant Ci reuses for
 // the ephemeral k3s validation.
 var imagePlatforms = []dagger.Platform{
@@ -37,11 +37,47 @@ var imagePlatforms = []dagger.Platform{
 	"linux/ppc64le",
 }
 
+// component describes one distributable binary + its container image.
+type component struct {
+	name       string            // "server" | "client" | "proxy"
+	suffix     string            // repository suffix: "" | "-client" | "-proxy"
+	dockerfile string            // build-context dockerfile, relative to the source root
+	platforms  []dagger.Platform // image platforms to build/publish (amd64 first)
+}
+
+// clientProxyPlatforms are the image platforms for the client/proxy images. The
+// client/proxy binaries are only distributed for amd64/arm64 (goreleaser builds
+// those two archs for them), so the images mirror that set. amd64 is first: it is
+// the variant reused for the in-pipeline registry publish and boot checks.
+var clientProxyPlatforms = []dagger.Platform{
+	"linux/amd64",
+	"linux/arm64",
+}
+
+// allComponents lists the three components in a stable order (server first so the
+// server amd64 variant stays the smoke target).
+var allComponents = []component{
+	{name: "server", suffix: "", dockerfile: "Dockerfile", platforms: imagePlatforms},
+	{name: "client", suffix: "-client", dockerfile: "Dockerfile.client", platforms: clientProxyPlatforms},
+	{name: "proxy", suffix: "-proxy", dockerfile: "Dockerfile.proxy", platforms: clientProxyPlatforms},
+}
+
+// componentRepository returns the full GHCR repository path for a component given
+// the base repository (default "webcenter-fr/gohookbridge"): "" -> base,
+// "-client" -> base+"-client", "-proxy" -> base+"-proxy".
+func componentRepository(base, suffix string) string { return base + suffix }
+
+// localRepositoryName returns the in-pipeline registry repository name for a
+// component suffix: "" -> "gohookbridge", "-client" -> "gohookbridge-client", ...
+func localRepositoryName(suffix string) string { return "gohookbridge" + suffix }
+
 // imagePushResult carries the outcome of buildAndPushImage back to the tasks
 // that report it (Ci and PublishImage). built is the amd64 variant of the
 // built image (nil when the build failed), reused by Ci for the in-pipeline
-// registry publish.
+// registry publish and the binary boot checks.
 type imagePushResult struct {
+	component    string // "server" | "client" | "proxy"
+	suffix       string // "" | "-client" | "-proxy"
 	versionRef   string
 	latestRef    string
 	digest       string
@@ -52,33 +88,33 @@ type imagePushResult struct {
 }
 
 // buildAndPushImage lints (hadolint, failure threshold error) and builds the
-// root Dockerfile with the resolved VERSION build-arg for every platform in
-// imagePlatforms, then optionally publishes the multi-arch image to the
+// component's Dockerfile with the resolved VERSION build-arg for every platform
+// in comp.platforms, then optionally publishes the multi-arch image to the
 // registry under <version> and <latest>. Credentials (plain username + Secret
 // password) are only required when a push is requested; they are wired into
 // the engine through Container.WithRegistryAuth, mirroring the
 // dagger-library-go image module's Push. It is the shared core of the Ci and
 // PublishImage tasks.
-func buildAndPushImage(ctx context.Context, source *dagger.Directory, resolved, registry, repositoryName, registryUsername string, passSecret *dagger.Secret, pushLatest, skipPush bool) (imagePushResult, error) {
-	imageRef := registry + "/" + repositoryName + ":" + resolved
-	result := imagePushResult{versionRef: imageRef}
+func buildAndPushImage(ctx context.Context, source *dagger.Directory, comp component, resolved, registry, repositoryName, registryUsername string, passSecret *dagger.Secret, pushLatest, skipPush bool) (imagePushResult, error) {
+	imageRef := registry + "/" + componentRepository(repositoryName, comp.suffix) + ":" + resolved
+	result := imagePushResult{component: comp.name, suffix: comp.suffix, versionRef: imageRef}
 
 	img := dag.Image().WithBuildArg("VERSION", dagger.ImageWithBuildArgOpts{Value: resolved})
 	lintOutput, lintErr := img.Lint(ctx, source, dagger.ImageLintOpts{
-		Dockerfile: "Dockerfile",
+		Dockerfile: comp.dockerfile,
 		Threshold:  "error",
 	})
 	if lintErr != nil {
 		// Hadolint exits non-zero only at the failure threshold, so this is a
 		// fatal Dockerfile error (below-threshold findings stay advisory).
-		return result, fmt.Errorf("lint Dockerfile (hadolint, failure threshold error): %w", lintErr)
+		return result, fmt.Errorf("lint %s (hadolint, failure threshold error): %w", comp.dockerfile, lintErr)
 	}
 	result.lintAdvisory = lintOutput
 
-	variants := make([]*dagger.Container, 0, len(imagePlatforms))
-	for _, platform := range imagePlatforms {
+	variants := make([]*dagger.Container, 0, len(comp.platforms))
+	for _, platform := range comp.platforms {
 		variant := source.DockerBuild(dagger.DirectoryDockerBuildOpts{
-			Dockerfile: "Dockerfile",
+			Dockerfile: comp.dockerfile,
 			Platform:   platform,
 			BuildArgs:  []dagger.BuildArg{{Name: "VERSION", Value: resolved}},
 		})
@@ -106,7 +142,7 @@ func buildAndPushImage(ctx context.Context, source *dagger.Directory, resolved, 
 	result.digest = ref
 
 	if pushLatest {
-		latestRef := registry + "/" + repositoryName + ":latest"
+		latestRef := registry + "/" + componentRepository(repositoryName, comp.suffix) + ":latest"
 		latestDigest, err := variants[0].Publish(ctx, latestRef, dagger.ContainerPublishOpts{
 			PlatformVariants: variants[1:],
 		})
@@ -119,11 +155,26 @@ func buildAndPushImage(ctx context.Context, source *dagger.Directory, resolved, 
 	return result, nil
 }
 
-// PublishImage builds the root Dockerfile with the given version and pushes
-// the image to the container registry (GHCR by default) under <version> and,
-// optionally, :latest. It is the release-pipeline counterpart of Ci without
-// the ephemeral Kubernetes validation. Returns a Markdown summary of the
-// pushed references.
+// buildAndPushAll builds and (optionally) pushes all three components in order,
+// returning one result per component. It aborts on the first component failure;
+// components built before the failure may already be pushed (re-running is idempotent).
+func buildAndPushAll(ctx context.Context, source *dagger.Directory, resolved, registry, repositoryName, registryUsername string, passSecret *dagger.Secret, pushLatest, skipPush bool) ([]imagePushResult, error) {
+	results := make([]imagePushResult, 0, len(allComponents))
+	for _, comp := range allComponents {
+		res, err := buildAndPushImage(ctx, source, comp, resolved, registry, repositoryName, registryUsername, passSecret, pushLatest, skipPush)
+		if err != nil {
+			return results, fmt.Errorf("build/push component %q: %w", comp.name, err)
+		}
+		results = append(results, res)
+	}
+	return results, nil
+}
+
+// PublishImage builds the three component Dockerfiles (server, client, proxy)
+// with the given version and pushes each image to the container registry (GHCR
+// by default) under <version> and, optionally, :latest. It is the
+// release-pipeline counterpart of Ci without the ephemeral Kubernetes
+// validation. Returns a Markdown summary of the pushed references.
 func (m *Gohookbridge) PublishImage(
 	ctx context.Context,
 	// +required
@@ -173,25 +224,29 @@ func (m *Gohookbridge) PublishImage(
 		passSecret = registryPassword
 	}
 
-	res, err := buildAndPushImage(ctx, source, resolved, registry, repositoryName, registryUsername, passSecret, pushLatest, skipPush)
+	results, err := buildAndPushAll(ctx, source, resolved, registry, repositoryName, registryUsername, passSecret, pushLatest, skipPush)
 	if err != nil {
 		return "", err
 	}
 
-	lintSection := "- hadolint (failure threshold `error`): passed"
-	if findings := strings.TrimSpace(res.lintAdvisory); findings != "" {
-		lintSection += " with advisory findings:\n\n```text\n" + findings + "\n```"
-	}
-	summary := "- Built image: `" + res.versionRef + "`\n" + lintSection
-	if res.skipped {
-		summary += "\n- Push skipped (--skip-push)"
-	} else {
-		summary += "\n- Pushed `" + res.versionRef + "`: digest " + res.digest
-		if res.latestDigest != "" {
-			summary += "\n- Pushed `" + res.latestRef + "`: digest " + res.latestDigest
+	var summary strings.Builder
+	for _, res := range results {
+		lintSection := "- hadolint (failure threshold `error`): passed"
+		if findings := strings.TrimSpace(res.lintAdvisory); findings != "" {
+			lintSection += " with advisory findings:\n\n```text\n" + findings + "\n```"
 		}
+		summary.WriteString(fmt.Sprintf("### %s\n- Built image: `%s`\n%s\n", res.component, res.versionRef, lintSection))
+		if res.skipped {
+			summary.WriteString("- Push skipped (--skip-push)\n")
+		} else {
+			summary.WriteString(fmt.Sprintf("- Pushed `%s`: digest %s\n", res.versionRef, res.digest))
+			if res.latestDigest != "" {
+				summary.WriteString(fmt.Sprintf("- Pushed `%s`: digest %s\n", res.latestRef, res.latestDigest))
+			}
+		}
+		summary.WriteString("\n")
 	}
-	return summary, nil
+	return summary.String(), nil
 }
 
 // Goreleaser runs `goreleaser release --clean` inside a container equipped
