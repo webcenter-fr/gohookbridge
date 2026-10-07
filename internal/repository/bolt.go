@@ -16,7 +16,7 @@ const (
 
 func newBoltDB(dir, nodeID string) (*bbolt.DB, error) {
 	path := fmt.Sprintf("%s/%s.db", dir, nodeID)
-	db, err := bbolt.Open(path, 0600, nil)
+	db, err := bbolt.Open(path, 0o600, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open bolt db: %w", err)
 	}
@@ -136,7 +136,7 @@ func newBoltStableStore(db *bbolt.DB) *boltStableStore {
 	return &boltStableStore{db: db}
 }
 
-func (b *boltStableStore) Set(key []byte, val []byte) error {
+func (b *boltStableStore) Set(key, val []byte) error {
 	return b.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(stableBucketName))
 		if bucket == nil {

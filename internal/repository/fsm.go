@@ -26,9 +26,11 @@ type fsmBootstrapUser struct {
 }
 
 type fsmBootstrapPayload struct {
-	Global   *domain.GlobalConfig `json:"global,omitempty"`
-	Users    []fsmBootstrapUser   `json:"users,omitempty"`
-	Channels []*domain.Channel    `json:"channels,omitempty"`
+	Global              *domain.GlobalConfig  `json:"global,omitempty"`
+	Users               []fsmBootstrapUser    `json:"users,omitempty"`
+	Channels            []*domain.Channel     `json:"channels,omitempty"`
+	InternalAuthEnabled *bool                 `json:"internal_auth_enabled,omitempty"`
+	OIDCProviders       []domain.OIDCProvider `json:"oidc_providers,omitempty"`
 }
 
 type FSM struct {
@@ -214,6 +216,26 @@ func (f *FSM) applyBootstrap(value []byte) error {
 				return err
 			}
 			if err := writeString("/channels/"+p.ID+"/", string(pVal)); err != nil {
+				return err
+			}
+		}
+
+		if payload.InternalAuthEnabled != nil {
+			iaVal, err := json.Marshal(*payload.InternalAuthEnabled)
+			if err != nil {
+				return fmt.Errorf("marshal internal auth flag: %w", err)
+			}
+			if err := writeString("/global/auth/internal_enabled", string(iaVal)); err != nil {
+				return err
+			}
+		}
+		if len(payload.OIDCProviders) > 0 {
+			//nolint:gosec // OIDC client secrets are intentionally persisted in Raft
+			provVal, err := json.Marshal(payload.OIDCProviders)
+			if err != nil {
+				return fmt.Errorf("marshal oidc providers: %w", err)
+			}
+			if err := writeString("/global/auth/oidc_providers", string(provVal)); err != nil {
 				return err
 			}
 		}

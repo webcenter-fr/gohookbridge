@@ -17,6 +17,38 @@ type BootstrapConfig struct {
 	Global   *domain.GlobalConfig `json:"global,omitempty"   yaml:"global,omitempty"`
 	Users    []BootstrapUser      `json:"users,omitempty"    yaml:"users,omitempty"`
 	Channels []BootstrapChannel   `json:"channels,omitempty" yaml:"channels,omitempty"`
+	Auth     *BootstrapAuth       `json:"auth,omitempty"     yaml:"auth,omitempty"`
+}
+
+// SecretRef references a key in a pre-existing Kubernetes Secret (used for the
+// OIDC client_secret so it is never inline in the chart values).
+type SecretRef struct {
+	Name string `json:"name" yaml:"name"`
+	Key  string `json:"key"  yaml:"key"`
+}
+
+type BootstrapAuth struct {
+	Internal *BootstrapInternalAuth `json:"internal,omitempty" yaml:"internal,omitempty"`
+	OIDC     *BootstrapOIDCAuth     `json:"oidc,omitempty"     yaml:"oidc,omitempty"`
+}
+
+type BootstrapInternalAuth struct {
+	Enabled bool `json:"enabled" yaml:"enabled"`
+}
+
+type BootstrapOIDCAuth struct {
+	Providers []BootstrapOIDCProvider `json:"providers,omitempty" yaml:"providers,omitempty"`
+}
+
+type BootstrapOIDCProvider struct {
+	ID              string     `json:"id"                          yaml:"id"`
+	Name            string     `json:"name,omitempty"              yaml:"name,omitempty"`
+	ClientID        string     `json:"client_id"                   yaml:"client_id"`
+	ClientSecret    string     `json:"client_secret,omitempty"     yaml:"client_secret,omitempty"`
+	ClientSecretRef *SecretRef `json:"client_secret_ref,omitempty" yaml:"client_secret_ref,omitempty"`
+	IssuerURL       string     `json:"issuer_url"                  yaml:"issuer_url"`
+	Scopes          []string   `json:"scopes,omitempty"            yaml:"scopes,omitempty"`
+	GroupsClaim     string     `json:"groups_claim,omitempty"      yaml:"groups_claim,omitempty"`
 }
 
 type BootstrapRaft struct {
@@ -126,6 +158,55 @@ func (rs *RaftStore) ApplyBootstrap(ctx context.Context, cfg *BootstrapConfig) e
 		}
 		domain.MigrateChannel(ch)
 		payload.Channels = append(payload.Channels, ch)
+	}
+
+	if cfg.Auth != nil {
+		internalEnabled := true
+		if cfg.Auth.Internal != nil {
+			internalEnabled = cfg.Auth.Internal.Enabled
+		}
+		oidcCount := 0
+		if cfg.Auth.OIDC != nil {
+			oidcCount = len(cfg.Auth.OIDC.Providers)
+		}
+		if !internalEnabled && oidcCount == 0 {
+			return fmt.Errorf("bootstrap auth: at least one auth provider is required (internal auth is disabled and no OIDC providers are configured)")
+		}
+		if cfg.Auth.Internal != nil {
+			enabled := cfg.Auth.Internal.Enabled
+			payload.InternalAuthEnabled = &enabled
+		}
+		if cfg.Auth.OIDC != nil {
+			for _, p := range cfg.Auth.OIDC.Providers {
+				if p.ID == "" {
+					return fmt.Errorf("oidc provider: id is required")
+				}
+				if p.IssuerURL == "" {
+					return fmt.Errorf("oidc provider %q: issuer_url is required", p.ID)
+				}
+				if p.ClientID == "" {
+					return fmt.Errorf("oidc provider %q: client_id is required", p.ID)
+				}
+				if p.ClientSecret == "" && p.ClientSecretRef != nil {
+					return fmt.Errorf("oidc provider %q: client_secret_ref is unresolved (server must resolve it before ApplyBootstrap)", p.ID)
+				}
+				if p.ClientSecret == "" {
+					return fmt.Errorf("oidc provider %q: client_secret is required", p.ID)
+				}
+				if p.GroupsClaim == "" {
+					p.GroupsClaim = "groups"
+				}
+				payload.OIDCProviders = append(payload.OIDCProviders, domain.OIDCProvider{
+					ID:           p.ID,
+					Name:         p.Name,
+					ClientID:     p.ClientID,
+					ClientSecret: p.ClientSecret,
+					IssuerURL:    p.IssuerURL,
+					Scopes:       p.Scopes,
+					GroupsClaim:  p.GroupsClaim,
+				})
+			}
+		}
 	}
 
 	val, err := json.Marshal(payload)

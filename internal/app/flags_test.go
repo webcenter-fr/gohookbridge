@@ -10,8 +10,10 @@ import (
 // TestEnvVarPrefixes guards the gosmee→gohookbridge env-var rename: no flag may
 // expose a GOSMEE_* env var, and every env var must be NO_COLOR or GOHOOKBRIDGE_*.
 func TestEnvVarPrefixes(t *testing.T) {
-	all := [][]cli.Flag{CommonFlags, ReplayFlags, KeygenFlags, ClientFlags,
-		ProduceFlags, ProxyFlags, ServerFlags}
+	all := [][]cli.Flag{
+		CommonFlags, ReplayFlags, KeygenFlags, ClientFlags,
+		ProduceFlags, ProxyFlags, ServerFlags,
+	}
 
 	seen := 0
 	for _, group := range all {

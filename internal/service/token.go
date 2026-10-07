@@ -13,7 +13,7 @@ import (
 	"github.com/webcenter-fr/gohookbridge/pkg/uuid"
 )
 
-func GenerateAccessToken() (raw string, hash string, err error) {
+func GenerateAccessToken() (raw, hash string, err error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", "", fmt.Errorf("generate access token: %w", err)
@@ -29,7 +29,7 @@ func HashToken(raw string) string {
 	return hex.EncodeToString(h[:])
 }
 
-func (s *Service) CreateAccessToken(ctx context.Context, channelID string, name string, scope string) (raw string, token domain.ChannelAccessToken, err error) {
+func (s *Service) CreateAccessToken(ctx context.Context, channelID, name, scope string) (raw string, token domain.ChannelAccessToken, err error) {
 	if scope != "produce" && scope != "consume" && scope != "both" {
 		scope = "both"
 	}
@@ -60,7 +60,7 @@ func (s *Service) CreateAccessToken(ctx context.Context, channelID string, name 
 	return raw, t, nil
 }
 
-func (s *Service) DeleteAccessToken(ctx context.Context, channelID string, tokenID string) error {
+func (s *Service) DeleteAccessToken(ctx context.Context, channelID, tokenID string) error {
 	ch, err := s.repo.GetChannel(ctx, channelID)
 	if err != nil {
 		return err
@@ -75,7 +75,7 @@ func (s *Service) DeleteAccessToken(ctx context.Context, channelID string, token
 	return s.repo.UpdateChannel(ctx, ch)
 }
 
-func (s *Service) ValidateChannelToken(ctx context.Context, channelID string, rawToken string, requiredScope string) bool {
+func (s *Service) ValidateChannelToken(ctx context.Context, channelID, rawToken, requiredScope string) bool {
 	ch, err := s.repo.GetChannel(ctx, channelID)
 	if err != nil {
 		return false

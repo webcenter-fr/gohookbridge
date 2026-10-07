@@ -975,7 +975,7 @@ func TestCheckServerVersion(t *testing.T) {
 	})
 }
 
-func processTestEvent(t *testing.T, gs *hookBridge, now time.Time, msg *sse.Event, privateKey *[32]byte, targetServer *httptest.Server) (saveCalled bool, replayCalled bool, errResult error) {
+func processTestEvent(t *testing.T, gs *hookBridge, now time.Time, msg *sse.Event, privateKey *[32]byte, targetServer *httptest.Server) (saveCalled, replayCalled bool, errResult error) {
 	t.Helper()
 
 	if string(msg.Event) == "ready" || string(msg.Data) == "ready" ||

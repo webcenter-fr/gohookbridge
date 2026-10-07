@@ -166,6 +166,11 @@ func TestSplitListenerBackwardCompat(t *testing.T) {
 	status, body := postPayload(s.runCtx, t, s.internalBase+"/itest-channel", s.payload)
 	assert.Equal(t, status, http.StatusAccepted, "webhook POST failed: %s", body)
 	assert.Equal(t, getStatus(s.runCtx, t, s.internalBase+"/api/auth/methods"), http.StatusOK)
+	// 401 (not 404) proves the admin /api/auth/internal route registered by
+	// RegisterAPIHandlers on the /api mount is not shadowed by the public
+	// /api/auth/* routes registered directly on the main router, and that it
+	// requires a session (CWE-862).
+	assert.Equal(t, getStatus(s.runCtx, t, s.internalBase+"/api/auth/internal"), http.StatusUnauthorized)
 	assert.Equal(t, getStatus(s.runCtx, t, s.internalBase+"/health"), http.StatusOK)
 
 	// The public port was never enabled, so nothing listens on it.

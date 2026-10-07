@@ -1,5 +1,13 @@
 <template>
   <div class="flex flex-col gap-4">
+    <div class="flex items-center justify-between rounded-lg border border-(--ui-border) p-4">
+      <div>
+        <p class="font-medium m-0">Username/password (internal) login</p>
+        <p class="text-sm text-(--ui-text-muted) m-0">At least one auth provider (internal or OIDC) must remain enabled.</p>
+      </div>
+      <USwitch v-model="internalEnabled" :loading="internalLoading" @update:model-value="toggleInternal" />
+    </div>
+
     <div class="flex items-center justify-between">
       <h3 class="text-lg font-semibold m-0">OIDC Providers</h3>
       <UButton color="primary" @click="openCreate">New Provider</UButton>
@@ -78,6 +86,8 @@ const showModal = ref(false)
 const editingId = ref<string | null>(null)
 const showDeleteModal = ref(false)
 const deleteTarget = ref('')
+const internalEnabled = ref(true)
+const internalLoading = ref(false)
 
 const form = reactive({
   id: '',
@@ -99,7 +109,7 @@ const columns: TableColumn<OIDCProvider>[] = [
 ]
 
 onMounted(async () => {
-  await fetchProviders()
+  await Promise.all([fetchProviders(), fetchInternalAuth()])
 })
 
 async function fetchProviders() {
@@ -110,6 +120,27 @@ async function fetchProviders() {
     toast.add({ title: e.message, color: 'error' })
   } finally {
     loading.value = false
+  }
+}
+
+async function fetchInternalAuth() {
+  try {
+    const res = await api.getInternalAuth()
+    internalEnabled.value = res.enabled
+  } catch (e: any) {
+    toast.add({ title: e.message, color: 'error' })
+  }
+}
+
+async function toggleInternal() {
+  internalLoading.value = true
+  try {
+    await api.setInternalAuth(internalEnabled.value)
+  } catch (e: any) {
+    internalEnabled.value = !internalEnabled.value // revert on failure
+    toast.add({ title: e.message, color: 'error' })
+  } finally {
+    internalLoading.value = false
   }
 }
 

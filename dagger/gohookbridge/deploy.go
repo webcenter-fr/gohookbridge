@@ -26,7 +26,7 @@ const (
 // replicas 1, raft TLS off, server/client/proxy images pulled from the
 // in-pipeline registry, and a minimal bootstrap admin user. Returns a
 // *dagger.File to mount into helm.
-func writeHelmValues(_ context.Context, version string, channelID string) (*dagger.File, error) {
+func writeHelmValues(_ context.Context, version, channelID string) (*dagger.File, error) {
 	repos := pipeline.ImageRepositories{
 		Server: localRegistryHost + "/" + localRepositoryName(""),
 		Client: localRegistryHost + "/" + localRepositoryName("-client"),
@@ -44,7 +44,7 @@ func writeHelmValues(_ context.Context, version string, channelID string) (*dagg
 // the k3s cluster (namespace "gohookbridge") with the values file,
 // --wait --timeout 180s. The nonce is injected as an env var so the helm exec
 // never replays a previous run's cached result against a fresh cluster.
-func deployHelm(ctx context.Context, source *dagger.Directory, kubeconfig *dagger.File, values *dagger.File, nonce string) error {
+func deployHelm(ctx context.Context, source *dagger.Directory, kubeconfig, values *dagger.File, nonce string) error {
 	k3s, _, err := startK3s(ctx, nonce)
 	if err != nil {
 		return err

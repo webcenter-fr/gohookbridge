@@ -101,7 +101,7 @@ const smokeProxyPublicKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" //noli
 // RenderHelmValues renders the helm values-override map to YAML for the smoke
 // deployment: single server replica (raft TLS off), client + proxy enabled with
 // dedicated local images, and a minimal bootstrap admin user + channel.
-func RenderHelmValues(repos ImageRepositories, version string, channelID string) (string, error) {
+func RenderHelmValues(repos ImageRepositories, version, channelID string) (string, error) {
 	values := map[string]any{
 		"fullnameOverride": "gohookbridge",
 		"server": map[string]any{
