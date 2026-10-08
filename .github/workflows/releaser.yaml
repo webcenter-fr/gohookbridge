@@ -42,7 +42,7 @@ jobs:
           fi
           dagger call -m ./dagger/gohookbridge ${ARGS} export --path dist
       - name: Upload GoReleaser dist as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: goreleaser-dist
           path: dist/
