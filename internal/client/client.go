@@ -711,9 +711,11 @@ func (c hookBridge) clientSetup() error {
 			return
 		}
 
+		channelCtx := crypto.ChannelContext(channel)
+
 		payload := msg.Data
 		if c.replayDataOpts.encryptionKey != "" && encryption.IsAESEncrypted(msg.Data) {
-			decryptedPayload, err := encryption.AESDecrypt(msg.Data, c.replayDataOpts.encryptionKey)
+			decryptedPayload, err := encryption.AESDecryptWithContext(msg.Data, c.replayDataOpts.encryptionKey, channelCtx)
 			if err != nil {
 				s := fmt.Sprintf("%s %s AES decrypting message %s", nowStr, ansi.Color("ERROR", "red+b"), err.Error())
 				c.logger.ErrorContext(context.Background(), s)
@@ -730,7 +732,7 @@ func (c hookBridge) clientSetup() error {
 		}
 
 		if privateKey != nil && crypto.IsEncrypted(pm.body) {
-			decryptedBody, err := crypto.Decrypt(pm.body, privateKey)
+			decryptedBody, err := crypto.DecryptWithContext(pm.body, privateKey, channelCtx)
 			if err != nil {
 				s := fmt.Sprintf("%s %s decrypting message body %s", nowStr, ansi.Color("ERROR", "red+b"), err.Error())
 				c.logger.ErrorContext(context.Background(), s)
@@ -738,7 +740,7 @@ func (c hookBridge) clientSetup() error {
 			}
 			pm.body = decryptedBody
 		} else if c.replayDataOpts.encryptionKey != "" && encryption.IsAESEncrypted(pm.body) {
-			decryptedBody, err := encryption.AESDecrypt(pm.body, c.replayDataOpts.encryptionKey)
+			decryptedBody, err := encryption.AESDecryptWithContext(pm.body, c.replayDataOpts.encryptionKey, channelCtx)
 			if err != nil {
 				s := fmt.Sprintf("%s %s AES decrypting message body %s", nowStr, ansi.Color("ERROR", "red+b"), err.Error())
 				c.logger.ErrorContext(context.Background(), s)

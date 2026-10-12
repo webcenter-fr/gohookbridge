@@ -127,11 +127,41 @@ func HandleWebhookPost(broker *nats.Broker, svc *service.Service, banTracker *se
 		channel := chi.URLParam(r, "channel")
 		defer r.Body.Close()
 
-		chConfig, _ := svc.ResolveChannelConfig(ctx, channel)
+		chConfig, err := svc.ResolveChannelConfig(ctx, channel)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				http.Error(w, "channel not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "channel configuration unavailable", http.StatusServiceUnavailable)
+			return
+		}
 
 		maxBodySize := chConfig.MaxBodySize
 		if maxBodySize == 0 {
-			maxBodySize, _ = svc.ResolveChannelMaxBodySize(ctx, channel)
+			maxBodySize, err = svc.ResolveChannelMaxBodySize(ctx, channel)
+			if err != nil {
+				http.Error(w, "channel configuration unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		}
+
+		// Resolve the webhook secret once and apply the strict-mode policy: in
+		// require_known_channels mode a missing secret is an error, never a
+		// silent "skip signature validation".
+		webhookSecret, err := svc.ResolveChannelWebhookSecret(ctx, channel)
+		if err != nil {
+			http.Error(w, "channel configuration unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		globalCfg, err := svc.GetGlobalConfig(ctx)
+		if err != nil {
+			http.Error(w, "channel configuration unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if globalCfg.Server.RequireKnownChannels && webhookSecret == "" {
+			http.Error(w, "channel signature validation unavailable", http.StatusServiceUnavailable)
+			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodySize))
 		body, err := io.ReadAll(r.Body)
@@ -144,103 +174,36 @@ func HandleWebhookPost(broker *nats.Broker, svc *service.Service, banTracker *se
 			return
 		}
 
-		encryptionMode := chConfig.EncryptionMode
-		encryptionKey := chConfig.EncryptionKey
-		channelPubKey := chConfig.EncryptionPublicKey
-		if encryptionMode == "" {
-			encryptionMode, encryptionKey, channelPubKey, _ = svc.ResolveChannelEncryption(ctx, channel)
+		// Signature validation happens once for every mode.
+		if webhookSecret != "" {
+			if !validateWebhookSignature(webhookSecret, body, r) {
+				svc.RecordCredentialFailure(ctx, banTracker, r, service.FingerprintSignature(channel, service.ExtractSignatureValue(r)))
+				http.Error(w, "invalid signature", http.StatusUnauthorized)
+				return
+			}
 		}
 
+		encryptionMode, _, _, _ := svc.ResolveChannelEncryption(ctx, channel)
+
+		// An e2e body that is already ciphertext is relayed as-is; everything
+		// else is validated as JSON and encrypted through the central,
+		// fail-closed policy.
 		var payloadBytes []byte
-
-		switch {
-		case encryptionMode == "e2e" && channelPubKey != "":
-			webhookSecret := chConfig.WebhookSecret
-			if webhookSecret == "" {
-				webhookSecret, _ = svc.ResolveChannelWebhookSecret(ctx, channel)
-			}
-
-			if crypto.IsEncrypted(body) {
-				if webhookSecret != "" {
-					if !validateWebhookSignature(webhookSecret, body, r) {
-						svc.RecordCredentialFailure(ctx, banTracker, r, service.FingerprintSignature(channel, service.ExtractSignatureValue(r)))
-						http.Error(w, "invalid signature", http.StatusUnauthorized)
-						return
-					}
-				}
-				payloadBytes = body
-			} else {
-				if webhookSecret != "" {
-					if !validateWebhookSignature(webhookSecret, body, r) {
-						svc.RecordCredentialFailure(ctx, banTracker, r, service.FingerprintSignature(channel, service.ExtractSignatureValue(r)))
-						http.Error(w, "invalid signature", http.StatusUnauthorized)
-						return
-					}
-				}
-				var d any
-				if err := json.Unmarshal(body, &d); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				pubKey, err := crypto.ParsePublicKey(channelPubKey)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "WARNING: parse channel public key failed for channel %s: %v\n", channel, err)
-					http.Error(w, "encryption config error", http.StatusInternalServerError)
-					return
-				}
-				encrypted, err := crypto.Encrypt(body, pubKey)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "WARNING: e2e encryption failed for channel %s: %v\n", channel, err)
-					http.Error(w, "encryption failed", http.StatusInternalServerError)
-					return
-				}
-				payloadBytes = encrypted
-			}
-		case encryptionMode == "server_side" && encryptionKey != "":
-			webhookSecret := chConfig.WebhookSecret
-			if webhookSecret == "" {
-				webhookSecret, _ = svc.ResolveChannelWebhookSecret(ctx, channel)
-			}
-			if webhookSecret != "" {
-				if !validateWebhookSignature(webhookSecret, body, r) {
-					svc.RecordCredentialFailure(ctx, banTracker, r, service.FingerprintSignature(channel, service.ExtractSignatureValue(r)))
-					http.Error(w, "invalid signature", http.StatusUnauthorized)
-					return
-				}
-			}
-
+		if encryptionMode == "e2e" && crypto.IsEncrypted(body) {
+			payloadBytes = body
+		} else {
 			var d any
 			if err := json.Unmarshal(body, &d); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-
-			encrypted, err := encryption.AESEncrypt(body, encryptionKey)
+			encrypted, err := svc.EncryptForChannel(ctx, channel, body)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "WARNING: server-side encryption failed for channel %s: %v\n", channel, err)
-				http.Error(w, "encryption failed", http.StatusInternalServerError)
+				fmt.Fprintf(os.Stderr, "WARNING: encryption failed for channel %s: %v\n", channel, err)
+				http.Error(w, "encryption unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			payloadBytes = encrypted
-		default:
-			webhookSecret := chConfig.WebhookSecret
-			if webhookSecret == "" {
-				webhookSecret, _ = svc.ResolveChannelWebhookSecret(ctx, channel)
-			}
-			if webhookSecret != "" {
-				if !validateWebhookSignature(webhookSecret, body, r) {
-					svc.RecordCredentialFailure(ctx, banTracker, r, service.FingerprintSignature(channel, service.ExtractSignatureValue(r)))
-					http.Error(w, "invalid signature", http.StatusUnauthorized)
-					return
-				}
-			}
-
-			var d any
-			if err := json.Unmarshal(body, &d); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			payloadBytes = body
 		}
 
 		var headersBuilder strings.Builder
@@ -275,7 +238,10 @@ func HandleWebhookPost(broker *nats.Broker, svc *service.Service, banTracker *se
 			broker.SetChannelTTL(channel, time.Duration(chConfig.MessageTTLSeconds)*time.Second)
 		}
 
-		publishEvent(broker, channel, reencoded)
+		if err := publishEvent(broker, channel, reencoded); err != nil {
+			http.Error(w, "event broker unavailable", http.StatusBadGateway)
+			return
+		}
 
 		w.Header().Set(versionHeaderName, strings.TrimSpace(string(Version)))
 		w.WriteHeader(http.StatusAccepted)
@@ -310,7 +276,11 @@ func HandleTestPayloadSend(broker *nats.Broker, svc *service.Service) http.Handl
 		now := time.Now().UTC()
 		defer r.Body.Close()
 
-		maxBodySize, _ := svc.ResolveChannelMaxBodySize(r.Context(), channel)
+		maxBodySize, err := svc.ResolveChannelMaxBodySize(r.Context(), channel)
+		if err != nil {
+			http.Error(w, "channel configuration unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodySize))
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -327,9 +297,15 @@ func HandleTestPayloadSend(broker *nats.Broker, svc *service.Service) http.Handl
 			return
 		}
 
+		encryptedBody, err := svc.EncryptForChannel(r.Context(), channel, body)
+		if err != nil {
+			http.Error(w, "encryption unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
 		payload := make(map[string]any)
 		payload["timestamp"] = fmt.Sprintf("%d", now.UnixMilli())
-		payload["bodyB"] = base64.StdEncoding.EncodeToString(body)
+		payload["bodyB"] = base64.StdEncoding.EncodeToString(encryptedBody)
 		payload["content-type"] = contentType
 		payload["x-test-payload"] = "true"
 
@@ -339,7 +315,10 @@ func HandleTestPayloadSend(broker *nats.Broker, svc *service.Service) http.Handl
 			return
 		}
 
-		publishEvent(broker, channel, reencoded)
+		if err := publishEvent(broker, channel, reencoded); err != nil {
+			http.Error(w, "event broker unavailable", http.StatusBadGateway)
+			return
+		}
 
 		w.WriteHeader(http.StatusAccepted)
 		resp := map[string]any{
@@ -369,7 +348,11 @@ func HandleEventReplay(broker *nats.Broker, svc *service.Service) http.HandlerFu
 
 		ch, err := svc.ResolveChannelConfig(ctx, channel)
 		if err != nil {
-			http.Error(w, "channel not found", http.StatusNotFound)
+			if errors.Is(err, domain.ErrNotFound) {
+				http.Error(w, "channel not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "channel configuration unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		if ch.EncryptionMode == "server_side" && ch.EncryptionKey != "" {
@@ -382,31 +365,23 @@ func HandleEventReplay(broker *nats.Broker, svc *service.Service) http.HandlerFu
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		var bodyB string
-		if ch.EncryptionMode == "e2e" && ch.EncryptionPublicKey != "" {
-			pubKey, err := crypto.ParsePublicKey(ch.EncryptionPublicKey)
-			if err != nil {
-				http.Error(w, "encryption config error", http.StatusInternalServerError)
-				return
-			}
-			encrypted, err := crypto.Encrypt(replayBody, pubKey)
-			if err != nil {
-				http.Error(w, "encryption failed", http.StatusInternalServerError)
-				return
-			}
-			bodyB = base64.StdEncoding.EncodeToString(encrypted)
-		} else {
-			bodyB = base64.StdEncoding.EncodeToString(replayBody)
+		encryptedBody, err := svc.EncryptForChannel(ctx, channel, replayBody)
+		if err != nil {
+			http.Error(w, "encryption unavailable", http.StatusServiceUnavailable)
+			return
 		}
 
 		payload := map[string]any{
 			"timestamp": fmt.Sprintf("%d", time.Now().UTC().UnixMilli()),
 			"event_id":  eventID,
-			"bodyB":     bodyB,
+			"bodyB":     base64.StdEncoding.EncodeToString(encryptedBody),
 			"x-replay":  "true",
 		}
 		reencoded, _ := json.Marshal(payload)
-		publishEvent(broker, channel, reencoded)
+		if err := broker.Publish(channel, reencoded); err != nil {
+			http.Error(w, "publish failed", http.StatusBadGateway)
+			return
+		}
 
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "replayed", "event_id": eventID})
@@ -466,10 +441,14 @@ func writeJSONResponse(w http.ResponseWriter, status int, v any) {
 	}
 }
 
-func publishEvent(broker *nats.Broker, channel string, reencoded []byte) {
+// publishEvent publishes to the local broker and reports the error so callers
+// can answer truthfully instead of always returning 202 (F25).
+func publishEvent(broker *nats.Broker, channel string, reencoded []byte) error {
 	if err := broker.Publish(channel, reencoded); err != nil {
 		fmt.Fprintf(os.Stderr, "WARNING: nats publish error: %v\n", err)
+		return err
 	}
+	return nil
 }
 
 // sensitiveHeaderForLogs reports whether a request header carries credentials

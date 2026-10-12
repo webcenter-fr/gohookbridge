@@ -26,7 +26,7 @@
         />
       </template>
       <template #webhook_secret-cell="{ row }">
-        <UBadge v-if="row.original.webhook_secret" color="success" size="sm">Set</UBadge>
+        <UBadge v-if="row.original.webhook_secret_configured" color="success" size="sm">Set</UBadge>
         <UBadge v-else color="neutral" size="sm">Not set</UBadge>
       </template>
       <template #encryption_mode-cell="{ row }">

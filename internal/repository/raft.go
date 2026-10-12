@@ -899,12 +899,15 @@ func (rs *RaftStore) ListChannels(ctx context.Context) ([]*domain.Channel, error
 		}
 		seen[id] = true
 		val, err := getFSMValue(rs.db, "/channels/"+id+"/")
-		if err != nil || val == nil {
+		if err != nil {
+			return nil, err
+		}
+		if val == nil {
 			continue
 		}
 		var ch domain.Channel
 		if err := json.Unmarshal(val, &ch); err != nil {
-			continue
+			return nil, fmt.Errorf("unmarshal channel %q: %w", id, err)
 		}
 		domain.MigrateChannel(&ch)
 		channels = append(channels, &ch)
@@ -964,9 +967,10 @@ func (rs *RaftStore) GetGlobalConfig(ctx context.Context) (*domain.GlobalConfig,
 	}
 	if val != nil {
 		var sc domain.ServerConfig
-		if err := json.Unmarshal(val, &sc); err == nil {
-			cfg.Server = sc
+		if err := json.Unmarshal(val, &sc); err != nil {
+			return nil, fmt.Errorf("unmarshal server config: %w", err)
 		}
+		cfg.Server = sc
 	}
 
 	val, err = getFSMValue(rs.db, "/global/defaults/")
@@ -975,9 +979,10 @@ func (rs *RaftStore) GetGlobalConfig(ctx context.Context) (*domain.GlobalConfig,
 	}
 	if val != nil {
 		var dc domain.DefaultChannelConfig
-		if err := json.Unmarshal(val, &dc); err == nil {
-			cfg.Defaults = dc
+		if err := json.Unmarshal(val, &dc); err != nil {
+			return nil, fmt.Errorf("unmarshal defaults config: %w", err)
 		}
+		cfg.Defaults = dc
 	}
 
 	return cfg, nil

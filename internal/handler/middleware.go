@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -308,7 +309,11 @@ func ChannelAccessMiddleware(svc *service.Service, requiredScope string, banTrac
 			// Fall back to token-based auth (CLI clients)
 			chConfig, err := svc.ResolveChannelConfig(r.Context(), channel)
 			if err != nil {
-				next.ServeHTTP(w, r)
+				if errors.Is(err, domain.ErrNotFound) {
+					http.Error(w, "channel not found", http.StatusNotFound)
+					return
+				}
+				http.Error(w, "channel configuration unavailable", http.StatusServiceUnavailable)
 				return
 			}
 

@@ -15,6 +15,22 @@
         <UFormField label="Behind Reverse Proxy">
           <USwitch v-model="form.server.behind_reverse_proxy" />
         </UFormField>
+        <UFormField label="Trusted Proxy CIDRs">
+          <div class="flex flex-col gap-2 w-full">
+            <div v-for="(cidr, i) in form.server.trusted_proxy_cidrs" :key="i" class="flex items-center gap-2">
+              <UInput v-model="form.server.trusted_proxy_cidrs[i]" placeholder="10.0.0.0/8" class="flex-1" />
+              <UButton icon="i-lucide-trash" color="error" variant="ghost" @click="form.server.trusted_proxy_cidrs.splice(i, 1)" />
+            </div>
+            <UButton icon="i-lucide-plus" color="neutral" variant="soft" class="self-start" @click="form.server.trusted_proxy_cidrs.push('')">Add CIDR</UButton>
+          </div>
+          <template #hint>
+            Forwarded headers (X-Forwarded-For/X-Real-IP) are honored only from these networks.
+          </template>
+        </UFormField>
+        <UFormField label="Require Known Channels">
+          <USwitch v-model="form.server.require_known_channels" />
+          <template #hint>Reject webhooks for channels that are not configured.</template>
+        </UFormField>
         <UFormField label="CORS Origin">
           <UInput v-model="form.server.cors_origin" placeholder="*" class="w-full" />
         </UFormField>
@@ -52,6 +68,32 @@
           <UInputNumber v-model="form.server.ban_duration_seconds" :min="1" />
         </UFormField>
 
+        <USeparator />
+        <h4 class="text-base font-semibold m-0">Login Throttling</h4>
+        <UFormField label="Attempts per Account">
+          <UInputNumber v-model="form.server.login_throttle_attempts" :min="1" />
+        </UFormField>
+        <UFormField label="Cooldown (seconds)">
+          <UInputNumber v-model="form.server.login_throttle_cooldown_seconds" :min="1" />
+        </UFormField>
+
+        <USeparator />
+        <h4 class="text-base font-semibold m-0">Default Channel Config</h4>
+        <UFormField label="Default Webhook Secret">
+          <UBadge :color="form.defaults.webhook_secret_configured ? 'success' : 'neutral'" size="sm">
+            {{ form.defaults.webhook_secret_configured ? 'Configured (hidden)' : 'Not configured' }}
+          </UBadge>
+        </UFormField>
+        <UFormField label="Default Allowed IPs">
+          <div class="flex flex-col gap-2 w-full">
+            <div v-for="(ip, i) in form.defaults.allowed_ips" :key="i" class="flex items-center gap-2">
+              <UInput v-model="form.defaults.allowed_ips[i]" placeholder="10.0.0.0/8" class="flex-1" />
+              <UButton icon="i-lucide-trash" color="error" variant="ghost" @click="form.defaults.allowed_ips.splice(i, 1)" />
+            </div>
+            <UButton icon="i-lucide-plus" color="neutral" variant="soft" class="self-start" @click="form.defaults.allowed_ips.push('')">Add IP</UButton>
+          </div>
+        </UFormField>
+
         <UButton type="submit" color="primary" :loading="saving" class="self-start">Save</UButton>
       </form>
     </div>
@@ -79,6 +121,8 @@ const form = reactive({
     behind_reverse_proxy: false,
     cors_origin: '*',
     footer: '',
+    trusted_proxy_cidrs: [] as string[],
+    require_known_channels: false,
     rate_limit_enabled: false,
     rate_limit_requests: 100,
     rate_limit_window_seconds: 60,
@@ -86,8 +130,12 @@ const form = reactive({
     ban_max_unique_failures: 5,
     ban_window_seconds: 300,
     ban_duration_seconds: 3600,
+    login_throttle_attempts: 10,
+    login_throttle_cooldown_seconds: 300,
   },
   defaults: {
+    webhook_secret_configured: false,
+    allowed_ips: [] as string[],
     message_ttl_seconds: 0,
   },
 })
@@ -101,6 +149,10 @@ onMounted(async () => {
     form.server.behind_reverse_proxy = config.value.server.behind_reverse_proxy
     form.server.cors_origin = config.value.server.cors_origin
     form.server.footer = config.value.server.footer
+    form.server.trusted_proxy_cidrs = (config.value.server.trusted_proxy_cidrs?.length ? config.value.server.trusted_proxy_cidrs : [])
+    form.server.require_known_channels = config.value.server.require_known_channels
+    form.defaults.webhook_secret_configured = !!config.value.defaults.webhook_secret_configured
+    form.defaults.allowed_ips = (config.value.defaults.allowed_ips?.length ? config.value.defaults.allowed_ips : [])
     form.defaults.message_ttl_seconds = config.value.defaults.message_ttl_seconds || 0
     form.server.rate_limit_enabled = config.value.server.rate_limit_enabled
     form.server.rate_limit_requests = config.value.server.rate_limit_requests || 100
@@ -109,6 +161,8 @@ onMounted(async () => {
     form.server.ban_max_unique_failures = config.value.server.ban_max_unique_failures || 5
     form.server.ban_window_seconds = config.value.server.ban_window_seconds || 300
     form.server.ban_duration_seconds = config.value.server.ban_duration_seconds || 3600
+    form.server.login_throttle_attempts = config.value.server.login_throttle_attempts || 10
+    form.server.login_throttle_cooldown_seconds = config.value.server.login_throttle_cooldown_seconds || 300
   } catch (e: any) {
     toast.add({ title: e.message || 'Failed to load config', color: 'error' })
   } finally {
@@ -120,9 +174,17 @@ async function handleSave() {
   const maxBodyBytes = bodySizeToBytes(form.server.max_body_size, bodySizeUnit.value)
   saving.value = true
   try {
+    const clean = (arr: string[]) => arr.filter(s => s.trim() !== '')
     await api.updateGlobalConfig({
-      server: { ...form.server, max_body_size: maxBodyBytes, session_secret: '' },
-      defaults: { webhook_secret: '', allowed_ips: [], message_ttl_seconds: form.defaults.message_ttl_seconds },
+      server: {
+        ...form.server,
+        max_body_size: maxBodyBytes,
+        trusted_proxy_cidrs: clean(form.server.trusted_proxy_cidrs),
+      },
+      defaults: {
+        allowed_ips: clean(form.defaults.allowed_ips),
+        message_ttl_seconds: form.defaults.message_ttl_seconds,
+      },
     })
     toast.add({ title: 'Saved', color: 'success' })
   } catch (e: any) {

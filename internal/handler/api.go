@@ -22,30 +22,6 @@ type apiHandler struct {
 	svc *service.Service
 }
 
-// GlobalConfigResponse is the API DTO for the global configuration; the
-// session secret is never returned to clients.
-type GlobalConfigResponse struct {
-	Server   ServerConfigResponse        `json:"server"`
-	Defaults domain.DefaultChannelConfig `json:"defaults"`
-}
-
-type ServerConfigResponse struct {
-	MaxBodySize        int    `json:"max_body_size"`
-	BehindReverseProxy bool   `json:"behind_reverse_proxy"`
-	CORSOrigin         string `json:"cors_origin"`
-	Footer             string `json:"footer"`
-	SessionSecret      string `json:"session_secret"`
-
-	RateLimitEnabled       bool `json:"rate_limit_enabled"`
-	RateLimitRequests      int  `json:"rate_limit_requests"`
-	RateLimitWindowSeconds int  `json:"rate_limit_window_seconds"`
-
-	BanEnabled           bool `json:"ban_enabled"`
-	BanMaxUniqueFailures int  `json:"ban_max_unique_failures"`
-	BanWindowSeconds     int  `json:"ban_window_seconds"`
-	BanDurationSeconds   int  `json:"ban_duration_seconds"`
-}
-
 func RegisterAPIHandlers(r chi.Router, svc *service.Service) {
 	h := &apiHandler{svc: svc}
 
@@ -136,7 +112,7 @@ func (h *apiHandler) listChannels(w http.ResponseWriter, r *http.Request) {
 	filtered := make([]*domain.Channel, 0)
 	for _, p := range channels {
 		if service.HasChannelAccess(allowedChannels, p.ID) {
-			sanitizeChannelAPI(p)
+			domain.MigrateChannel(p)
 			filtered = append(filtered, p)
 		}
 	}
@@ -146,7 +122,44 @@ func (h *apiHandler) listChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, filtered)
+	responses := make([]ChannelResponse, 0, len(filtered))
+	for _, p := range filtered {
+		responses = append(responses, toChannelResponse(p))
+	}
+	writeJSON(w, http.StatusOK, responses)
+}
+
+// toChannelResponse projects a channel to its safe, secret-free API shape.
+func toChannelResponse(p *domain.Channel) ChannelResponse {
+	domain.MigrateChannel(p)
+	resp := ChannelResponse{
+		ID:                      p.ID,
+		Description:             p.Description,
+		CreatedBy:               p.CreatedBy,
+		WebhookSecretConfigured: p.WebhookSecret != "",
+		AllowedIPs:              p.AllowedIPs,
+		MaxBodySize:             p.MaxBodySize,
+		MessageTTLSeconds:       p.MessageTTLSeconds,
+		EncryptionMode:          p.EncryptionMode,
+		EncryptionPublicKey:     p.EncryptionPublicKey,
+		EncryptionKeyConfigured: p.EncryptionKey != "",
+		AccessMode:              p.AccessMode,
+	}
+	if resp.AllowedIPs == nil {
+		resp.AllowedIPs = []string{}
+	}
+	if len(p.AccessTokens) > 0 {
+		resp.AccessTokens = make([]AccessTokenResponse, 0, len(p.AccessTokens))
+		for _, t := range p.AccessTokens {
+			resp.AccessTokens = append(resp.AccessTokens, AccessTokenResponse{
+				ID:        t.ID,
+				Name:      t.Name,
+				Scope:     t.Scope,
+				CreatedAt: t.CreatedAt,
+			})
+		}
+	}
+	return resp
 }
 
 func (h *apiHandler) createChannel(w http.ResponseWriter, r *http.Request) {
@@ -158,7 +171,17 @@ func (h *apiHandler) createChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	username := GetUsernameFromContext(ctx)
 	ch.CreatedBy = username
-	if msg := validateStruct(&ch); msg != "" {
+	// Server-owned fields must never come from the body.
+	ch.AccessTokens = nil
+	ch.AccessMode = ""
+	//nolint:staticcheck // deprecated field is never accepted from the body
+	ch.WebhookSignatures = nil
+	ch.EncryptionEnabled = false
+	if !validEncryptionMode(ch.EncryptionMode) {
+		writeError(w, http.StatusBadRequest, "encryption_mode must be '', 'server_side', or 'e2e'")
+		return
+	}
+	if msg := validateChannelUpdate(&ch); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
@@ -176,7 +199,7 @@ func (h *apiHandler) createChannel(w http.ResponseWriter, r *http.Request) {
 		Subject:   username,
 		Role:      "owner",
 	})
-	writeJSON(w, http.StatusCreated, &ch)
+	writeJSON(w, http.StatusCreated, toChannelResponse(&ch))
 }
 
 func (h *apiHandler) getChannel(w http.ResponseWriter, r *http.Request) {
@@ -190,29 +213,97 @@ func (h *apiHandler) getChannel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	domain.MigrateChannel(p)
-	sanitizeChannelAPI(p)
-	writeJSON(w, http.StatusOK, p)
+	writeJSON(w, http.StatusOK, toChannelResponse(p))
 }
 
 func (h *apiHandler) updateChannel(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
-	var ch domain.Channel
-	if err := json.NewDecoder(r.Body).Decode(&ch); err != nil {
+	var req ChannelUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	ch.ID = id
-	if msg := validateStruct(&ch); msg != "" {
-		writeError(w, http.StatusBadRequest, msg)
+	if req.EncryptionMode != nil && !validEncryptionMode(*req.EncryptionMode) {
+		writeError(w, http.StatusBadRequest, "encryption_mode must be '', 'server_side', or 'e2e'")
 		return
 	}
-	if err := h.svc.UpdateChannel(ctx, &ch); err != nil {
+
+	ch, err := h.svc.GetChannel(ctx, id)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "channel not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, &ch)
+
+	if req.Description != nil {
+		ch.Description = *req.Description
+	}
+	if req.WebhookSecret != nil {
+		ch.WebhookSecret = *req.WebhookSecret
+	}
+	if req.AllowedIPs != nil {
+		ch.AllowedIPs = *req.AllowedIPs
+	}
+	if req.MaxBodySize != nil {
+		ch.MaxBodySize = *req.MaxBodySize
+	}
+	if req.MessageTTLSeconds != nil {
+		ch.MessageTTLSeconds = *req.MessageTTLSeconds
+	}
+	if req.EncryptionMode != nil {
+		if !validEncryptionMode(*req.EncryptionMode) {
+			writeError(w, http.StatusBadRequest, "encryption_mode must be '', 'server_side', or 'e2e'")
+			return
+		}
+		ch.EncryptionMode = *req.EncryptionMode
+	}
+	if req.EncryptionKey != nil {
+		ch.EncryptionKey = *req.EncryptionKey
+	}
+	if req.EncryptionPublicKey != nil {
+		ch.EncryptionPublicKey = *req.EncryptionPublicKey
+	}
+
+	if msg := validateChannelUpdate(ch); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	if err := h.svc.UpdateChannel(ctx, ch); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toChannelResponse(ch))
+}
+
+func validEncryptionMode(mode string) bool {
+	switch mode {
+	case "", "server_side", "e2e":
+		return true
+	default:
+		return false
+	}
+}
+
+// validateChannelUpdate validates the merged channel, including allowed-IP
+// syntax and non-negative numeric bounds.
+func validateChannelUpdate(ch *domain.Channel) string {
+	if msg := validateStruct(ch); msg != "" {
+		return msg
+	}
+	if ch.MaxBodySize < 0 {
+		return "max_body_size must be >= 0"
+	}
+	if ch.MessageTTLSeconds < 0 {
+		return "message_ttl_seconds must be >= 0"
+	}
+	if _, err := parseIPRanges(ch.AllowedIPs); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 func (h *apiHandler) deleteChannel(w http.ResponseWriter, r *http.Request) {
@@ -224,63 +315,138 @@ func (h *apiHandler) deleteChannel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// toGlobalConfigResponse projects the global config to its safe API shape.
+func toGlobalConfigResponse(cfg *domain.GlobalConfig) GlobalConfigResponse {
+	return GlobalConfigResponse{
+		Server: ServerConfigResponse{
+			MaxBodySize:            cfg.Server.MaxBodySize,
+			BehindReverseProxy:     cfg.Server.BehindReverseProxy,
+			CORSOrigin:             cfg.Server.CORSOrigin,
+			Footer:                 cfg.Server.Footer,
+			TrustedProxyCIDRs:      cfg.Server.TrustedProxyCIDRs,
+			RequireKnownChannels:   cfg.Server.RequireKnownChannels,
+			RateLimitEnabled:       cfg.Server.RateLimitEnabled,
+			RateLimitRequests:      cfg.Server.RateLimitRequests,
+			RateLimitWindowSeconds: cfg.Server.RateLimitWindowSeconds,
+			BanEnabled:             cfg.Server.BanEnabled,
+			BanMaxUniqueFailures:   cfg.Server.BanMaxUniqueFailures,
+			BanWindowSeconds:       cfg.Server.BanWindowSeconds,
+			BanDurationSeconds:     cfg.Server.BanDurationSeconds,
+			LoginThrottleAttempts:  cfg.Server.LoginThrottleAttempts,
+			LoginThrottleCooldown:  cfg.Server.LoginThrottleCooldown,
+		},
+		Defaults: DefaultsResponse{
+			WebhookSecretConfigured: cfg.Defaults.WebhookSecret != "",
+			AllowedIPs:              cfg.Defaults.AllowedIPs,
+			MessageTTLSeconds:       cfg.Defaults.MessageTTLSeconds,
+		},
+	}
+}
+
 func (h *apiHandler) getGlobalConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := h.svc.GetGlobalConfig(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	resp := GlobalConfigResponse{
-		Server: ServerConfigResponse{
-			MaxBodySize:        cfg.Server.MaxBodySize,
-			BehindReverseProxy: cfg.Server.BehindReverseProxy,
-			CORSOrigin:         cfg.Server.CORSOrigin,
-			Footer:             cfg.Server.Footer,
-			SessionSecret:      "<redacted>",
-
-			RateLimitEnabled:       cfg.Server.RateLimitEnabled,
-			RateLimitRequests:      cfg.Server.RateLimitRequests,
-			RateLimitWindowSeconds: cfg.Server.RateLimitWindowSeconds,
-
-			BanEnabled:           cfg.Server.BanEnabled,
-			BanMaxUniqueFailures: cfg.Server.BanMaxUniqueFailures,
-			BanWindowSeconds:     cfg.Server.BanWindowSeconds,
-			BanDurationSeconds:   cfg.Server.BanDurationSeconds,
-		},
-		Defaults: cfg.Defaults,
-	}
-	if cfg.Server.SessionSecret == "" {
-		resp.Server.SessionSecret = ""
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, toGlobalConfigResponse(cfg))
 }
 
 func (h *apiHandler) updateGlobalConfig(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	var cfg domain.GlobalConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+	var req GlobalConfigUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if cfg.Server.SessionSecret != "" {
+	if req.Server != nil && req.Server.SessionSecret != nil && *req.Server.SessionSecret != "" {
 		writeError(w, http.StatusBadRequest, "session_secret cannot be changed via API")
 		return
 	}
-	existing, err := h.svc.GetGlobalConfig(ctx)
+
+	cfg, err := h.svc.GetGlobalConfig(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	cfg.Server.SessionSecret = existing.Server.SessionSecret
-	if err := h.svc.UpdateGlobalConfig(ctx, &cfg); err != nil {
+
+	if req.Server != nil {
+		applyServerUpdate(&cfg.Server, req.Server)
+	}
+	if req.Defaults != nil {
+		if req.Defaults.WebhookSecret != nil {
+			cfg.Defaults.WebhookSecret = *req.Defaults.WebhookSecret
+		}
+		if req.Defaults.AllowedIPs != nil {
+			if _, err := parseIPRanges(*req.Defaults.AllowedIPs); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			cfg.Defaults.AllowedIPs = *req.Defaults.AllowedIPs
+		}
+		if req.Defaults.MessageTTLSeconds != nil {
+			if *req.Defaults.MessageTTLSeconds < 0 {
+				writeError(w, http.StatusBadRequest, "message_ttl_seconds must be >= 0")
+				return
+			}
+			cfg.Defaults.MessageTTLSeconds = *req.Defaults.MessageTTLSeconds
+		}
+	}
+
+	if err := h.svc.UpdateGlobalConfig(ctx, cfg); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Never echo the stored secret back to the client.
-	if cfg.Server.SessionSecret != "" {
-		cfg.Server.SessionSecret = "<redacted>"
+	writeJSON(w, http.StatusOK, toGlobalConfigResponse(cfg))
+}
+
+// applyServerUpdate merges the non-nil pointer fields into sc.
+func applyServerUpdate(sc *domain.ServerConfig, req *ServerConfigUpdateRequest) {
+	if req.MaxBodySize != nil {
+		sc.MaxBodySize = *req.MaxBodySize
 	}
-	writeJSON(w, http.StatusOK, &cfg)
+	if req.BehindReverseProxy != nil {
+		sc.BehindReverseProxy = *req.BehindReverseProxy
+	}
+	if req.CORSOrigin != nil {
+		sc.CORSOrigin = *req.CORSOrigin
+	}
+	if req.Footer != nil {
+		sc.Footer = *req.Footer
+	}
+	if req.TrustedProxyCIDRs != nil {
+		sc.TrustedProxyCIDRs = *req.TrustedProxyCIDRs
+	}
+	if req.RateLimitEnabled != nil {
+		sc.RateLimitEnabled = *req.RateLimitEnabled
+	}
+	if req.RateLimitRequests != nil {
+		sc.RateLimitRequests = *req.RateLimitRequests
+	}
+	if req.RateLimitWindowSeconds != nil {
+		sc.RateLimitWindowSeconds = *req.RateLimitWindowSeconds
+	}
+	if req.BanEnabled != nil {
+		sc.BanEnabled = *req.BanEnabled
+	}
+	if req.BanMaxUniqueFailures != nil {
+		sc.BanMaxUniqueFailures = *req.BanMaxUniqueFailures
+	}
+	if req.BanWindowSeconds != nil {
+		sc.BanWindowSeconds = *req.BanWindowSeconds
+	}
+	if req.BanDurationSeconds != nil {
+		sc.BanDurationSeconds = *req.BanDurationSeconds
+	}
+	if req.RequireKnownChannels != nil {
+		sc.RequireKnownChannels = *req.RequireKnownChannels
+	}
+	if req.LoginThrottleAttempts != nil {
+		sc.LoginThrottleAttempts = *req.LoginThrottleAttempts
+	}
+	if req.LoginThrottleCooldown != nil {
+		sc.LoginThrottleCooldown = *req.LoginThrottleCooldown
+	}
 }
 
 func (h *apiHandler) listUsers(w http.ResponseWriter, r *http.Request) {
@@ -978,20 +1144,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
-}
-
-func sanitizeChannelAPI(p *domain.Channel) {
-	p.EncryptionPrivateKey = ""
-	if len(p.AccessTokens) == 0 {
-		p.AccessTokens = nil
-		return
-	}
-	sanitized := make([]domain.ChannelAccessToken, len(p.AccessTokens))
-	for i, t := range p.AccessTokens {
-		t.TokenHash = ""
-		sanitized[i] = t
-	}
-	p.AccessTokens = sanitized
 }
 
 func writeCSV(w http.ResponseWriter, channels []*domain.Channel) {
