@@ -255,10 +255,6 @@ func (h *apiHandler) updateChannel(w http.ResponseWriter, r *http.Request) {
 		ch.MessageTTLSeconds = *req.MessageTTLSeconds
 	}
 	if req.EncryptionMode != nil {
-		if !validEncryptionMode(*req.EncryptionMode) {
-			writeError(w, http.StatusBadRequest, "encryption_mode must be '', 'server_side', or 'e2e'")
-			return
-		}
 		ch.EncryptionMode = *req.EncryptionMode
 	}
 	if req.EncryptionKey != nil {

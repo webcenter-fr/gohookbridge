@@ -236,7 +236,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 		log.Printf("WARNING: raft generation %d supersedes local %d; clearing stale Raft state to rejoin", clusterGeneration, localGeneration)
 	}
 
-	atRestKeeper, err := loadAtRestKeeper(c.String("at-rest-key-file"), c.Int("raft-replicas"))
+	atRestKeeper, err := loadAtRestKeeper(c.String("at-rest-key-file"), c.Int("raft-replicas"), c.String("raft-dir"))
 	if err != nil {
 		return nil, err
 	}

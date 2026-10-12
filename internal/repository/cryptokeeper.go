@@ -71,9 +71,6 @@ func NewCryptoKeeper(primary string, keys map[string][]byte) *CryptoKeeper {
 	return &CryptoKeeper{keys: keys, primary: primary}
 }
 
-// PrimaryKID returns the primary key ID.
-func (k *CryptoKeeper) PrimaryKID() string { return k.primary }
-
 // Encrypt seals plaintext under the primary key.
 func (k *CryptoKeeper) Encrypt(plain []byte) (EncryptedValue, error) {
 	key, ok := k.keys[k.primary]
