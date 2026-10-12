@@ -2,12 +2,15 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
@@ -15,8 +18,12 @@ import (
 )
 
 const (
+	// UsernameContextKey carries the display-only username.
 	UsernameContextKey = "username"
-	GroupsContextKey   = "oidc_groups"
+	// GroupsContextKey carries the verified OIDC groups from the signed session.
+	GroupsContextKey = "oidc_groups"
+	// PrincipalContextKey carries the resolved *domain.User principal.
+	PrincipalContextKey = "principal"
 )
 
 type contextKey string
@@ -31,6 +38,37 @@ func GetUsernameFromContext(ctx context.Context) string {
 func GetGroupsFromContext(ctx context.Context) []string {
 	groups, _ := ctx.Value(GroupsContextKey).([]string)
 	return groups
+}
+
+// GetPrincipalFromContext returns the resolved principal stored by RequireAuth
+// or ChannelAccessMiddleware.
+func GetPrincipalFromContext(ctx context.Context) *domain.User {
+	user, _ := ctx.Value(PrincipalContextKey).(*domain.User)
+	return user
+}
+
+// resolveRequestUser returns the principal for the request, falling back to
+// resolving the display-only username when no principal was stored (legacy
+// callers and tests).
+func resolveRequestUser(svc *service.Service, r *http.Request) *domain.User {
+	user := GetPrincipalFromContext(r.Context())
+	if user != nil {
+		return user
+	}
+	return svc.ResolvePrincipalByUsername(r.Context(), GetUsernameFromContext(r.Context()))
+}
+
+// withPrincipal stores the resolved principal, its display username, and the
+// verified groups in the request context.
+//
+//nolint:revive,staticcheck // context keys are package-level string constants by design
+func withPrincipal(ctx context.Context, user *domain.User, groups []string) context.Context {
+	ctx = context.WithValue(ctx, PrincipalContextKey, user)
+	ctx = context.WithValue(ctx, UsernameContextKey, user.Username)
+	if len(groups) > 0 {
+		ctx = context.WithValue(ctx, GroupsContextKey, groups)
+	}
+	return ctx
 }
 
 // ChannelContext sets contextKeyChannelID from the "channel" URL param so
@@ -49,18 +87,19 @@ func ChannelContext(next http.Handler) http.Handler {
 func RequirePermission(svc *service.Service, perm domain.Permission) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			username := GetUsernameFromContext(r.Context())
-			if username == "" {
+			user := resolveRequestUser(svc, r)
+			if user == nil {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
+			groups := GetGroupsFromContext(r.Context())
 
 			channelID := ""
 			if pid, ok := r.Context().Value(contextKeyChannelID).(string); ok {
 				channelID = pid
 			}
 
-			if !svc.UserHasPermission(r.Context(), username, perm, channelID) {
+			if !svc.UserHasPermission(r.Context(), user, groups, perm, channelID) {
 				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
 			}
@@ -73,28 +112,29 @@ func RequirePermission(svc *service.Service, perm domain.Permission) func(http.H
 func RequireChannelACLPermission(svc *service.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			username := GetUsernameFromContext(r.Context())
-			if username == "" {
+			user := resolveRequestUser(svc, r)
+			if user == nil {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
+			groups := GetGroupsFromContext(r.Context())
 
 			channelID := ""
 			if pid, ok := r.Context().Value(contextKeyChannelID).(string); ok {
 				channelID = pid
 			}
 
-			if svc.UserHasPermission(r.Context(), username, domain.PermChannelWrite, channelID) {
+			if svc.UserHasPermission(r.Context(), user, groups, domain.PermChannelWrite, channelID) {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			if svc.UserHasPermission(r.Context(), username, domain.PermRBACWrite, channelID) {
+			if svc.UserHasPermission(r.Context(), user, groups, domain.PermRBACWrite, channelID) {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			if svc.UserHasPermission(r.Context(), username, domain.PermAll, channelID) {
+			if svc.UserHasPermission(r.Context(), user, groups, domain.PermAll, channelID) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -144,10 +184,28 @@ func (r *ipRanges) contains(ip net.IP) bool {
 	return false
 }
 
+const (
+	ipCacheTTL = 5 * time.Minute
+	ipCacheMax = 10000
+)
+
+// ipCacheEntry caches the parsed allowlist for a content hash of the allowed
+// IP set, so a config change invalidates the entry even when the channel ID is
+// unchanged (F20).
+type ipCacheEntry struct {
+	ranges *ipRanges
+	at     time.Time
+}
+
+func allowedIPsHash(allowedIPs []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(allowedIPs, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
 func IPRestrictMiddleware(svc *service.Service) func(http.Handler) http.Handler {
 	var (
 		mu    sync.Mutex
-		cache = make(map[string]*ipRanges)
+		cache = make(map[string]ipCacheEntry)
 	)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -164,33 +222,59 @@ func IPRestrictMiddleware(svc *service.Service) func(http.Handler) http.Handler 
 			}
 
 			behindReverseProxy := svc.ResolveBehindReverseProxy(r.Context())
-			clientIP, err := service.GetRealIP(r, behindReverseProxy)
+			trusted := service.ParseTrustedProxyCIDRs(svc.ResolveTrustedProxyCIDRs(r.Context()))
+			clientIP, err := service.GetRealIP(r, behindReverseProxy, trusted)
 			if err != nil {
 				http.Error(w, "Failed to determine client IP", http.StatusBadRequest)
 				return
 			}
 
+			key := allowedIPsHash(allowedIPs)
+			now := time.Now()
 			mu.Lock()
-			ranges, ok := cache[channel]
+			entry, ok := cache[key]
+			if ok && now.Sub(entry.at) > ipCacheTTL {
+				delete(cache, key)
+				ok = false
+			}
 			mu.Unlock()
 			if !ok {
-				ranges, err = parseIPRanges(allowedIPs)
+				ranges, err := parseIPRanges(allowedIPs)
 				if err != nil {
 					http.Error(w, "Invalid IP configuration", http.StatusInternalServerError)
 					return
 				}
+				entry = ipCacheEntry{ranges: ranges, at: now}
 				mu.Lock()
-				cache[channel] = ranges
+				if len(cache) >= ipCacheMax {
+					evictOldestIPCache(cache)
+				}
+				cache[key] = entry
 				mu.Unlock()
 			}
 
-			if !ranges.contains(clientIP) {
+			if !entry.ranges.contains(clientIP) {
 				http.Error(w, fmt.Sprintf("IP address %s not allowed", clientIP), http.StatusForbidden)
 				return
 			}
 
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+// evictOldestIPCache removes the single oldest entry so the cache stays
+// bounded under an attacker forcing many distinct allowlists. Callers hold mu.
+func evictOldestIPCache(cache map[string]ipCacheEntry) {
+	oldestKey := ""
+	var oldest time.Time
+	for k, e := range cache {
+		if oldestKey == "" || e.at.Before(oldest) {
+			oldestKey, oldest = k, e.at
+		}
+	}
+	if oldestKey != "" {
+		delete(cache, oldestKey)
 	}
 }
 
@@ -209,13 +293,10 @@ func ChannelAccessMiddleware(svc *service.Service, requiredScope string, banTrac
 					if requiredScope == "produce" {
 						perm = domain.PermChannelWrite
 					}
-					if svc.UserHasPermission(r.Context(), token.Username, perm, channel) {
-						//nolint:revive,staticcheck // context keys are package-level string constants by design
-						ctx := context.WithValue(r.Context(), UsernameContextKey, token.Username)
-						if len(token.Groups) > 0 {
-							//nolint:revive,staticcheck // context keys are package-level string constants by design
-							ctx = context.WithValue(ctx, GroupsContextKey, token.Groups)
-						}
+					user := svc.ResolvePrincipal(r.Context(), token)
+					if user != nil && svc.SessionEpochValid(r.Context(), token) &&
+						svc.UserHasPermission(r.Context(), user, token.Groups, perm, channel) {
+						ctx := withPrincipal(r.Context(), user, token.Groups)
 						next.ServeHTTP(w, r.WithContext(ctx))
 						return
 					}

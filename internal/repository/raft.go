@@ -774,6 +774,45 @@ func (rs *RaftStore) Apply(cmd []byte) (interface{}, error) {
 	return future.Response(), nil
 }
 
+// fsmKV is one key mutation in a transactional "set-multi" command.
+type fsmKV struct {
+	Key    string `json:"key"`
+	Value  []byte `json:"value,omitempty"`
+	Delete bool   `json:"delete,omitempty"`
+}
+
+// applyResponse converts the FSM's Apply response into an error. The FSM
+// returns an error value for rejected mutations (e.g. duplicate channel); only
+// surfacing it lets callers translate it back to domain.ErrAlreadyExists.
+func applyResponse(resp interface{}) error {
+	if resp == nil {
+		return nil
+	}
+	if err, ok := resp.(error); ok && err != nil {
+		return err
+	}
+	return nil
+}
+
+// applyMulti applies several key mutations as a single Raft entry (one FSM
+// transaction), so multi-record writes are atomic across the cluster.
+func (rs *RaftStore) applyMulti(entries []fsmKV) error {
+	payload, err := json.Marshal(fsmMultiPayload{Entries: entries})
+	if err != nil {
+		return err
+	}
+	cmd := fsmCommand{Op: "set-multi", Value: payload}
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return err
+	}
+	resp, err := rs.Apply(data)
+	if err != nil {
+		return err
+	}
+	return applyResponse(resp)
+}
+
 func (rs *RaftStore) applyCommand(op, key string, value []byte) error {
 	cmd := fsmCommand{
 		Op:  op,
@@ -786,8 +825,11 @@ func (rs *RaftStore) applyCommand(op, key string, value []byte) error {
 	if err != nil {
 		return err
 	}
-	_, err = rs.Apply(data)
-	return err
+	resp, err := rs.Apply(data)
+	if err != nil {
+		return err
+	}
+	return applyResponse(resp)
 }
 
 func (rs *RaftStore) HasData() (bool, error) {
@@ -950,14 +992,16 @@ func (rs *RaftStore) UpdateGlobalConfig(ctx context.Context, cfg *domain.GlobalC
 	if err != nil {
 		return err
 	}
-	if err := rs.applyCommand("set", "/global/server/", scVal); err != nil {
-		return err
-	}
 	dcVal, err := json.Marshal(cfg.Defaults)
 	if err != nil {
 		return err
 	}
-	return rs.applyCommand("set", "/global/defaults/", dcVal)
+	// Both records are written in a single transaction so the server and
+	// defaults can never diverge.
+	return rs.applyMulti([]fsmKV{
+		{Key: "/global/server/", Value: scVal},
+		{Key: "/global/defaults/", Value: dcVal},
+	})
 }
 
 func (rs *RaftStore) GetUser(ctx context.Context, id string) (*domain.User, error) {
@@ -1002,6 +1046,27 @@ func (rs *RaftStore) GetUserByUsername(ctx context.Context, username string) (*d
 		return nil, fmt.Errorf("%w: user %q", domain.ErrNotFound, username)
 	}
 	return rs.GetUser(ctx, idx.UserID)
+}
+
+// GetUserByExternalIdentity resolves the user bound to an OIDC (provider,
+// issuer, subject) tuple by scanning the user set. issuer must already be
+// normalized (no trailing slash) by the caller.
+func (rs *RaftStore) GetUserByExternalIdentity(ctx context.Context, providerID, issuer, subject string) (*domain.User, error) {
+	if providerID == "" || issuer == "" || subject == "" {
+		return nil, fmt.Errorf("%w: external identity incomplete", domain.ErrInvalidArgument)
+	}
+	users, err := rs.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range users {
+		for _, id := range u.ExternalIdentities {
+			if id.ProviderID == providerID && id.Issuer == issuer && id.Subject == subject {
+				return u, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%w: no user for external identity %s/%s/%s", domain.ErrNotFound, providerID, issuer, subject)
 }
 
 func (rs *RaftStore) ListUsers(ctx context.Context) ([]*domain.User, error) {
@@ -1054,11 +1119,8 @@ func (rs *RaftStore) CreateUser(ctx context.Context, u *domain.User) error {
 	if err != nil {
 		return err
 	}
-	if resp != nil {
-		//nolint:forcetypeassert // preserve domain.ErrAlreadyExists across Apply
-		return resp.(error)
-	}
-	return rs.applyCommand("set", usernameIndexKey(u.Username)+"/", usernameIndexValue(u.ID))
+	// The FSM writes the user and its username index in one transaction.
+	return applyResponse(resp)
 }
 
 func (rs *RaftStore) UpdateUser(ctx context.Context, u *domain.User) error {
@@ -1071,16 +1133,14 @@ func (rs *RaftStore) UpdateUser(ctx context.Context, u *domain.User) error {
 	if err != nil {
 		return err
 	}
-	if err := rs.applyCommand("set", "/users/"+u.ID+"/", val); err != nil {
-		return err
-	}
-	if err := rs.applyCommand("set", usernameIndexKey(u.Username)+"/", usernameIndexValue(u.ID)); err != nil {
-		return err
+	entries := []fsmKV{
+		{Key: "/users/" + u.ID + "/", Value: val},
+		{Key: usernameIndexKey(u.Username) + "/", Value: usernameIndexValue(u.ID)},
 	}
 	if oldUsername != "" {
-		return rs.applyCommand("delete", "/users/by-username/"+oldUsername+"/", nil)
+		entries = append(entries, fsmKV{Key: "/users/by-username/" + oldUsername + "/", Delete: true})
 	}
-	return nil
+	return rs.applyMulti(entries)
 }
 
 func (rs *RaftStore) DeleteUser(ctx context.Context, id string) error {
@@ -1088,10 +1148,10 @@ func (rs *RaftStore) DeleteUser(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := rs.applyCommand("delete", "/users/"+id+"/", nil); err != nil {
-		return err
-	}
-	return rs.applyCommand("delete", "/users/by-username/"+u.Username+"/", nil)
+	return rs.applyMulti([]fsmKV{
+		{Key: "/users/" + id + "/", Delete: true},
+		{Key: "/users/by-username/" + u.Username + "/", Delete: true},
+	})
 }
 
 func (rs *RaftStore) GetSetupModeEndTime(ctx context.Context) time.Time {
@@ -1112,6 +1172,36 @@ func (rs *RaftStore) SetSetupModeEndTime(ctx context.Context, t time.Time) error
 		return err
 	}
 	return rs.applyCommand("set", "/meta/setup_end", val)
+}
+
+// GetAuthEpoch returns the persisted session/auth epoch (0 when unset).
+func (rs *RaftStore) GetAuthEpoch(ctx context.Context) (int64, error) {
+	val, err := getFSMValue(rs.db, "/meta/auth_epoch")
+	if err != nil {
+		return 0, err
+	}
+	if val == nil {
+		return 0, nil
+	}
+	var epoch int64
+	if err := json.Unmarshal(val, &epoch); err != nil {
+		return 0, err
+	}
+	return epoch, nil
+}
+
+// BumpAuthEpoch increments the session/auth epoch, invalidating every
+// outstanding session across the cluster.
+func (rs *RaftStore) BumpAuthEpoch(ctx context.Context) error {
+	current, err := rs.GetAuthEpoch(ctx)
+	if err != nil {
+		return err
+	}
+	val, err := json.Marshal(current + 1)
+	if err != nil {
+		return err
+	}
+	return rs.applyCommand("set", "/meta/auth_epoch", val)
 }
 
 func (rs *RaftStore) OIDCProviders(ctx context.Context) ([]domain.OIDCProvider, error) {

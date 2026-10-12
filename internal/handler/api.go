@@ -50,48 +50,44 @@ func RegisterAPIHandlers(r chi.Router, svc *service.Service) {
 	h := &apiHandler{svc: svc}
 
 	r.Route("/channels", func(r chi.Router) {
-		r.Use(RequirePermission(svc, domain.PermChannelRead))
-		r.Get("/", h.listChannels)
-		r.Post("/", h.createChannel)
+		r.With(RequirePermission(svc, domain.PermChannelWrite)).Post("/", h.createChannel)
+		r.With(RequirePermission(svc, domain.PermChannelRead)).Get("/", h.listChannels)
 		r.Route("/{id}", func(r chi.Router) {
-			r.Use(h.channelCtx)
-			r.Get("/", h.getChannel)
-			r.Put("/", h.updateChannel)
-			r.Delete("/", h.deleteChannel)
-			r.Post("/generate-secret", h.generateSecret)
+			r.Use(h.channelCtx) // channel ID established BEFORE every auth gate
+			r.With(RequirePermission(svc, domain.PermChannelRead)).Get("/", h.getChannel)
+			r.With(RequirePermission(svc, domain.PermChannelWrite)).Put("/", h.updateChannel)
+			r.With(RequirePermission(svc, domain.PermChannelWrite)).Delete("/", h.deleteChannel)
+			r.With(RequirePermission(svc, domain.PermChannelWrite)).Post("/generate-secret", h.generateSecret)
 			r.With(RequirePermission(svc, domain.PermChannelWrite)).Post("/access-tokens", h.createAccessToken)
-			r.Get("/access-tokens", h.listAccessTokens)
+			r.With(RequirePermission(svc, domain.PermChannelRead)).Get("/access-tokens", h.listAccessTokens)
 			r.With(RequirePermission(svc, domain.PermChannelWrite)).Delete("/access-tokens/{tokenID}", h.deleteAccessToken)
 			r.With(RequirePermission(svc, domain.PermChannelWrite)).Put("/access-mode", h.updateAccessMode)
-			r.Get("/acl", h.listChannelACL)
+			r.With(RequirePermission(svc, domain.PermChannelRead)).Get("/acl", h.listChannelACL)
 			r.With(RequireChannelACLPermission(svc)).Post("/acl", h.addChannelACLEntry)
 			r.With(RequireChannelACLPermission(svc)).Delete("/acl/{entryID}", h.deleteChannelACLEntry)
 		})
 	})
 
 	r.Route("/global", func(r chi.Router) {
-		r.Use(RequirePermission(svc, domain.PermGlobalRead))
-		r.Get("/", h.getGlobalConfig)
-		r.Put("/", h.updateGlobalConfig)
+		r.With(RequirePermission(svc, domain.PermGlobalRead)).Get("/", h.getGlobalConfig)
+		r.With(RequirePermission(svc, domain.PermGlobalWrite)).Put("/", h.updateGlobalConfig)
 	})
 
 	r.Route("/users", func(r chi.Router) {
-		r.Use(RequirePermission(svc, domain.PermUsersRead))
-		r.Get("/", h.listUsers)
-		r.Post("/", h.createUser)
+		r.With(RequirePermission(svc, domain.PermUsersRead)).Get("/", h.listUsers)
+		r.With(RequirePermission(svc, domain.PermUsersWrite)).Post("/", h.createUser)
 		r.Route("/{id}", func(r chi.Router) {
-			r.Get("/", h.getUser)
-			r.Put("/", h.updateUser)
-			r.Delete("/", h.deleteUser)
+			r.With(RequirePermission(svc, domain.PermUsersRead)).Get("/", h.getUser)
+			r.With(RequirePermission(svc, domain.PermUsersWrite)).Put("/", h.updateUser)
+			r.With(RequirePermission(svc, domain.PermUsersWrite)).Delete("/", h.deleteUser)
 		})
 	})
 
 	r.Route("/rbac", func(r chi.Router) {
-		r.Use(RequirePermission(svc, domain.PermRBACRead))
-		r.Get("/roles", h.listRoles)
-		r.Get("/bindings", h.listBindings)
-		r.Put("/bindings/{userID}", h.updateBinding)
-		r.Get("/mappings", h.listRoleMappings)
+		r.With(RequirePermission(svc, domain.PermRBACRead)).Get("/roles", h.listRoles)
+		r.With(RequirePermission(svc, domain.PermRBACRead)).Get("/bindings", h.listBindings)
+		r.With(RequirePermission(svc, domain.PermRBACWrite)).Put("/bindings/{userID}", h.updateBinding)
+		r.With(RequirePermission(svc, domain.PermRBACRead)).Get("/mappings", h.listRoleMappings)
 		r.With(RequirePermission(svc, domain.PermRBACWrite)).Post("/mappings", h.createRoleMapping)
 		r.With(RequirePermission(svc, domain.PermRBACWrite)).Delete("/mappings/{id}", h.deleteRoleMapping)
 	})
@@ -125,8 +121,11 @@ func (h *apiHandler) listChannels(w http.ResponseWriter, r *http.Request) {
 	format := r.URL.Query().Get("format")
 	ctx := r.Context()
 
-	username := GetUsernameFromContext(ctx)
-	allowedChannels, _ := h.svc.UserChannels(ctx, username)
+	user := GetPrincipalFromContext(ctx)
+	if user == nil {
+		user = h.svc.ResolvePrincipalByUsername(ctx, GetUsernameFromContext(ctx))
+	}
+	allowedChannels, _ := h.svc.UserChannels(ctx, user, GetGroupsFromContext(ctx))
 
 	channels, err := h.svc.ListChannels(ctx)
 	if err != nil {
@@ -302,6 +301,30 @@ func (h *apiHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, masked)
 }
 
+// resolveActor returns the principal and verified groups for the request,
+// falling back to the display username for legacy callers.
+func (h *apiHandler) resolveActor(ctx context.Context) (*domain.User, []string) {
+	user := GetPrincipalFromContext(ctx)
+	if user == nil {
+		user = h.svc.ResolvePrincipalByUsername(ctx, GetUsernameFromContext(ctx))
+	}
+	if user == nil {
+		return nil, nil
+	}
+	return user, GetGroupsFromContext(ctx)
+}
+
+// authorizeGrant denies the request unless the actor may grant every role and
+// scope the target request asks for.
+func (h *apiHandler) authorizeGrant(w http.ResponseWriter, ctx context.Context, roles []string, channelScope string) bool {
+	actor, groups := h.resolveActor(ctx)
+	if actor == nil || !h.svc.CanAssignRoles(ctx, actor, groups, roles, channelScope) {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
+		return false
+	}
+	return true
+}
+
 func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var input struct {
@@ -316,6 +339,10 @@ func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if msg := validateStruct(&input); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	if !h.authorizeGrant(w, ctx, input.Roles, "*") {
 		return
 	}
 
@@ -389,9 +416,25 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	actor, groups := h.resolveActor(ctx)
+	if actor == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
 	u, err := h.svc.GetUser(ctx, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	// The actor must be able to grant the target's existing privileges;
+	// otherwise a less-privileged user could reset a more-privileged account.
+	if !h.svc.CanAssignRoles(ctx, actor, groups, u.Roles, "*") {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
+		return
+	}
+	if input.Roles != nil && !h.svc.CanAssignRoles(ctx, actor, groups, input.Roles, "*") {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
 		return
 	}
 	if input.Roles != nil && hasAdminRole(u.Roles) && !hasAdminRole(input.Roles) {
@@ -418,6 +461,10 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.UpdateUser(ctx, u); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Password resets and role changes revoke outstanding sessions.
+	if input.Password != "" || input.Roles != nil {
+		_ = h.svc.BumpAuthEpoch(ctx)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": u.ID, "username": u.Username})
 }
@@ -451,6 +498,8 @@ func (h *apiHandler) deleteUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Revoke the deleted user's (and any other) outstanding sessions.
+	_ = h.svc.BumpAuthEpoch(ctx)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -490,6 +539,13 @@ func (h *apiHandler) updateBinding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get user")
 		return
 	}
+	actor, groups := h.resolveActor(ctx)
+	if actor == nil ||
+		!h.svc.CanAssignRoles(ctx, actor, groups, u.Roles, "*") ||
+		!h.svc.CanAssignRoles(ctx, actor, groups, binding.Roles, "*") {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
+		return
+	}
 	if hasAdminRole(u.Roles) && !hasAdminRole(binding.Roles) {
 		writeError(w, http.StatusBadRequest, "cannot remove admin role")
 		return
@@ -498,6 +554,8 @@ func (h *apiHandler) updateBinding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Role changes revoke outstanding sessions.
+	_ = h.svc.BumpAuthEpoch(ctx)
 	writeJSON(w, http.StatusOK, &binding)
 }
 
@@ -510,23 +568,18 @@ func (h *apiHandler) getMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if username == "" {
+	user := GetPrincipalFromContext(ctx)
+	if user == nil {
+		user = h.svc.ResolvePrincipalByUsername(ctx, username)
+	}
+	if user == nil {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
+	groups := GetGroupsFromContext(ctx)
 
-	user, err := h.svc.GetUserByUsername(ctx, username)
-	if err != nil {
-		if errors.Is(err, domain.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "user not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	permissions := h.svc.GetUserPermissions(ctx, username)
-	channels, _ := h.svc.UserChannels(ctx, username)
+	permissions := h.svc.GetUserPermissions(ctx, user, groups)
+	channels, _ := h.svc.UserChannels(ctx, user, groups)
 
 	providers, _ := h.svc.OIDCProviders(ctx)
 	oidcList := make([]map[string]string, 0, len(providers))
@@ -713,6 +766,11 @@ func (h *apiHandler) createRoleMapping(w http.ResponseWriter, r *http.Request) {
 	}
 	if m.ChannelScope == "" {
 		m.ChannelScope = "*"
+	}
+	actor, groups := h.resolveActor(ctx)
+	if actor == nil || !h.svc.CanAssignRoles(ctx, actor, groups, []string{m.Role}, m.ChannelScope) {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
+		return
 	}
 	if err := h.svc.CreateRoleMapping(ctx, &m); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

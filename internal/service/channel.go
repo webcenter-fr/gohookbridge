@@ -116,6 +116,16 @@ func (s *Service) ResolveBehindReverseProxy(ctx context.Context) bool {
 	return global.Server.BehindReverseProxy
 }
 
+// ResolveTrustedProxyCIDRs returns the configured trusted reverse-proxy
+// networks whose forwarded headers may be honored.
+func (s *Service) ResolveTrustedProxyCIDRs(ctx context.Context) []string {
+	global, err := s.repo.GetGlobalConfig(ctx)
+	if err != nil {
+		return nil
+	}
+	return global.Server.TrustedProxyCIDRs
+}
+
 func (s *Service) ResolveFooter(ctx context.Context) string {
 	global, err := s.repo.GetGlobalConfig(ctx)
 	if err != nil {

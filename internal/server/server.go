@@ -332,6 +332,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 
 	rateLimiterInst := service.NewRateLimiter()
 	banTrackerInst := service.NewBanTracker()
+	loginThrottleInst := service.NewLoginThrottle()
 
 	autoCert := c.Bool("auto-cert")
 	certFile := c.String("tls-cert")
@@ -440,6 +441,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 			_ = rs.Shutdown()
 			return nil, fmt.Errorf("init OIDC handler for %s: %w", provider.ID, err)
 		}
+		oidcHandler.Resolver = svc
 		mainRouter.Get("/auth/oidc/"+provider.ID+"/login", oidcHandler.LoginHandler())
 		mainRouter.Get("/auth/oidc/"+provider.ID+"/callback", oidcHandler.CallbackHandler())
 	}
@@ -452,7 +454,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	// at /api/auth: that mount would shadow the admin /api/auth/internal route
 	// registered by RegisterAPIHandlers on the /api subrouter.
 	mainRouter.Get("/api/auth/methods", handler.APIAuthMethodsHandler(svc))
-	mainRouter.Post("/api/auth/login", handler.APILoginHandler(svc, sessionSecret, banTrackerInst, cookieSecure))
+	mainRouter.Post("/api/auth/login", handler.APILoginHandler(svc, sessionSecret, banTrackerInst, loginThrottleInst, cookieSecure))
 	mainRouter.Post("/api/auth/logout", handler.APILogoutHandler(cookieSecure))
 
 	// API routes — dynamic auth handles setup mode and authentication

@@ -31,13 +31,23 @@ type OIDCDiscovery struct {
 	UserinfoEndpoint      string `json:"userinfo_endpoint"`
 }
 
+// OIDCPrincipalResolver resolves the local account bound to an external
+// (provider, issuer, subject) identity. *service.Service implements it.
+type OIDCPrincipalResolver interface {
+	GetUserByExternalIdentity(ctx context.Context, providerID, issuer, subject string) (*domain.User, error)
+	GetAuthEpoch(ctx context.Context) int64
+}
+
 type OIDCHandler struct {
 	Provider      domain.OIDCProvider
 	Discovery     *OIDCDiscovery
 	SessionSecret [32]byte
 	PublicURL     string
 	SecureCookies bool
-	verifier      *oidc.IDTokenVerifier
+	// Resolver binds the OIDC login to a pre-linked local account. When nil
+	// (tests only) the legacy display-name session is emitted.
+	Resolver OIDCPrincipalResolver
+	verifier *oidc.IDTokenVerifier
 }
 
 func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, publicURL string, secureCookies bool) (*OIDCHandler, error) {
@@ -202,21 +212,14 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 				http.Error(w, "ID token validation failed", http.StatusBadRequest)
 				return
 			}
-			username := ""
-			if email, emailOK := claims["email"].(string); emailOK {
-				username = email
+			if v, ok := claims["email_verified"].(bool); ok && !v {
+				http.Error(w, "email not verified", http.StatusForbidden)
+				return
 			}
-			if username == "" {
-				username = idToken.Subject
-			}
-			groups := extractGroupsFromToken(claims, h.Provider.GroupsClaim)
-
-			sessionTok := &service.SessionToken{
-				Username:  username,
-				Method:    "oidc",
-				Provider:  h.Provider.ID,
-				ExpiresAt: time.Now().Unix() + sessionMaxAge,
-				Groups:    groups,
+			sessionTok, err := h.buildOIDCSession(r.Context(), idToken.Subject, claims)
+			if err != nil {
+				http.Error(w, "no account linked for this identity", http.StatusForbidden)
+				return
 			}
 			encoded, err := service.EncodeSession(sessionTok, h.SessionSecret)
 			if err != nil {
@@ -236,21 +239,19 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 			return
 		}
 
-		sub, _ := userInfo["sub"].(string)
-		email, _ := userInfo["email"].(string)
-		username := email
-		if username == "" {
-			username = sub
+		if v, ok := userInfo["email_verified"].(bool); ok && !v {
+			http.Error(w, "email not verified", http.StatusForbidden)
+			return
 		}
-
-		groups := extractGroupsFromToken(userInfo, h.Provider.GroupsClaim)
-
-		sessionTok := &service.SessionToken{
-			Username:  username,
-			Method:    "oidc",
-			Provider:  h.Provider.ID,
-			ExpiresAt: time.Now().Unix() + sessionMaxAge,
-			Groups:    groups,
+		sub, _ := userInfo["sub"].(string)
+		if sub == "" {
+			http.Error(w, "userinfo missing sub", http.StatusForbidden)
+			return
+		}
+		sessionTok, err := h.buildOIDCSession(r.Context(), sub, userInfo)
+		if err != nil {
+			http.Error(w, "no account linked for this identity", http.StatusForbidden)
+			return
 		}
 		encoded, err := service.EncodeSession(sessionTok, h.SessionSecret)
 		if err != nil {
@@ -279,6 +280,41 @@ func (h *OIDCHandler) verifyIDToken(ctx context.Context, rawIDToken, nonce strin
 		return nil, nil, fmt.Errorf("decode id token claims: %w", err)
 	}
 	return idToken, claims, nil
+}
+
+// buildOIDCSession binds the verified (issuer, subject) to a pre-linked local
+// account. It never auto-links and never falls back to email for
+// authorization. When Resolver is nil (tests), it emits a display-only
+// session so the existing token-validation tests remain meaningful.
+func (h *OIDCHandler) buildOIDCSession(ctx context.Context, subject string, claims map[string]any) (*service.SessionToken, error) {
+	issuer := strings.TrimSuffix(h.Provider.IssuerURL, "/")
+	groups := extractGroupsFromToken(claims, h.Provider.GroupsClaim)
+	tok := &service.SessionToken{
+		Method:    "oidc",
+		Provider:  h.Provider.ID,
+		Issuer:    issuer,
+		Subject:   subject,
+		ExpiresAt: time.Now().Unix() + sessionMaxAge,
+		Groups:    groups,
+	}
+	if h.Resolver == nil {
+		tok.Username = subject
+		if email, ok := claims["email"].(string); ok && email != "" {
+			tok.Username = email
+		}
+		return tok, nil
+	}
+	user, err := h.Resolver.GetUserByExternalIdentity(ctx, h.Provider.ID, issuer, subject)
+	if err != nil || user == nil {
+		return nil, fmt.Errorf("no account linked for external identity")
+	}
+	tok.UserID = user.ID
+	tok.Username = user.Username
+	tok.AuthEpoch = h.Resolver.GetAuthEpoch(ctx)
+	if sid, err := service.GenerateRandomHex(); err == nil {
+		tok.SessionID = sid
+	}
+	return tok, nil
 }
 
 func (h *OIDCHandler) exchangeCode(code string, r *http.Request) (map[string]any, error) {

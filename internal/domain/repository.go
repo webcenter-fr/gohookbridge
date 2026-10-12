@@ -25,6 +25,7 @@ type ChannelRepository interface {
 type UserRepository interface {
 	GetUser(ctx context.Context, id string) (*User, error)
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
+	GetUserByExternalIdentity(ctx context.Context, providerID, issuer, subject string) (*User, error)
 	ListUsers(ctx context.Context) ([]*User, error)
 	CreateUser(ctx context.Context, u *User) error
 	UpdateUser(ctx context.Context, u *User) error
@@ -58,6 +59,11 @@ type ConfigRepository interface {
 	SetClientCursor(ctx context.Context, cursor *ClientCursor) error
 	GetSetupModeEndTime(ctx context.Context) time.Time
 	SetSetupModeEndTime(ctx context.Context, t time.Time) error
+	// GetAuthEpoch returns the current session/auth epoch; sessions carrying a
+	// different epoch are stale and must be rejected.
+	GetAuthEpoch(ctx context.Context) (int64, error)
+	// BumpAuthEpoch invalidates every outstanding session.
+	BumpAuthEpoch(ctx context.Context) error
 }
 
 // Repository is the persistence contract every repository implementation

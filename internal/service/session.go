@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -15,12 +16,19 @@ import (
 )
 
 // SessionToken is the signed session payload stored in the session cookie.
+// UserID/Issuer/Subject bind the session to a resolved principal; Username is
+// display-only and must never be used for authorization decisions.
 type SessionToken struct {
-	Username  string   `json:"username"`
-	Method    string   `json:"method"`
+	UserID    string   `json:"user_id,omitempty"`
+	Username  string   `json:"username,omitempty"`
+	Method    string   `json:"method"` // "internal" | "oidc"
 	Provider  string   `json:"provider,omitempty"`
+	Issuer    string   `json:"issuer,omitempty"`
+	Subject   string   `json:"subject,omitempty"`
 	ExpiresAt int64    `json:"expires_at"`
 	Groups    []string `json:"groups,omitempty"`
+	SessionID string   `json:"sid,omitempty"`
+	AuthEpoch int64    `json:"auth_epoch,omitempty"`
 }
 
 const sessionSecretKDFInfo = "gohookbridge.session.signing.v1"
@@ -98,6 +106,30 @@ func DecodeSession(tokenStr string, secret [32]byte) (*SessionToken, error) {
 		return nil, fmt.Errorf("token expired")
 	}
 	return &token, nil
+}
+
+// GetAuthEpoch returns the current session/auth epoch (0 on error).
+func (s *Service) GetAuthEpoch(ctx context.Context) int64 {
+	epoch, err := s.repo.GetAuthEpoch(ctx)
+	if err != nil {
+		return 0
+	}
+	return epoch
+}
+
+// BumpAuthEpoch invalidates every outstanding session.
+func (s *Service) BumpAuthEpoch(ctx context.Context) error {
+	return s.repo.BumpAuthEpoch(ctx)
+}
+
+// SessionEpochValid reports whether the session was minted under the current
+// auth epoch. Stale sessions (e.g. after a password reset or role change) are
+// rejected.
+func (s *Service) SessionEpochValid(ctx context.Context, tok *SessionToken) bool {
+	if tok == nil {
+		return false
+	}
+	return tok.AuthEpoch == s.GetAuthEpoch(ctx)
 }
 
 // GenerateRandomHex returns a random 16-byte value encoded as 32 hex chars.
