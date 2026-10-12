@@ -1,7 +1,9 @@
 package server
 
 import (
+	"net/http"
 	"testing"
+	"time"
 
 	"gotest.tools/v3/assert"
 )
@@ -88,4 +90,16 @@ func TestEffectivePublicAddr(t *testing.T) {
 	assert.Equal(t, effectivePublicAddr("127.0.0.1", 8081), "127.0.0.1:8081")
 	assert.Equal(t, effectivePublicAddr("::1", 8081), "[::1]:8081")
 	assert.Equal(t, effectivePublicAddr("", 8081), ":8081")
+}
+
+// F11: both listeners run with bounded read/idle timeouts so stalled clients
+// cannot pin connections, while WriteTimeout stays unset so long-lived SSE
+// streams survive (their writes are bounded by per-write deadlines instead).
+func TestNewHTTPServerTimeouts(t *testing.T) {
+	srv := newHTTPServer("127.0.0.1:8081", http.NewServeMux())
+	assert.Equal(t, srv.Addr, "127.0.0.1:8081")
+	assert.Assert(t, srv.ReadTimeout > 0, "ReadTimeout must be bounded")
+	assert.Assert(t, srv.ReadHeaderTimeout > 0, "ReadHeaderTimeout must be bounded")
+	assert.Assert(t, srv.IdleTimeout > 0, "IdleTimeout must be bounded")
+	assert.Equal(t, srv.WriteTimeout, time.Duration(0), "WriteTimeout must stay unset for SSE")
 }

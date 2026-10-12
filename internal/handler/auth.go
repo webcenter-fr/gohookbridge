@@ -154,8 +154,9 @@ func APILoginHandler(svc *service.Service, secret [32]byte, banTracker *service.
 			Username string `json:"username"`
 			Password string `json:"password"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		// The login endpoint is unauthenticated: cap the body so a huge
+		// payload cannot be buffered without limit (CWE-400, F11).
+		if !decodeJSON(w, r, &body) {
 			return
 		}
 

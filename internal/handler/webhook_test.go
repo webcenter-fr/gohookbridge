@@ -131,7 +131,7 @@ func TestHandleWebhookPost(t *testing.T) {
 		assert.Equal(t, resp.StatusCode, http.StatusAccepted)
 
 		select {
-		case event := <-live:
+		case event := <-live.C:
 			assert.Assert(t, len(event) > 0)
 			var eventData map[string]any
 			err := json.Unmarshal(event, &eventData)
@@ -291,7 +291,7 @@ func TestHandleWebhookPostWithNATS(t *testing.T) {
 		assert.Equal(t, resp.StatusCode, http.StatusAccepted)
 
 		select {
-		case data := <-live:
+		case data := <-live.C:
 			var eventData map[string]any
 			err := json.Unmarshal(data, &eventData)
 			assert.NilError(t, err)
@@ -418,7 +418,7 @@ func TestHandleEventReplay(t *testing.T) {
 		assert.Equal(t, w.Code, http.StatusAccepted)
 
 		select {
-		case event := <-live:
+		case event := <-live.C:
 			var eventData map[string]any
 			assert.NilError(t, json.Unmarshal(event, &eventData))
 			bodyB, _ := eventData["bodyB"].(string)
@@ -489,7 +489,7 @@ func TestWebhookHeaderAllowlist(t *testing.T) {
 	assert.Equal(t, w.Result().StatusCode, http.StatusAccepted)
 
 	select {
-	case event := <-live:
+	case event := <-live.C:
 		var eventData map[string]any
 		assert.NilError(t, json.Unmarshal(event, &eventData))
 

@@ -86,6 +86,19 @@ func TestCreateChannel_ValidID_63Char(t *testing.T) {
 	assert.Equal(t, w.Code, http.StatusCreated)
 }
 
+// F11/CWE-400: API mutation handlers cap the request body; an oversized JSON
+// document is rejected with 413 instead of being buffered without limit.
+func TestAPIMutationRejectsOversizedBody(t *testing.T) {
+	_, router := setupAPI(t)
+
+	body := `{"id":"` + strings.Repeat("a", maxJSONBodySize) + `"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/channels", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, w.Code, http.StatusRequestEntityTooLarge)
+}
+
 func TestCreateChannel_InvalidID_Empty(t *testing.T) {
 	_, router := setupAPI(t)
 	w := httptest.NewRecorder()

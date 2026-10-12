@@ -91,6 +91,20 @@ func effectivePublicAddr(address string, port int) string {
 	return net.JoinHostPort(address, strconv.Itoa(port))
 }
 
+// newHTTPServer builds an HTTP server with bounded read/idle timeouts so slow
+// or stalled clients cannot pin connections indefinitely (F11). WriteTimeout
+// is deliberately unset: it would kill long-lived SSE streams, whose writes
+// are bounded individually by per-write deadlines instead.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadTimeout:       5 * time.Minute,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+}
+
 // buildWebhookRouter builds the POST-only webhook ingestion sub-router with the
 // ban, rate-limit, IP-restriction, and produce-scoped channel-access middleware
 // and the webhook POST handler. Shared by the internal and public routers so the
@@ -316,6 +330,9 @@ func NewServer(c *cli.Context) (*Server, error) {
 		ClusterPassword: c.String("nats-cluster-password"),
 		DisableCluster:  c.Bool("nats-disable-cluster"),
 		MaxPayload:      c.Int("nats-max-payload"),
+		MaxPending:      c.Int64("nats-max-pending"),
+		SubQueueDepth:   c.Int("sse-queue-depth"),
+		SubQueueBytes:   c.Int("sse-queue-bytes"),
 	}
 	if caFile, certFile, keyFile := c.String("nats-cluster-tls-ca"), c.String("nats-cluster-tls-cert"), c.String("nats-cluster-tls-key"); caFile != "" || certFile != "" || keyFile != "" {
 		if caFile == "" || certFile == "" || keyFile == "" {
@@ -462,7 +479,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	mainRouter.Get("/readyz", handler.RetReadyz(rs))
 	mainRouter.Get("/startup", handler.RetStartup(rs))
 
-	mainRouter.Get(handler.EventsPath, handler.ChannelAccessMiddleware(svc, "consume", banTrackerInst)(handler.HandleEventsGet(broker, svc)).ServeHTTP)
+	mainRouter.Get(handler.EventsPath, handler.ChannelAccessMiddleware(svc, "consume", banTrackerInst)(handler.HandleEventsGet(broker, svc, c.Int("max-sse-connections"))).ServeHTTP)
 
 	// OIDC routes (registered dynamically from Raft config)
 	providers, _ := svc.OIDCProviders(ctx)
@@ -562,11 +579,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 
 	var publicHTTPServer *http.Server
 	if cfg.publicAddr != "" {
-		publicHTTPServer = &http.Server{
-			Addr:              cfg.publicAddr,
-			Handler:           buildPublicRouter(broker, svc, banTrackerInst, rateLimiterInst, rs),
-			ReadHeaderTimeout: 10 * time.Second,
-		}
+		publicHTTPServer = newHTTPServer(cfg.publicAddr, buildPublicRouter(broker, svc, banTrackerInst, rateLimiterInst, rs))
 	}
 
 	fmt.Fprintf(os.Stdout, "Serving for webhooks on %s\n", publicURL)
@@ -576,22 +589,18 @@ func NewServer(c *cli.Context) (*Server, error) {
 	}
 
 	return &Server{
-		repo:          rs,
-		svc:           svc,
-		broker:        broker,
-		rateLimiter:   rateLimiterInst,
-		banTracker:    banTrackerInst,
-		sessionSecret: sessionSecret,
-		publicURL:     publicURL,
-		certFile:      certFile,
-		certKey:       certKey,
-		autoCert:      autoCert,
-		cancelCtx:     cancelStartup,
-		httpServer: &http.Server{
-			Addr:              cfg.internalAddr,
-			Handler:           finalRouter,
-			ReadHeaderTimeout: 10 * time.Second,
-		},
+		repo:             rs,
+		svc:              svc,
+		broker:           broker,
+		rateLimiter:      rateLimiterInst,
+		banTracker:       banTrackerInst,
+		sessionSecret:    sessionSecret,
+		publicURL:        publicURL,
+		certFile:         certFile,
+		certKey:          certKey,
+		autoCert:         autoCert,
+		cancelCtx:        cancelStartup,
+		httpServer:       newHTTPServer(cfg.internalAddr, finalRouter),
 		publicHTTPServer: publicHTTPServer,
 	}, nil
 }

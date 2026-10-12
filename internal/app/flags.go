@@ -434,6 +434,12 @@ var ServerFlags = []cli.Flag{
 		Value:   1048576, // 1 MiB
 		EnvVars: []string{"GOHOOKBRIDGE_NATS_MAX_PAYLOAD"},
 	},
+	&cli.Int64Flag{
+		Name:    "nats-max-pending",
+		Usage:   "Max pending bytes buffered per NATS client connection",
+		Value:   67108864, // 64 MiB
+		EnvVars: []string{"GOHOOKBRIDGE_NATS_MAX_PENDING"},
+	},
 	&cli.StringFlag{
 		Name:    "nats-cluster-username",
 		Usage:   "Username for NATS cluster route authentication",

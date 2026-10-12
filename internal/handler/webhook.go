@@ -409,6 +409,8 @@ func HandleGenerateEncryptionKey(svc *service.Service) http.HandlerFunc {
 		var req struct {
 			Mode string `json:"mode"`
 		}
+		// Cap the request body (CWE-400, F11); decode errors keep the default mode.
+		r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if req.Mode == "" {
 			req.Mode = "server_side"

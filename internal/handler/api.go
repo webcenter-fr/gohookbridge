@@ -165,8 +165,7 @@ func toChannelResponse(p *domain.Channel) ChannelResponse {
 func (h *apiHandler) createChannel(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var ch domain.Channel
-	if err := json.NewDecoder(r.Body).Decode(&ch); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &ch) {
 		return
 	}
 	username := GetUsernameFromContext(ctx)
@@ -220,8 +219,7 @@ func (h *apiHandler) updateChannel(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
 	var req ChannelUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if req.EncryptionMode != nil && !validEncryptionMode(*req.EncryptionMode) {
@@ -351,8 +349,7 @@ func (h *apiHandler) getGlobalConfig(w http.ResponseWriter, r *http.Request) {
 func (h *apiHandler) updateGlobalConfig(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var req GlobalConfigUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if req.Server != nil && req.Server.SessionSecret != nil && *req.Server.SessionSecret != "" {
@@ -495,8 +492,7 @@ func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 		Roles    []string `json:"roles"`
 		Channels []string `json:"channels"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &input) {
 		return
 	}
 	if msg := validateStruct(&input); msg != "" {
@@ -569,8 +565,7 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 		Roles    []string `json:"roles"`
 		Channels []string `json:"channels"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &input) {
 		return
 	}
 	if msg := validateStruct(&input); msg != "" {
@@ -687,8 +682,7 @@ func (h *apiHandler) updateBinding(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	userID := chi.URLParam(r, "userID")
 	var binding domain.UserBinding
-	if err := json.NewDecoder(r.Body).Decode(&binding); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &binding) {
 		return
 	}
 	binding.UserID = userID
@@ -797,8 +791,7 @@ func (h *apiHandler) createAccessToken(w http.ResponseWriter, r *http.Request) {
 		Name  string `json:"name"`
 		Scope string `json:"scope"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if body.Name == "" {
@@ -869,8 +862,7 @@ func (h *apiHandler) updateAccessMode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		AccessMode string `json:"access_mode"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if body.AccessMode != "public" && body.AccessMode != "token" {
@@ -910,8 +902,7 @@ func (h *apiHandler) listRoleMappings(w http.ResponseWriter, r *http.Request) {
 func (h *apiHandler) createRoleMapping(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var m domain.RoleMapping
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &m) {
 		return
 	}
 	if m.Type != "user" && m.Type != "group" {
@@ -964,8 +955,7 @@ func (h *apiHandler) addChannelACLEntry(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	channelID := chi.URLParam(r, "id")
 	var m domain.ChannelRoleMapping
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &m) {
 		return
 	}
 	if m.Type != "user" && m.Type != "group" {
@@ -1019,8 +1009,7 @@ func (h *apiHandler) listOIDCProviders(w http.ResponseWriter, r *http.Request) {
 func (h *apiHandler) updateAllOIDCProviders(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var providers []domain.OIDCProvider
-	if err := json.NewDecoder(r.Body).Decode(&providers); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &providers) {
 		return
 	}
 	if providers == nil {
@@ -1046,8 +1035,7 @@ func (h *apiHandler) updateOIDCProvider(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
 	var updated domain.OIDCProvider
-	if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &updated) {
 		return
 	}
 	providers, err := h.svc.OIDCProviders(ctx)
@@ -1114,8 +1102,7 @@ func (h *apiHandler) setInternalAuth(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Enabled bool `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if err := h.svc.SetInternalAuthEnabled(r.Context(), body.Enabled); err != nil {
@@ -1127,6 +1114,27 @@ func (h *apiHandler) setInternalAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"enabled": body.Enabled})
+}
+
+// maxJSONBodySize caps JSON API/login request bodies (F11). These endpoints
+// accept small documents, so a tight bound closes unbounded-read DoS
+// (CWE-400) without affecting legitimate clients.
+const maxJSONBodySize = 1 << 20 // 1 MiB
+
+// decodeJSON decodes a JSON request body capped at maxJSONBodySize (F11),
+// mapping oversized bodies to 413 and malformed JSON to 400. It returns false
+// when the body was rejected (the response is already written).
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		if strings.Contains(err.Error(), "http: request body too large") {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+		}
+		return false
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -46,7 +46,7 @@ func TestSendPayloadHonorsEncryption(t *testing.T) {
 	assert.Equal(t, w.Code, http.StatusAccepted, "body: %s", w.Body.String())
 
 	select {
-	case event := <-live:
+	case event := <-live.C:
 		var eventData map[string]any
 		assert.NilError(t, json.Unmarshal(event, &eventData))
 		bodyB, _ := eventData["bodyB"].(string)
