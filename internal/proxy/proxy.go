@@ -7,7 +7,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/webcenter-fr/gohookbridge/pkg/crypto"
@@ -58,16 +60,40 @@ func startProxy(c *cli.Context) error {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 	client := &http.Client{Transport: tr, Timeout: 60 * time.Second}
+	maxBodySize := c.Int("max-body-size")
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/", proxyHandler(pubKeyBytes, targetURL, client, maxBodySize))
+
+	srv := &http.Server{
+		Addr:              listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 30 * time.Second,
+	}
+
+	fmt.Fprintf(os.Stdout, "Encrypt proxy listening on %s, forwarding to %s\n", listenAddr, redactedTargetURL(targetURL))
+	return srv.ListenAndServe()
+}
+
+// proxyHandler returns the encrypting-proxy request handler: it bounds and
+// reads the inbound body (F11), encrypts it for the channel, and forwards it
+// to the target server with sanitized headers (F10).
+func proxyHandler(pubKeyBytes *[32]byte, targetURL string, client *http.Client, maxBodySize int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "only POST is supported", http.StatusMethodNotAllowed)
 			return
 		}
 
+		// F11: bound the inbound body before reading so an oversized or slow
+		// producer cannot exhaust proxy memory.
+		r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodySize))
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			if strings.Contains(err.Error(), "http: request body too large") {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -86,15 +112,11 @@ func startProxy(c *cli.Context) error {
 			return
 		}
 
-		req.Header = r.Header.Clone()
+		// F10: sanitize headers at the proxy trust boundary (see
+		// forwardableProxyHeaders). Hop-by-hop headers are dropped by the
+		// allowlist; Content-Length is set from the encrypted body below.
+		req.Header = forwardableProxyHeaders(r)
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Del("Content-Length")
-		req.Header.Del("Transfer-Encoding")
-		req.Header.Del("Connection")
-		req.Header.Del("Keep-Alive")
-		req.Header.Del("Proxy-Authorization")
-		req.Header.Del("TE")
-		req.Header.Del("Trailer")
 		req.ContentLength = int64(len(encrypted))
 
 		resp, err := client.Do(req) //nolint:gosec // user-configured URL
@@ -111,14 +133,69 @@ func startProxy(c *cli.Context) error {
 		}
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
-	})
-
-	srv := &http.Server{
-		Addr:              listenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 30 * time.Second,
 	}
+}
 
-	fmt.Fprintf(os.Stdout, "Encrypt proxy listening on %s, forwarding to %s\n", listenAddr, targetURL)
-	return srv.ListenAndServe()
+// proxyForwardAllowlist is the fixed set of inbound headers the encrypting
+// proxy forwards to the gohookbridge server (F10). It mirrors the server-side
+// webhook allowlist (internal/handler/webhook.go forwardedHeaderAllowlist)
+// plus the GitLab ingestion token, which the server consumes to authenticate
+// ingestion but never relays. Credentials (Authorization, Cookie, ...),
+// proxy/identity/routing headers (X-Real-IP, X-Forwarded-Host, ...) and
+// arbitrary custom headers are dropped at this trust boundary.
+var proxyForwardAllowlist = map[string]struct{}{
+	"content-type":         {},
+	"user-agent":           {},
+	"x-event-type":         {},
+	"x-github-event":       {},
+	"x-github-delivery":    {},
+	"x-github-hook-id":     {},
+	"x-gitlab-event":       {},
+	"x-gitlab-event-uuid":  {},
+	"x-gitlab-token":       {},
+	"x-gitea-event":        {},
+	"x-gitea-delivery":     {},
+	"x-gitea-signature":    {},
+	"x-event-key":          {},
+	"x-bitbucket-event":    {},
+	"x-bitbucket-delivery": {},
+	"x-hub-signature":      {},
+	"x-hub-signature-256":  {},
+}
+
+// forwardableProxyHeaders builds the upstream header set from an inbound
+// request: allowlisted provider metadata and ingestion/signature headers only,
+// with X-Forwarded-For replaced by the immediate client IP so the server's
+// trusted-proxy handling (F18) can never be fed a forged identity by a public
+// producer (F10).
+func forwardableProxyHeaders(r *http.Request) http.Header {
+	fwd := make(http.Header, len(r.Header))
+	for k, vals := range r.Header {
+		if _, ok := proxyForwardAllowlist[strings.ToLower(k)]; !ok || len(vals) == 0 {
+			continue
+		}
+		fwd[k] = vals
+	}
+	clientIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		clientIP = r.RemoteAddr
+	}
+	fwd.Set("X-Forwarded-For", clientIP)
+	return fwd
+}
+
+// redactedTargetURL returns the target URL with credential query parameters
+// (the channel access token) replaced, so the startup log never leaks
+// secrets (CWE-532, F33).
+func redactedTargetURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "<invalid-url>"
+	}
+	q := parsed.Query()
+	if q.Get("token") != "" {
+		q.Set("token", "<redacted>")
+		parsed.RawQuery = q.Encode()
+	}
+	return parsed.String()
 }

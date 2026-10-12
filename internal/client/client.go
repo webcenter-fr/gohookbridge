@@ -161,14 +161,14 @@ func (c hookBridge) parse(now time.Time, data []byte) (payloadMsg, error) {
 				}
 			}
 		default:
-			if strings.HasPrefix(payloadKey, "x-") || payloadKey == "user-agent" {
-				if pv, ok := payloadValue.(string); ok {
-					if strings.ToLower(payloadKey) == "x-forwarded-for" {
-						pv = strings.Split(pv, ":")[0]
-					}
-					pm.headers[title(payloadKey)] = pv
-				}
-			} else if payloadKey != "bodyB" && payloadKey != "body" && payloadValue != nil {
+			// F10: only allowlisted provider metadata headers are
+			// reconstructed from the relay envelope. Credentials
+			// (Authorization, Cookie, X-Gitlab-Token, X-Api-Key, ...),
+			// proxy/identity/routing headers (X-Forwarded-For, X-Real-IP,
+			// ...) and arbitrary custom headers are dropped so they can never
+			// be forwarded to the internal target, logged, or written to
+			// replay files.
+			if forwardableHeader(payloadKey) {
 				if pv, ok := payloadValue.(string); ok {
 					pm.headers[title(payloadKey)] = pv
 				}
@@ -204,6 +204,40 @@ func emoji(emoji, color string, decorate bool) string {
 	return ansi.Color(emoji, color) + " "
 }
 
+// forwardableHeaderAllowlist is the fixed set of relay-envelope headers the
+// client reconstructs and forwards to the internal target (F10). It mirrors the
+// server-side webhook allowlist: per-provider metadata plus the HMAC signature
+// headers (forwarded because downstream re-verification genuinely requires
+// them). Credentials (Authorization, Cookie, X-Gitlab-Token, X-Api-Key, ...),
+// proxy/identity/routing headers (X-Forwarded-For, X-Real-IP, ...) and arbitrary
+// custom headers are dropped so a public producer can never make the internal
+// target inherit a forged identity/IP or a leaked credential.
+var forwardableHeaderAllowlist = map[string]struct{}{
+	"content-type":         {},
+	"user-agent":           {},
+	"x-event-type":         {},
+	"x-github-event":       {},
+	"x-github-delivery":    {},
+	"x-github-hook-id":     {},
+	"x-gitlab-event":       {},
+	"x-gitlab-event-uuid":  {},
+	"x-gitea-event":        {},
+	"x-gitea-delivery":     {},
+	"x-gitea-signature":    {},
+	"x-event-key":          {},
+	"x-bitbucket-event":    {},
+	"x-bitbucket-delivery": {},
+	"x-hub-signature":      {},
+	"x-hub-signature-256":  {},
+}
+
+// forwardableHeader reports whether a relay-envelope header may be
+// reconstructed and forwarded to the internal target.
+func forwardableHeader(name string) bool {
+	_, ok := forwardableHeaderAllowlist[strings.ToLower(name)]
+	return ok
+}
+
 func buildHeaders(headers map[string]string) string {
 	var b strings.Builder
 	for k, v := range headers {
@@ -226,7 +260,7 @@ func buildCurlHeaders(headers map[string]string) string {
 
 func saveData(rd *replayDataOpts, logger *slog.Logger, pm payloadMsg) error {
 	if _, err := os.Stat(rd.saveDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(rd.saveDir, 0o755); err != nil {
+		if err := os.MkdirAll(rd.saveDir, 0o700); err != nil {
 			return err
 		}
 	}
@@ -237,7 +271,7 @@ func saveData(rd *replayDataOpts, logger *slog.Logger, pm payloadMsg) error {
 	}
 
 	jsonfile := fmt.Sprintf("%s/%s.json", rd.saveDir, fbasepath)
-	f, err := os.Create(jsonfile)
+	f, err := os.OpenFile(jsonfile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
@@ -248,7 +282,7 @@ func saveData(rd *replayDataOpts, logger *slog.Logger, pm payloadMsg) error {
 
 	shscript := fmt.Sprintf("%s/%s.sh", rd.saveDir, fbasepath)
 	logger.InfoContext(context.Background(), fmt.Sprintf("%s%s and %s has been saved", emoji("⌁", "yellow+b", rd.decorate), shscript, jsonfile))
-	s, err := os.Create(shscript)
+	s, err := os.OpenFile(shscript, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o700)
 	if err != nil {
 		return err
 	}
@@ -279,7 +313,7 @@ func saveData(rd *replayDataOpts, logger *slog.Logger, pm payloadMsg) error {
 	}); err != nil {
 		return err
 	}
-	return os.Chmod(shscript, 0o755)
+	return os.Chmod(shscript, 0o700)
 }
 
 func buildHttpieHeaders(headers map[string]string) string {

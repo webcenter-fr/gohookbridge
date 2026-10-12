@@ -209,16 +209,20 @@ func HandleWebhookPost(broker *nats.Broker, svc *service.Service, banTracker *se
 		var headersBuilder strings.Builder
 		payload := make(map[string]any)
 		for k, v := range r.Header {
-			// The log line must never leak credentials: webhook secrets
-			// (X-Gitlab-Token), signatures, Authorization and cookies are
-			// redacted from stdout logs (CWE-532). The downstream event payload
-			// keeps the full headers for forwarding.
-			if sensitiveHeaderForLogs(k) {
-				fmt.Fprintf(&headersBuilder, " %s=<redacted>", k)
-			} else {
+			// F10: only allowlisted provider metadata headers enter the relay
+			// envelope. Credentials used to authenticate ingestion
+			// (Authorization, Cookie, X-Gitlab-Token, X-Api-Key, ...),
+			// proxy/identity/routing headers (X-Forwarded-For, X-Real-IP, ...)
+			// and arbitrary custom headers are dropped at the trust boundary so
+			// they can never reach subscribers or be re-forwarded to internal
+			// targets. Credential headers are still logged as a redacted marker
+			// (CWE-532); every other dropped header is absent from the log line.
+			if forwardedHeader(k) {
 				fmt.Fprintf(&headersBuilder, " %s=%s", k, v[0])
+				payload[strings.ToLower(k)] = v[0]
+			} else if sensitiveHeaderForLogs(k) {
+				fmt.Fprintf(&headersBuilder, " %s=<redacted>", k)
 			}
-			payload[strings.ToLower(k)] = v[0]
 		}
 		payload["timestamp"] = fmt.Sprintf("%d", now.UnixMilli())
 		payload["bodyB"] = base64.StdEncoding.EncodeToString(payloadBytes)
@@ -449,6 +453,39 @@ func publishEvent(broker *nats.Broker, channel string, reencoded []byte) error {
 		return err
 	}
 	return nil
+}
+
+// forwardedHeaderAllowlist is the fixed set of inbound webhook headers that may
+// enter the relay event payload (F10). It covers the per-provider metadata the
+// client and UI rely on (event type, delivery ID, content type, user agent) and
+// the HMAC signature headers, which are forwarded because downstream
+// re-verification genuinely requires them. The GitLab token is the shared
+// secret itself and is never forwarded; neither are Authorization, Cookie,
+// proxy/identity/routing headers, nor arbitrary custom headers.
+var forwardedHeaderAllowlist = map[string]struct{}{
+	"content-type":         {},
+	"user-agent":           {},
+	"x-event-type":         {},
+	"x-github-event":       {},
+	"x-github-delivery":    {},
+	"x-github-hook-id":     {},
+	"x-gitlab-event":       {},
+	"x-gitlab-event-uuid":  {},
+	"x-gitea-event":        {},
+	"x-gitea-delivery":     {},
+	"x-gitea-signature":    {},
+	"x-event-key":          {},
+	"x-bitbucket-event":    {},
+	"x-bitbucket-delivery": {},
+	"x-hub-signature":      {},
+	"x-hub-signature-256":  {},
+}
+
+// forwardedHeader reports whether an inbound webhook header may enter the relay
+// event payload.
+func forwardedHeader(name string) bool {
+	_, ok := forwardedHeaderAllowlist[strings.ToLower(name)]
+	return ok
 }
 
 // sensitiveHeaderForLogs reports whether a request header carries credentials

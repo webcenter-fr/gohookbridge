@@ -451,3 +451,66 @@ func TestSensitiveHeaderForLogs(t *testing.T) {
 		assert.Assert(t, !sensitiveHeaderForLogs(h), "header %q should not be redacted", h)
 	}
 }
+
+// TestWebhookHeaderAllowlist proves F10: only allowlisted provider metadata
+// headers enter the relay envelope. Credentials (Authorization, Cookie, the
+// GitLab webhook secret, X-Api-Key), proxy/identity headers (X-Forwarded-For,
+// X-Real-IP) and arbitrary custom headers are dropped at the trust boundary.
+func TestWebhookHeaderAllowlist(t *testing.T) {
+	broker := newNatsBroker(t, 4252)
+	svc := service.NewService(storetest.NewRaftStore(t), nil)
+
+	historical, live := broker.Subscribe("allowlist-channel", time.Time{}, 10)
+	defer broker.Unsubscribe("allowlist-channel", live)
+
+	payloadBytes := []byte(`{"event":"test"}`)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/webhook/allowlist-channel", bytes.NewReader(payloadBytes))
+	req.Header.Set("Content-Type", contentType)
+	// Allowlisted provider metadata — must be forwarded to subscribers.
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-GitHub-Delivery", "d-123")
+	req.Header.Set("User-Agent", "gohookbridge-test")
+	req.Header.Set("X-Hub-Signature-256", "sha256=abc")
+	// Credentials, proxy/identity and custom headers — must be dropped (F10).
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req.Header.Set("Cookie", "session=abc")
+	req.Header.Set("X-Gitlab-Token", "gitlab-secret")
+	req.Header.Set("X-Api-Key", "api-key-secret")
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.Header.Set("X-Real-Ip", "1.2.3.4")
+	req.Header.Set("X-Foo", "bar")
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("channel", "allowlist-channel")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	HandleWebhookPost(broker, svc, service.NewBanTracker())(w, req)
+	assert.Equal(t, w.Result().StatusCode, http.StatusAccepted)
+
+	select {
+	case event := <-live:
+		var eventData map[string]any
+		assert.NilError(t, json.Unmarshal(event, &eventData))
+
+		// Allowlisted provider metadata is forwarded.
+		assert.Equal(t, eventData["x-github-event"], "push")
+		assert.Equal(t, eventData["x-github-delivery"], "d-123")
+		assert.Equal(t, eventData["user-agent"], "gohookbridge-test")
+		assert.Equal(t, eventData["x-hub-signature-256"], "sha256=abc")
+		assert.Equal(t, eventData["content-type"], contentType)
+
+		// Credentials, proxy/identity and custom headers never enter the
+		// relay envelope.
+		for _, dropped := range []string{
+			"authorization", "cookie", "x-gitlab-token", "x-api-key",
+			"x-forwarded-for", "x-real-ip", "x-foo",
+		} {
+			_, present := eventData[dropped]
+			assert.Assert(t, !present, "header %q must not enter the relay envelope", dropped)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for NATS message")
+	}
+	assert.Equal(t, 0, len(historical))
+}

@@ -212,6 +212,12 @@ var ProxyFlags = []cli.Flag{
 		Usage:   "Access token for channel authentication (sent as URL query parameter)",
 		EnvVars: []string{"GOHOOKBRIDGE_TOKEN"},
 	},
+	&cli.IntFlag{
+		Name:    "max-body-size",
+		Usage:   "Max accepted webhook body size in bytes",
+		Value:   1048576, // 1 MiB, aligned with --nats-max-payload
+		EnvVars: []string{"GOHOOKBRIDGE_MAX_BODY_SIZE"},
+	},
 }
 
 var ServerFlags = []cli.Flag{

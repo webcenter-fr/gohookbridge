@@ -48,10 +48,12 @@ type raftTLSMaterial struct {
 }
 
 // LoadOrBuildRaftTLS prepares the raft TLS material per the selected mode:
-//   - manual: load CA + leaf from the configured paths.
-//   - auto/K8s: ensure the CA Secret exists (bootstrap node creates it via
-//     goca), read it, then issue/reuse this node's leaf at <dir>/node.*.
-//   - local-only: generate CA + leaf locally (single-node only).
+//   - manual: load CA + leaf from the configured paths. Required for
+//     multi-node (F14: the shared auto-CA was removed).
+//   - local-only: generate CA + leaf locally (single-node/dev only).
+//   - auto/K8s (single-node only): ensure the CA Secret exists (bootstrap node
+//     creates it via goca), read it, then issue/reuse this node's leaf at
+//     <dir>/node.*.
 //
 // Returns the tls.Config for the raft StreamLayer, or nil when disabled.
 func LoadOrBuildRaftTLS(
@@ -79,11 +81,13 @@ func LoadOrBuildRaftTLS(
 		return loadManualRaftTLS(cfg)
 	}
 
-	// Local-only mode cannot form a multi-node cluster: there is no way to
-	// share the CA across pods. Check before generating a local CA so we do
-	// not write throwaway material to disk.
-	if (clientset == nil || cfg.CASecret == "") && isMultiNode {
-		return nil, fmt.Errorf("raft TLS auto-mode requires K8s or manual CA files for multi-node")
+	// F14: multi-node deployments must use manual pre-provisioned per-node
+	// certificates. The shared auto-CA (CA private key stored in a K8s Secret)
+	// was removed; a local self-signed CA remains available for single-node/dev
+	// only (below). Requiring manual files here also prevents writing throwaway
+	// local CA material to disk for a cluster that could never share it.
+	if isMultiNode {
+		return nil, fmt.Errorf("raft TLS: multi-node deployments require manual pre-provisioned certificates (--raft-tls-ca-cert/--raft-tls-cert/--raft-tls-key); the shared auto-CA was removed (F14)")
 	}
 
 	caCertPEM, caKeyPEM, err := ensureRaftCA(cfg, clientset, namespace, logger)
