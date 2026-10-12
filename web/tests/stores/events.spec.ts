@@ -121,6 +121,40 @@ describe('useEventsStore', () => {
     expect(store.events[0]!.encrypted).toBe(false)
   })
 
+  it('decrypts v2 (context-bound) E2E bodyB envelopes using the channel context', () => {
+    const recipient = nacl.box.keyPair()
+    const ephemeral = nacl.box.keyPair()
+    const nonce = nacl.randomBytes(24)
+
+    const channel = 'my-channel'
+    const ctx = new TextEncoder().encode(`gohookbridge.channel.${channel}`)
+    const plaintext = new TextEncoder().encode(JSON.stringify({ secret: 'value' }))
+    const payload = new Uint8Array(ctx.length + 1 + plaintext.length)
+    payload.set(ctx, 0)
+    payload[ctx.length] = 0
+    payload.set(plaintext, ctx.length + 1)
+
+    const ciphertext = nacl.box(payload, nonce, recipient.publicKey, ephemeral.secretKey)
+    const envelope = {
+      encrypted: true,
+      version: 2,
+      epk: encodeBase64(ephemeral.publicKey),
+      nonce: encodeBase64(nonce),
+      ciphertext: encodeBase64(ciphertext),
+      ctx: encodeBase64(ctx),
+    }
+    const bodyB = btoa(JSON.stringify(envelope))
+
+    const store = useEventsStore()
+    store.connect(channel, undefined, encodeBase64(recipient.secretKey))
+
+    lastSource().onmessage?.({ data: JSON.stringify({ bodyB }) })
+
+    expect(store.events).toHaveLength(1)
+    expect(store.events[0]!.data).toEqual({ secret: 'value' })
+    expect(store.events[0]!.encrypted).toBe(false)
+  })
+
   it('marks E2E bodyB envelopes as encrypted when decryption fails', () => {
     const recipient = nacl.box.keyPair()
     const wrongKey = nacl.box.keyPair()

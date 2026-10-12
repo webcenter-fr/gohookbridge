@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef } from 'vue'
-import { isE2EEncrypted, decryptE2E } from '~/utils/crypto'
+import { isE2EEncrypted, decryptE2E, channelContext } from '~/utils/crypto'
 
 export interface SSHEvent {
   id: number
@@ -23,6 +23,7 @@ export const useEventsStore = defineStore('events', () => {
 
   let eventCounter = 0
   let decryptionKey: string | undefined
+  let decryptionChannel: string | undefined
 
   function appendEvent(event: SSHEvent) {
     events.value.push(event)
@@ -44,6 +45,7 @@ export const useEventsStore = defineStore('events', () => {
     connecting.value = true
     events.value = []
     decryptionKey = privateKey
+    decryptionChannel = channel
 
     let url = `/events/${channel}`
     if (token) {
@@ -82,7 +84,7 @@ export const useEventsStore = defineStore('events', () => {
           const inner = JSON.parse(decoded)
           if (isE2EEncrypted(inner) && decryptionKey) {
             try {
-              const decrypted = decryptE2E(inner, decryptionKey)
+              const decrypted = decryptE2E(inner, decryptionKey, decryptionChannel ? channelContext(decryptionChannel) : undefined)
               appendEvent({
                 id: eventCounter++,
                 data: JSON.parse(decrypted),
@@ -132,6 +134,7 @@ export const useEventsStore = defineStore('events', () => {
     connected.value = false
     connecting.value = false
     decryptionKey = undefined
+    decryptionChannel = undefined
   }
 
   function clear() {
