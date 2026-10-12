@@ -676,3 +676,51 @@ Run `make lint` before opening a PR — it runs Go linting, Markdown linting, an
 7. Open a PR against the `main` branch with a clear description of the change.
 
 The CI workflow (`.github/workflows/go.yml`) runs lint, test, and build on every push and PR. All three must pass before merging.
+
+## Security-remediation conventions (2026-10)
+
+These conventions were introduced by the `fix/security-audit-remediation` change
+set. Follow them for any new route, DTO, or persisted field.
+
+### Authorization
+- Authorize on the **resolved principal** (`handler.GetPrincipalFromContext` /
+  `service.ResolvePrincipal`), never on the display-only username. OIDC binds to
+  `(provider, issuer, subject)`; do not add email or `oidc_subjects` fallbacks.
+- Register admin routes with an explicit `RequirePermission` gate and make sure
+  `h.channelCtx` runs **before** any auth middleware for `/{id}` routes.
+- Granting roles goes through `CanAssignRoles`; there is no ad-hoc role check.
+
+### Request/response DTOs
+- Update handlers use pointer-semantics structs in `internal/handler/dto.go`
+  (`nil` = preserve, explicit zero = clear). Never decode directly into a domain
+  entity for updates.
+- Read handlers return safe DTOs (`ChannelResponse`, `GlobalConfigResponse`):
+  secrets become `*_configured` booleans. Secrets are returned only once, from
+  the dedicated generate endpoints.
+- When you change an API DTO, update `web/app/utils/api.ts` and the affected
+  pages/tests in the same PR (backend and frontend ship in lockstep).
+
+### Fail-closed policy
+- Repository reads must return unmarshal errors, not silent defaults. Service
+  resolvers must propagate non-`ErrNotFound` errors; `require_known_channels`
+  maps unknown channels to 404.
+- Publishing goes through `service.PublishEvent` / `EncryptForChannel` (AES AAD
+  or NaCl envelope v2); a mode that requires a key while none is configured is
+  an error, never a plaintext publish.
+
+### At-rest encryption
+- Sensitive fields listed in `SECURITY.md` are sealed by `CryptoKeeper` before
+  persistence and opened on read. Add new sensitive fields to
+  `sealChannel`/`openChannel` (or the config/OIDC equivalent).
+- Data files are `0700` (dir) / `0600` (files); snapshots contain only sealed
+  values.
+
+### Packaging and supply chain
+- Update `.helmignore`, `.dockerignore`, and `.gitignore` when adding files that
+  must not be packaged (local values, secrets, docs).
+- CI gates live in `.github/workflows/audit.yml`; scripts are
+  `scripts/check-go-mod.sh`, `check-audit-allowlist.sh`, `verify-checksums.sh`,
+  and `verify-attestation.sh`. Keep the npm allowlist
+  (`web/.audit-allowlist.json`) entries current and expiring.
+- Multi-node TLS material is generated with `scripts/generate-raft-certs.sh`;
+  never commit a CA private key or mount it into a pod.
