@@ -2,19 +2,63 @@ package service
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 )
 
-func (s *Service) getUserObject(ctx context.Context, username string) *domain.User {
-	user, err := s.repo.GetUserByUsername(ctx, username)
-	if err != nil {
-		user2, err2 := s.repo.GetUser(ctx, username)
-		if err2 != nil {
+// normalizeIssuer canonicalizes an OIDC issuer URL (the "iss" claim) so the
+// binding is stable regardless of a trailing slash. The subject is the OIDC
+// "sub" claim; email and other mutable claims are never used.
+func normalizeIssuer(issuer string) string {
+	return strings.TrimSuffix(issuer, "/")
+}
+
+// ResolvePrincipal resolves a signed session token to the stored user it
+// authenticates. Internal sessions resolve by user ID (falling back to the
+// username for pre-migration cookies); OIDC sessions resolve strictly by the
+// (provider, issuer, subject) external identity. It returns nil when no
+// account is linked.
+func (s *Service) ResolvePrincipal(ctx context.Context, tok *SessionToken) *domain.User {
+	if tok == nil {
+		return nil
+	}
+	if tok.Method == "oidc" {
+		user, err := s.repo.GetUserByExternalIdentity(ctx, tok.Provider, normalizeIssuer(tok.Issuer), tok.Subject)
+		if err != nil {
 			return nil
 		}
-		user = user2
+		return user
+	}
+	if tok.UserID != "" {
+		if user, err := s.repo.GetUser(ctx, tok.UserID); err == nil {
+			return user
+		}
+	}
+	if tok.Username == "" {
+		return nil
+	}
+	user, err := s.repo.GetUserByUsername(ctx, tok.Username)
+	if err != nil {
+		return nil
+	}
+	return user
+}
+
+// ResolvePrincipalByUsername resolves a user for the display-only username
+// context (legacy callers and tests). It is never used to bypass the OIDC
+// identity binding: OIDC sessions resolve through ResolvePrincipal.
+func (s *Service) ResolvePrincipalByUsername(ctx context.Context, username string) *domain.User {
+	if username == "" {
+		return nil
+	}
+	user, err := s.repo.GetUserByUsername(ctx, username)
+	if err != nil {
+		user, err = s.repo.GetUser(ctx, username)
+		if err != nil {
+			return nil
+		}
 	}
 	return user
 }
@@ -55,81 +99,79 @@ func (s *Service) checkGlobalRolePermissions(ctx context.Context, user *domain.U
 	return false
 }
 
-func (s *Service) checkRoleMappingPermissions(ctx context.Context, user *domain.User, perm domain.Permission, channelID string, oidcGroups []string) bool {
+// mappingMatchesUser reports whether a role mapping applies to the principal.
+// User mappings match the user ID or username; group mappings match only the
+// verified OIDC groups carried by the session.
+func mappingMatchesUser(m domain.RoleMapping, user *domain.User, groups []string) bool {
+	switch m.Type {
+	case "user":
+		return m.Subject == user.ID || m.Subject == user.Username
+	case "group":
+		return slices.Contains(groups, m.Subject)
+	default:
+		return false
+	}
+}
+
+func channelACLMatchesUser(a domain.ChannelRoleMapping, user *domain.User, groups []string) bool {
+	switch a.Type {
+	case "user":
+		return a.Subject == user.ID || a.Subject == user.Username
+	case "group":
+		return slices.Contains(groups, a.Subject)
+	default:
+		return false
+	}
+}
+
+func (s *Service) checkRoleMappingPermissions(ctx context.Context, user *domain.User, perm domain.Permission, channelID string, groups []string) bool {
 	mappings, err := s.repo.ListRoleMappings(ctx)
 	if err != nil {
 		return false
 	}
 	for _, m := range mappings {
-		if m.Type == "user" && m.Subject != user.ID && m.Subject != user.Username {
+		if !mappingMatchesUser(m, user, groups) {
 			continue
-		}
-		if m.Type == "group" {
-			matched := false
-			for _, g := range oidcGroups {
-				if g == m.Subject {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
 		}
 		role, err := s.repo.GetRole(ctx, m.Role)
 		if err != nil {
 			continue
 		}
 		for _, p := range role.Permissions {
-			if p == string(perm) || p == "*" {
-				if m.ChannelScope == "*" || m.ChannelScope == channelID {
+			if p != string(perm) && p != "*" {
+				continue
+			}
+			// Collection access (no channel ID) requires a wildcard scope;
+			// object access requires a wildcard or the exact channel. The
+			// former broad `channelID == ""` match is intentionally removed:
+			// it let a channel-scoped mapping grant every object/channel
+			// permission.
+			if channelID == "" {
+				if m.ChannelScope == "*" {
 					return true
 				}
-				if channelID == "" && (p == string(perm) || p == "*") {
-					return true
-				}
+				continue
+			}
+			if m.ChannelScope == "*" || m.ChannelScope == channelID {
+				return true
 			}
 		}
 	}
 	return false
 }
 
-func (s *Service) checkChannelRoleMappingPermissions(ctx context.Context, user *domain.User, perm domain.Permission, channelID string, oidcGroups []string) bool {
+func (s *Service) checkChannelRoleMappingPermissions(ctx context.Context, user *domain.User, perm domain.Permission, channelID string, groups []string) bool {
 	acls, err := s.repo.ListChannelRoleMappings(ctx, channelID)
 	if err != nil {
 		return false
-	}
-	roleLevel := func(role string) int {
-		switch role {
-		case "owner":
-			return 3
-		case "write":
-			return 2
-		case "read":
-			return 1
-		default:
-			return 0
-		}
 	}
 	requiredLevel := 1
 	if perm == domain.PermChannelWrite {
 		requiredLevel = 2
 	}
 	for _, a := range acls {
-		if a.Type == "user" && a.Subject != user.ID && a.Subject != user.Username {
+		if !channelACLMatchesUser(a, user, groups) {
 			continue
-		}
-		if a.Type == "group" {
-			matched := false
-			for _, g := range oidcGroups {
-				if g == a.Subject {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
 		}
 		if roleLevel(a.Role) >= requiredLevel {
 			return true
@@ -138,38 +180,51 @@ func (s *Service) checkChannelRoleMappingPermissions(ctx context.Context, user *
 	return false
 }
 
-func (s *Service) isChannelCreator(ctx context.Context, userID, channelID string) bool {
+func roleLevel(role string) int {
+	switch role {
+	case "owner":
+		return 3
+	case "write":
+		return 2
+	case "read":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func (s *Service) isChannelCreator(ctx context.Context, user *domain.User, channelID string) bool {
 	ch, err := s.repo.GetChannel(ctx, channelID)
 	if err != nil {
 		return false
 	}
-	return ch.CreatedBy == userID
+	return ch.CreatedBy == user.ID || ch.CreatedBy == user.Username
 }
 
-func (s *Service) UserHasPermission(ctx context.Context, username string, perm domain.Permission, channelID string) bool {
-	user := s.getUserObject(ctx, username)
+// UserHasPermission evaluates whether the resolved principal holds perm,
+// optionally scoped to a channel. groups are the verified OIDC groups from the
+// signed session; they are never read from the user record.
+func (s *Service) UserHasPermission(ctx context.Context, user *domain.User, groups []string, perm domain.Permission, channelID string) bool {
 	if user == nil {
 		return false
 	}
-
-	oidcGroups := user.OIDCSubjects
 
 	if s.checkGlobalRolePermissions(ctx, user, perm, channelID) {
 		return true
 	}
 
-	if s.checkRoleMappingPermissions(ctx, user, perm, channelID, oidcGroups) {
+	if s.checkRoleMappingPermissions(ctx, user, perm, channelID, groups) {
 		return true
 	}
 
 	if channelID != "" && strings.HasPrefix(string(perm), "channel:") {
 		if perm == domain.PermChannelWrite || perm == domain.PermChannelRead {
-			if s.checkChannelRoleMappingPermissions(ctx, user, perm, channelID, oidcGroups) {
+			if s.checkChannelRoleMappingPermissions(ctx, user, perm, channelID, groups) {
 				return true
 			}
 		}
 
-		if s.isChannelCreator(ctx, username, channelID) {
+		if s.isChannelCreator(ctx, user, channelID) {
 			return true
 		}
 	}
@@ -177,13 +232,12 @@ func (s *Service) UserHasPermission(ctx context.Context, username string, perm d
 	return false
 }
 
-func (s *Service) UserChannels(ctx context.Context, username string) ([]string, error) {
-	user := s.getUserObject(ctx, username)
+// UserChannels returns the channels the principal may access. groups are the
+// verified session groups.
+func (s *Service) UserChannels(ctx context.Context, user *domain.User, groups []string) ([]string, error) {
 	if user == nil {
 		return []string{}, nil
 	}
-
-	oidcGroups := user.OIDCSubjects
 
 	allChannels := func() ([]string, error) {
 		chs, err := s.repo.ListChannels(ctx)
@@ -212,33 +266,16 @@ func (s *Service) UserChannels(ctx context.Context, username string) ([]string, 
 	mappings, err := s.repo.ListRoleMappings(ctx)
 	if err == nil {
 		for _, m := range mappings {
-			if m.Type == "user" && (m.Subject == user.ID || m.Subject == user.Username) {
-				role, err := s.repo.GetRole(ctx, m.Role)
-				if err == nil {
-					for _, p := range role.Permissions {
-						if p == "*" {
-							return allChannels()
-						}
-					}
-				}
+			if !mappingMatchesUser(m, user, groups) {
+				continue
 			}
-			if m.Type == "group" {
-				matched := false
-				for _, g := range oidcGroups {
-					if g == m.Subject {
-						matched = true
-						break
-					}
-				}
-				if matched {
-					role, err := s.repo.GetRole(ctx, m.Role)
-					if err == nil {
-						for _, p := range role.Permissions {
-							if p == "*" {
-								return allChannels()
-							}
-						}
-					}
+			role, err := s.repo.GetRole(ctx, m.Role)
+			if err != nil {
+				continue
+			}
+			for _, p := range role.Permissions {
+				if p == "*" {
+					return allChannels()
 				}
 			}
 		}
@@ -252,7 +289,7 @@ func (s *Service) UserChannels(ctx context.Context, username string) ([]string, 
 	channels, err := s.repo.ListChannels(ctx)
 	if err == nil {
 		for _, ch := range channels {
-			if s.isChannelCreator(ctx, username, ch.ID) {
+			if s.isChannelCreator(ctx, user, ch.ID) {
 				channelSet[ch.ID] = true
 			}
 			acls, err := s.repo.ListChannelRoleMappings(ctx, ch.ID)
@@ -260,15 +297,8 @@ func (s *Service) UserChannels(ctx context.Context, username string) ([]string, 
 				continue
 			}
 			for _, a := range acls {
-				if a.Type == "user" && (a.Subject == user.ID || a.Subject == user.Username) {
+				if channelACLMatchesUser(a, user, groups) {
 					channelSet[ch.ID] = true
-				}
-				if a.Type == "group" {
-					for _, g := range oidcGroups {
-						if g == a.Subject {
-							channelSet[ch.ID] = true
-						}
-					}
 				}
 			}
 		}
@@ -281,8 +311,9 @@ func (s *Service) UserChannels(ctx context.Context, username string) ([]string, 
 	return result, nil
 }
 
-func (s *Service) IsAdmin(ctx context.Context, username string) bool {
-	return s.UserHasPermission(ctx, username, "*", "")
+// IsAdmin reports whether the principal holds the wildcard permission.
+func (s *Service) IsAdmin(ctx context.Context, user *domain.User, groups []string) bool {
+	return s.UserHasPermission(ctx, user, groups, "*", "")
 }
 
 // HasChannelAccess reports whether the user's channel list grants access to
@@ -291,11 +322,12 @@ func HasChannelAccess(userChannels []string, channelID string) bool {
 	return hasChannelAccessList(userChannels, channelID)
 }
 
-func (s *Service) GetUserPermissions(ctx context.Context, username string) []string {
+// EffectivePermissions returns the flattened permission set granted to the
+// principal by its roles and role mappings.
+func (s *Service) EffectivePermissions(ctx context.Context, user *domain.User, groups []string) map[string]bool {
 	perms := make(map[string]bool)
-	user := s.getUserObject(ctx, username)
 	if user == nil {
-		return []string{}
+		return perms
 	}
 
 	for _, roleName := range user.Roles {
@@ -310,22 +342,9 @@ func (s *Service) GetUserPermissions(ctx context.Context, username string) []str
 
 	mappings, err := s.repo.ListRoleMappings(ctx)
 	if err == nil {
-		oidcGroups := user.OIDCSubjects
 		for _, m := range mappings {
-			if m.Type == "user" && m.Subject != user.ID && m.Subject != user.Username {
+			if !mappingMatchesUser(m, user, groups) {
 				continue
-			}
-			if m.Type == "group" {
-				matched := false
-				for _, g := range oidcGroups {
-					if g == m.Subject {
-						matched = true
-						break
-					}
-				}
-				if !matched {
-					continue
-				}
 			}
 			role, err := s.repo.GetRole(ctx, m.Role)
 			if err != nil {
@@ -337,6 +356,13 @@ func (s *Service) GetUserPermissions(ctx context.Context, username string) []str
 		}
 	}
 
+	return perms
+}
+
+// GetUserPermissions returns the sorted-unique permission strings for a
+// principal (used by /me).
+func (s *Service) GetUserPermissions(ctx context.Context, user *domain.User, groups []string) []string {
+	perms := s.EffectivePermissions(ctx, user, groups)
 	result := make([]string, 0, len(perms))
 	for p := range perms {
 		result = append(result, p)
@@ -344,27 +370,75 @@ func (s *Service) GetUserPermissions(ctx context.Context, username string) []str
 	return result
 }
 
-func (s *Service) HasChannelRole(ctx context.Context, username, channelID, role string) bool {
-	user := s.getUserObject(ctx, username)
+// canAssignRole reports whether the actor may grant roleName to a target. A
+// role granting the wildcard permission requires the actor to hold it; any
+// other role requires the actor to hold every permission it grants.
+func (s *Service) canAssignRole(ctx context.Context, actor *domain.User, actorGroups []string, roleName string) bool {
+	role, err := s.repo.GetRole(ctx, roleName)
+	if err != nil {
+		return false
+	}
+	actorPerms := s.EffectivePermissions(ctx, actor, actorGroups)
+	for _, p := range role.Permissions {
+		if p == "*" {
+			if !actorPerms["*"] {
+				return false
+			}
+			continue
+		}
+		if !actorPerms["*"] && !actorPerms[p] {
+			return false
+		}
+	}
+	return true
+}
+
+// CanAssignRoles reports whether the actor may grant every role in roles, and
+// that the actor's channel scope covers the requested channel scope.
+func (s *Service) CanAssignRoles(ctx context.Context, actor *domain.User, actorGroups []string, roles []string, channelScope string) bool {
+	if actor == nil {
+		return false
+	}
+	for _, roleName := range roles {
+		if !s.canAssignRole(ctx, actor, actorGroups, roleName) {
+			return false
+		}
+	}
+	if channelScope != "" && channelScope != "*" {
+		if !hasChannelAccessList(actor.Channels, channelScope) {
+			return false
+		}
+	}
+	return true
+}
+
+// CanAssignChannels reports whether the actor may grant the given channel
+// membership list. A wildcard entry requires the actor to hold wildcard
+// channel access; every other entry must fall within the actor's own channel
+// scope. This closes the cross-channel escalation where a delegated
+// users:write/rbac:write manager could grant a target channel access to
+// channels the manager cannot itself reach (F02, §3.1.3).
+func (s *Service) CanAssignChannels(actor *domain.User, channels []string) bool {
+	if actor == nil {
+		return false
+	}
+	for _, c := range channels {
+		if !hasChannelAccessList(actor.Channels, c) {
+			return false
+		}
+	}
+	return true
+}
+
+// HasChannelRole reports whether the principal holds at least the given
+// channel role (owner > write > read), via creator status or a channel ACL.
+func (s *Service) HasChannelRole(ctx context.Context, user *domain.User, groups []string, channelID, role string) bool {
 	if user == nil {
 		return false
 	}
-	oidcGroups := user.OIDCSubjects
-	roleLevel := func(r string) int {
-		switch r {
-		case "owner":
-			return 3
-		case "write":
-			return 2
-		case "read":
-			return 1
-		default:
-			return 0
-		}
-	}
 	requiredLevel := roleLevel(role)
 
-	if s.isChannelCreator(ctx, username, channelID) && requiredLevel <= 3 {
+	if s.isChannelCreator(ctx, user, channelID) && requiredLevel <= 3 {
 		return true
 	}
 
@@ -373,20 +447,8 @@ func (s *Service) HasChannelRole(ctx context.Context, username, channelID, role 
 		return false
 	}
 	for _, a := range acls {
-		if a.Type == "user" && a.Subject != user.ID && a.Subject != user.Username {
+		if !channelACLMatchesUser(a, user, groups) {
 			continue
-		}
-		if a.Type == "group" {
-			matched := false
-			for _, g := range oidcGroups {
-				if g == a.Subject {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
 		}
 		if roleLevel(a.Role) >= requiredLevel {
 			return true

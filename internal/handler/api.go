@@ -22,76 +22,48 @@ type apiHandler struct {
 	svc *service.Service
 }
 
-// GlobalConfigResponse is the API DTO for the global configuration; the
-// session secret is never returned to clients.
-type GlobalConfigResponse struct {
-	Server   ServerConfigResponse        `json:"server"`
-	Defaults domain.DefaultChannelConfig `json:"defaults"`
-}
-
-type ServerConfigResponse struct {
-	MaxBodySize        int    `json:"max_body_size"`
-	BehindReverseProxy bool   `json:"behind_reverse_proxy"`
-	CORSOrigin         string `json:"cors_origin"`
-	Footer             string `json:"footer"`
-	SessionSecret      string `json:"session_secret"`
-
-	RateLimitEnabled       bool `json:"rate_limit_enabled"`
-	RateLimitRequests      int  `json:"rate_limit_requests"`
-	RateLimitWindowSeconds int  `json:"rate_limit_window_seconds"`
-
-	BanEnabled           bool `json:"ban_enabled"`
-	BanMaxUniqueFailures int  `json:"ban_max_unique_failures"`
-	BanWindowSeconds     int  `json:"ban_window_seconds"`
-	BanDurationSeconds   int  `json:"ban_duration_seconds"`
-}
-
 func RegisterAPIHandlers(r chi.Router, svc *service.Service) {
 	h := &apiHandler{svc: svc}
 
 	r.Route("/channels", func(r chi.Router) {
-		r.Use(RequirePermission(svc, domain.PermChannelRead))
-		r.Get("/", h.listChannels)
-		r.Post("/", h.createChannel)
+		r.With(RequirePermission(svc, domain.PermChannelWrite)).Post("/", h.createChannel)
+		r.With(RequirePermission(svc, domain.PermChannelRead)).Get("/", h.listChannels)
 		r.Route("/{id}", func(r chi.Router) {
-			r.Use(h.channelCtx)
-			r.Get("/", h.getChannel)
-			r.Put("/", h.updateChannel)
-			r.Delete("/", h.deleteChannel)
-			r.Post("/generate-secret", h.generateSecret)
+			r.Use(h.channelCtx) // channel ID established BEFORE every auth gate
+			r.With(RequirePermission(svc, domain.PermChannelRead)).Get("/", h.getChannel)
+			r.With(RequirePermission(svc, domain.PermChannelWrite)).Put("/", h.updateChannel)
+			r.With(RequirePermission(svc, domain.PermChannelWrite)).Delete("/", h.deleteChannel)
+			r.With(RequirePermission(svc, domain.PermChannelWrite)).Post("/generate-secret", h.generateSecret)
 			r.With(RequirePermission(svc, domain.PermChannelWrite)).Post("/access-tokens", h.createAccessToken)
-			r.Get("/access-tokens", h.listAccessTokens)
+			r.With(RequirePermission(svc, domain.PermChannelRead)).Get("/access-tokens", h.listAccessTokens)
 			r.With(RequirePermission(svc, domain.PermChannelWrite)).Delete("/access-tokens/{tokenID}", h.deleteAccessToken)
 			r.With(RequirePermission(svc, domain.PermChannelWrite)).Put("/access-mode", h.updateAccessMode)
-			r.Get("/acl", h.listChannelACL)
+			r.With(RequirePermission(svc, domain.PermChannelRead)).Get("/acl", h.listChannelACL)
 			r.With(RequireChannelACLPermission(svc)).Post("/acl", h.addChannelACLEntry)
 			r.With(RequireChannelACLPermission(svc)).Delete("/acl/{entryID}", h.deleteChannelACLEntry)
 		})
 	})
 
 	r.Route("/global", func(r chi.Router) {
-		r.Use(RequirePermission(svc, domain.PermGlobalRead))
-		r.Get("/", h.getGlobalConfig)
-		r.Put("/", h.updateGlobalConfig)
+		r.With(RequirePermission(svc, domain.PermGlobalRead)).Get("/", h.getGlobalConfig)
+		r.With(RequirePermission(svc, domain.PermGlobalWrite)).Put("/", h.updateGlobalConfig)
 	})
 
 	r.Route("/users", func(r chi.Router) {
-		r.Use(RequirePermission(svc, domain.PermUsersRead))
-		r.Get("/", h.listUsers)
-		r.Post("/", h.createUser)
+		r.With(RequirePermission(svc, domain.PermUsersRead)).Get("/", h.listUsers)
+		r.With(RequirePermission(svc, domain.PermUsersWrite)).Post("/", h.createUser)
 		r.Route("/{id}", func(r chi.Router) {
-			r.Get("/", h.getUser)
-			r.Put("/", h.updateUser)
-			r.Delete("/", h.deleteUser)
+			r.With(RequirePermission(svc, domain.PermUsersRead)).Get("/", h.getUser)
+			r.With(RequirePermission(svc, domain.PermUsersWrite)).Put("/", h.updateUser)
+			r.With(RequirePermission(svc, domain.PermUsersWrite)).Delete("/", h.deleteUser)
 		})
 	})
 
 	r.Route("/rbac", func(r chi.Router) {
-		r.Use(RequirePermission(svc, domain.PermRBACRead))
-		r.Get("/roles", h.listRoles)
-		r.Get("/bindings", h.listBindings)
-		r.Put("/bindings/{userID}", h.updateBinding)
-		r.Get("/mappings", h.listRoleMappings)
+		r.With(RequirePermission(svc, domain.PermRBACRead)).Get("/roles", h.listRoles)
+		r.With(RequirePermission(svc, domain.PermRBACRead)).Get("/bindings", h.listBindings)
+		r.With(RequirePermission(svc, domain.PermRBACWrite)).Put("/bindings/{userID}", h.updateBinding)
+		r.With(RequirePermission(svc, domain.PermRBACRead)).Get("/mappings", h.listRoleMappings)
 		r.With(RequirePermission(svc, domain.PermRBACWrite)).Post("/mappings", h.createRoleMapping)
 		r.With(RequirePermission(svc, domain.PermRBACWrite)).Delete("/mappings/{id}", h.deleteRoleMapping)
 	})
@@ -125,8 +97,11 @@ func (h *apiHandler) listChannels(w http.ResponseWriter, r *http.Request) {
 	format := r.URL.Query().Get("format")
 	ctx := r.Context()
 
-	username := GetUsernameFromContext(ctx)
-	allowedChannels, _ := h.svc.UserChannels(ctx, username)
+	user := GetPrincipalFromContext(ctx)
+	if user == nil {
+		user = h.svc.ResolvePrincipalByUsername(ctx, GetUsernameFromContext(ctx))
+	}
+	allowedChannels, _ := h.svc.UserChannels(ctx, user, GetGroupsFromContext(ctx))
 
 	channels, err := h.svc.ListChannels(ctx)
 	if err != nil {
@@ -137,7 +112,7 @@ func (h *apiHandler) listChannels(w http.ResponseWriter, r *http.Request) {
 	filtered := make([]*domain.Channel, 0)
 	for _, p := range channels {
 		if service.HasChannelAccess(allowedChannels, p.ID) {
-			sanitizeChannelAPI(p)
+			domain.MigrateChannel(p)
 			filtered = append(filtered, p)
 		}
 	}
@@ -147,19 +122,65 @@ func (h *apiHandler) listChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, filtered)
+	responses := make([]ChannelResponse, 0, len(filtered))
+	for _, p := range filtered {
+		responses = append(responses, toChannelResponse(p))
+	}
+	writeJSON(w, http.StatusOK, responses)
+}
+
+// toChannelResponse projects a channel to its safe, secret-free API shape.
+func toChannelResponse(p *domain.Channel) ChannelResponse {
+	domain.MigrateChannel(p)
+	resp := ChannelResponse{
+		ID:                      p.ID,
+		Description:             p.Description,
+		CreatedBy:               p.CreatedBy,
+		WebhookSecretConfigured: p.WebhookSecret != "",
+		AllowedIPs:              p.AllowedIPs,
+		MaxBodySize:             p.MaxBodySize,
+		MessageTTLSeconds:       p.MessageTTLSeconds,
+		EncryptionMode:          p.EncryptionMode,
+		EncryptionPublicKey:     p.EncryptionPublicKey,
+		EncryptionKeyConfigured: p.EncryptionKey != "",
+		AccessMode:              p.AccessMode,
+	}
+	if resp.AllowedIPs == nil {
+		resp.AllowedIPs = []string{}
+	}
+	if len(p.AccessTokens) > 0 {
+		resp.AccessTokens = make([]AccessTokenResponse, 0, len(p.AccessTokens))
+		for _, t := range p.AccessTokens {
+			resp.AccessTokens = append(resp.AccessTokens, AccessTokenResponse{
+				ID:        t.ID,
+				Name:      t.Name,
+				Scope:     t.Scope,
+				CreatedAt: t.CreatedAt,
+			})
+		}
+	}
+	return resp
 }
 
 func (h *apiHandler) createChannel(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var ch domain.Channel
-	if err := json.NewDecoder(r.Body).Decode(&ch); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &ch) {
 		return
 	}
 	username := GetUsernameFromContext(ctx)
 	ch.CreatedBy = username
-	if msg := validateStruct(&ch); msg != "" {
+	// Server-owned fields must never come from the body.
+	ch.AccessTokens = nil
+	ch.AccessMode = ""
+	//nolint:staticcheck // deprecated field is never accepted from the body
+	ch.WebhookSignatures = nil
+	ch.EncryptionEnabled = false
+	if !validEncryptionMode(ch.EncryptionMode) {
+		writeError(w, http.StatusBadRequest, "encryption_mode must be '', 'server_side', or 'e2e'")
+		return
+	}
+	if msg := validateChannelUpdate(&ch); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
@@ -177,7 +198,7 @@ func (h *apiHandler) createChannel(w http.ResponseWriter, r *http.Request) {
 		Subject:   username,
 		Role:      "owner",
 	})
-	writeJSON(w, http.StatusCreated, &ch)
+	writeJSON(w, http.StatusCreated, toChannelResponse(&ch))
 }
 
 func (h *apiHandler) getChannel(w http.ResponseWriter, r *http.Request) {
@@ -191,29 +212,92 @@ func (h *apiHandler) getChannel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	domain.MigrateChannel(p)
-	sanitizeChannelAPI(p)
-	writeJSON(w, http.StatusOK, p)
+	writeJSON(w, http.StatusOK, toChannelResponse(p))
 }
 
 func (h *apiHandler) updateChannel(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
-	var ch domain.Channel
-	if err := json.NewDecoder(r.Body).Decode(&ch); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	var req ChannelUpdateRequest
+	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ch.ID = id
-	if msg := validateStruct(&ch); msg != "" {
-		writeError(w, http.StatusBadRequest, msg)
+	if req.EncryptionMode != nil && !validEncryptionMode(*req.EncryptionMode) {
+		writeError(w, http.StatusBadRequest, "encryption_mode must be '', 'server_side', or 'e2e'")
 		return
 	}
-	if err := h.svc.UpdateChannel(ctx, &ch); err != nil {
+
+	ch, err := h.svc.GetChannel(ctx, id)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "channel not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, &ch)
+
+	if req.Description != nil {
+		ch.Description = *req.Description
+	}
+	if req.WebhookSecret != nil {
+		ch.WebhookSecret = *req.WebhookSecret
+	}
+	if req.AllowedIPs != nil {
+		ch.AllowedIPs = *req.AllowedIPs
+	}
+	if req.MaxBodySize != nil {
+		ch.MaxBodySize = *req.MaxBodySize
+	}
+	if req.MessageTTLSeconds != nil {
+		ch.MessageTTLSeconds = *req.MessageTTLSeconds
+	}
+	if req.EncryptionMode != nil {
+		ch.EncryptionMode = *req.EncryptionMode
+	}
+	if req.EncryptionKey != nil {
+		ch.EncryptionKey = *req.EncryptionKey
+	}
+	if req.EncryptionPublicKey != nil {
+		ch.EncryptionPublicKey = *req.EncryptionPublicKey
+	}
+
+	if msg := validateChannelUpdate(ch); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	if err := h.svc.UpdateChannel(ctx, ch); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toChannelResponse(ch))
+}
+
+func validEncryptionMode(mode string) bool {
+	switch mode {
+	case "", "server_side", "e2e":
+		return true
+	default:
+		return false
+	}
+}
+
+// validateChannelUpdate validates the merged channel, including allowed-IP
+// syntax and non-negative numeric bounds.
+func validateChannelUpdate(ch *domain.Channel) string {
+	if msg := validateStruct(ch); msg != "" {
+		return msg
+	}
+	if ch.MaxBodySize < 0 {
+		return "max_body_size must be >= 0"
+	}
+	if ch.MessageTTLSeconds < 0 {
+		return "message_ttl_seconds must be >= 0"
+	}
+	if _, err := parseIPRanges(ch.AllowedIPs); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 func (h *apiHandler) deleteChannel(w http.ResponseWriter, r *http.Request) {
@@ -225,63 +309,137 @@ func (h *apiHandler) deleteChannel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// toGlobalConfigResponse projects the global config to its safe API shape.
+func toGlobalConfigResponse(cfg *domain.GlobalConfig) GlobalConfigResponse {
+	return GlobalConfigResponse{
+		Server: ServerConfigResponse{
+			MaxBodySize:            cfg.Server.MaxBodySize,
+			BehindReverseProxy:     cfg.Server.BehindReverseProxy,
+			CORSOrigin:             cfg.Server.CORSOrigin,
+			Footer:                 cfg.Server.Footer,
+			TrustedProxyCIDRs:      cfg.Server.TrustedProxyCIDRs,
+			RequireKnownChannels:   cfg.Server.RequireKnownChannels,
+			RateLimitEnabled:       cfg.Server.RateLimitEnabled,
+			RateLimitRequests:      cfg.Server.RateLimitRequests,
+			RateLimitWindowSeconds: cfg.Server.RateLimitWindowSeconds,
+			BanEnabled:             cfg.Server.BanEnabled,
+			BanMaxUniqueFailures:   cfg.Server.BanMaxUniqueFailures,
+			BanWindowSeconds:       cfg.Server.BanWindowSeconds,
+			BanDurationSeconds:     cfg.Server.BanDurationSeconds,
+			LoginThrottleAttempts:  cfg.Server.LoginThrottleAttempts,
+			LoginThrottleCooldown:  cfg.Server.LoginThrottleCooldown,
+		},
+		Defaults: DefaultsResponse{
+			WebhookSecretConfigured: cfg.Defaults.WebhookSecret != "",
+			AllowedIPs:              cfg.Defaults.AllowedIPs,
+			MessageTTLSeconds:       cfg.Defaults.MessageTTLSeconds,
+		},
+	}
+}
+
 func (h *apiHandler) getGlobalConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := h.svc.GetGlobalConfig(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	resp := GlobalConfigResponse{
-		Server: ServerConfigResponse{
-			MaxBodySize:        cfg.Server.MaxBodySize,
-			BehindReverseProxy: cfg.Server.BehindReverseProxy,
-			CORSOrigin:         cfg.Server.CORSOrigin,
-			Footer:             cfg.Server.Footer,
-			SessionSecret:      "<redacted>",
-
-			RateLimitEnabled:       cfg.Server.RateLimitEnabled,
-			RateLimitRequests:      cfg.Server.RateLimitRequests,
-			RateLimitWindowSeconds: cfg.Server.RateLimitWindowSeconds,
-
-			BanEnabled:           cfg.Server.BanEnabled,
-			BanMaxUniqueFailures: cfg.Server.BanMaxUniqueFailures,
-			BanWindowSeconds:     cfg.Server.BanWindowSeconds,
-			BanDurationSeconds:   cfg.Server.BanDurationSeconds,
-		},
-		Defaults: cfg.Defaults,
-	}
-	if cfg.Server.SessionSecret == "" {
-		resp.Server.SessionSecret = ""
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, toGlobalConfigResponse(cfg))
 }
 
 func (h *apiHandler) updateGlobalConfig(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	var cfg domain.GlobalConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	var req GlobalConfigUpdateRequest
+	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if cfg.Server.SessionSecret != "" {
+	if req.Server != nil && req.Server.SessionSecret != nil && *req.Server.SessionSecret != "" {
 		writeError(w, http.StatusBadRequest, "session_secret cannot be changed via API")
 		return
 	}
-	existing, err := h.svc.GetGlobalConfig(ctx)
+
+	cfg, err := h.svc.GetGlobalConfig(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	cfg.Server.SessionSecret = existing.Server.SessionSecret
-	if err := h.svc.UpdateGlobalConfig(ctx, &cfg); err != nil {
+
+	if req.Server != nil {
+		applyServerUpdate(&cfg.Server, req.Server)
+	}
+	if req.Defaults != nil {
+		if req.Defaults.WebhookSecret != nil {
+			cfg.Defaults.WebhookSecret = *req.Defaults.WebhookSecret
+		}
+		if req.Defaults.AllowedIPs != nil {
+			if _, err := parseIPRanges(*req.Defaults.AllowedIPs); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			cfg.Defaults.AllowedIPs = *req.Defaults.AllowedIPs
+		}
+		if req.Defaults.MessageTTLSeconds != nil {
+			if *req.Defaults.MessageTTLSeconds < 0 {
+				writeError(w, http.StatusBadRequest, "message_ttl_seconds must be >= 0")
+				return
+			}
+			cfg.Defaults.MessageTTLSeconds = *req.Defaults.MessageTTLSeconds
+		}
+	}
+
+	if err := h.svc.UpdateGlobalConfig(ctx, cfg); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Never echo the stored secret back to the client.
-	if cfg.Server.SessionSecret != "" {
-		cfg.Server.SessionSecret = "<redacted>"
+	writeJSON(w, http.StatusOK, toGlobalConfigResponse(cfg))
+}
+
+// applyServerUpdate merges the non-nil pointer fields into sc.
+func applyServerUpdate(sc *domain.ServerConfig, req *ServerConfigUpdateRequest) {
+	if req.MaxBodySize != nil {
+		sc.MaxBodySize = *req.MaxBodySize
 	}
-	writeJSON(w, http.StatusOK, &cfg)
+	if req.BehindReverseProxy != nil {
+		sc.BehindReverseProxy = *req.BehindReverseProxy
+	}
+	if req.CORSOrigin != nil {
+		sc.CORSOrigin = *req.CORSOrigin
+	}
+	if req.Footer != nil {
+		sc.Footer = *req.Footer
+	}
+	if req.TrustedProxyCIDRs != nil {
+		sc.TrustedProxyCIDRs = *req.TrustedProxyCIDRs
+	}
+	if req.RateLimitEnabled != nil {
+		sc.RateLimitEnabled = *req.RateLimitEnabled
+	}
+	if req.RateLimitRequests != nil {
+		sc.RateLimitRequests = *req.RateLimitRequests
+	}
+	if req.RateLimitWindowSeconds != nil {
+		sc.RateLimitWindowSeconds = *req.RateLimitWindowSeconds
+	}
+	if req.BanEnabled != nil {
+		sc.BanEnabled = *req.BanEnabled
+	}
+	if req.BanMaxUniqueFailures != nil {
+		sc.BanMaxUniqueFailures = *req.BanMaxUniqueFailures
+	}
+	if req.BanWindowSeconds != nil {
+		sc.BanWindowSeconds = *req.BanWindowSeconds
+	}
+	if req.BanDurationSeconds != nil {
+		sc.BanDurationSeconds = *req.BanDurationSeconds
+	}
+	if req.RequireKnownChannels != nil {
+		sc.RequireKnownChannels = *req.RequireKnownChannels
+	}
+	if req.LoginThrottleAttempts != nil {
+		sc.LoginThrottleAttempts = *req.LoginThrottleAttempts
+	}
+	if req.LoginThrottleCooldown != nil {
+		sc.LoginThrottleCooldown = *req.LoginThrottleCooldown
+	}
 }
 
 func (h *apiHandler) listUsers(w http.ResponseWriter, r *http.Request) {
@@ -302,6 +460,19 @@ func (h *apiHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, masked)
 }
 
+// resolveActor returns the principal and verified groups for the request,
+// falling back to the display username for legacy callers.
+func (h *apiHandler) resolveActor(ctx context.Context) (*domain.User, []string) {
+	user := GetPrincipalFromContext(ctx)
+	if user == nil {
+		user = h.svc.ResolvePrincipalByUsername(ctx, GetUsernameFromContext(ctx))
+	}
+	if user == nil {
+		return nil, nil
+	}
+	return user, GetGroupsFromContext(ctx)
+}
+
 func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var input struct {
@@ -310,12 +481,24 @@ func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 		Roles    []string `json:"roles"`
 		Channels []string `json:"channels"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &input) {
 		return
 	}
 	if msg := validateStruct(&input); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	actor, groups := h.resolveActor(ctx)
+	if actor == nil || !h.svc.CanAssignRoles(ctx, actor, groups, input.Roles, "*") {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
+		return
+	}
+	// The actor may only grant channel membership within its own scope: a
+	// delegated user manager must not mint a user with wildcard (or broader)
+	// channel access than it holds itself (F02 cross-channel escalation).
+	if !h.svc.CanAssignChannels(actor, input.Channels) {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
 		return
 	}
 
@@ -380,12 +563,17 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 		Roles    []string `json:"roles"`
 		Channels []string `json:"channels"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &input) {
 		return
 	}
 	if msg := validateStruct(&input); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	actor, groups := h.resolveActor(ctx)
+	if actor == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
@@ -394,8 +582,22 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	// The actor must be able to grant the target's existing privileges;
+	// otherwise a less-privileged user could reset a more-privileged account.
+	if !h.svc.CanAssignRoles(ctx, actor, groups, u.Roles, "*") {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
+		return
+	}
+	if input.Roles != nil && !h.svc.CanAssignRoles(ctx, actor, groups, input.Roles, "*") {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
+		return
+	}
 	if input.Roles != nil && hasAdminRole(u.Roles) && !hasAdminRole(input.Roles) {
 		writeError(w, http.StatusBadRequest, "cannot remove admin role")
+		return
+	}
+	if input.Channels != nil && !h.svc.CanAssignChannels(actor, input.Channels) {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
 		return
 	}
 	if input.Username != "" {
@@ -418,6 +620,10 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.UpdateUser(ctx, u); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Password resets and role changes revoke outstanding sessions.
+	if input.Password != "" || input.Roles != nil {
+		_ = h.svc.BumpAuthEpoch(ctx)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": u.ID, "username": u.Username})
 }
@@ -451,6 +657,8 @@ func (h *apiHandler) deleteUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Revoke the deleted user's (and any other) outstanding sessions.
+	_ = h.svc.BumpAuthEpoch(ctx)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -476,8 +684,7 @@ func (h *apiHandler) updateBinding(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	userID := chi.URLParam(r, "userID")
 	var binding domain.UserBinding
-	if err := json.NewDecoder(r.Body).Decode(&binding); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &binding) {
 		return
 	}
 	binding.UserID = userID
@@ -490,6 +697,17 @@ func (h *apiHandler) updateBinding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get user")
 		return
 	}
+	actor, groups := h.resolveActor(ctx)
+	if actor == nil ||
+		!h.svc.CanAssignRoles(ctx, actor, groups, u.Roles, "*") ||
+		!h.svc.CanAssignRoles(ctx, actor, groups, binding.Roles, "*") {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
+		return
+	}
+	if !h.svc.CanAssignChannels(actor, binding.Channels) {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
+		return
+	}
 	if hasAdminRole(u.Roles) && !hasAdminRole(binding.Roles) {
 		writeError(w, http.StatusBadRequest, "cannot remove admin role")
 		return
@@ -498,6 +716,8 @@ func (h *apiHandler) updateBinding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Role changes revoke outstanding sessions.
+	_ = h.svc.BumpAuthEpoch(ctx)
 	writeJSON(w, http.StatusOK, &binding)
 }
 
@@ -510,23 +730,18 @@ func (h *apiHandler) getMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if username == "" {
+	user := GetPrincipalFromContext(ctx)
+	if user == nil {
+		user = h.svc.ResolvePrincipalByUsername(ctx, username)
+	}
+	if user == nil {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
+	groups := GetGroupsFromContext(ctx)
 
-	user, err := h.svc.GetUserByUsername(ctx, username)
-	if err != nil {
-		if errors.Is(err, domain.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "user not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	permissions := h.svc.GetUserPermissions(ctx, username)
-	channels, _ := h.svc.UserChannels(ctx, username)
+	permissions := h.svc.GetUserPermissions(ctx, user, groups)
+	channels, _ := h.svc.UserChannels(ctx, user, groups)
 
 	providers, _ := h.svc.OIDCProviders(ctx)
 	oidcList := make([]map[string]string, 0, len(providers))
@@ -582,8 +797,7 @@ func (h *apiHandler) createAccessToken(w http.ResponseWriter, r *http.Request) {
 		Name  string `json:"name"`
 		Scope string `json:"scope"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if body.Name == "" {
@@ -654,8 +868,7 @@ func (h *apiHandler) updateAccessMode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		AccessMode string `json:"access_mode"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if body.AccessMode != "public" && body.AccessMode != "token" {
@@ -695,8 +908,7 @@ func (h *apiHandler) listRoleMappings(w http.ResponseWriter, r *http.Request) {
 func (h *apiHandler) createRoleMapping(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var m domain.RoleMapping
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &m) {
 		return
 	}
 	if m.Type != "user" && m.Type != "group" {
@@ -713,6 +925,11 @@ func (h *apiHandler) createRoleMapping(w http.ResponseWriter, r *http.Request) {
 	}
 	if m.ChannelScope == "" {
 		m.ChannelScope = "*"
+	}
+	actor, groups := h.resolveActor(ctx)
+	if actor == nil || !h.svc.CanAssignRoles(ctx, actor, groups, []string{m.Role}, m.ChannelScope) {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
+		return
 	}
 	if err := h.svc.CreateRoleMapping(ctx, &m); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -744,8 +961,7 @@ func (h *apiHandler) addChannelACLEntry(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	channelID := chi.URLParam(r, "id")
 	var m domain.ChannelRoleMapping
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &m) {
 		return
 	}
 	if m.Type != "user" && m.Type != "group" {
@@ -799,8 +1015,7 @@ func (h *apiHandler) listOIDCProviders(w http.ResponseWriter, r *http.Request) {
 func (h *apiHandler) updateAllOIDCProviders(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var providers []domain.OIDCProvider
-	if err := json.NewDecoder(r.Body).Decode(&providers); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &providers) {
 		return
 	}
 	if providers == nil {
@@ -819,6 +1034,8 @@ func (h *apiHandler) updateAllOIDCProviders(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// OIDC provider changes revoke outstanding sessions (F21, §3.4.4).
+	_ = h.svc.BumpAuthEpoch(ctx)
 	writeJSON(w, http.StatusOK, providers)
 }
 
@@ -826,8 +1043,7 @@ func (h *apiHandler) updateOIDCProvider(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
 	var updated domain.OIDCProvider
-	if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &updated) {
 		return
 	}
 	providers, err := h.svc.OIDCProviders(ctx)
@@ -856,6 +1072,8 @@ func (h *apiHandler) updateOIDCProvider(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// OIDC provider changes revoke outstanding sessions (F21, §3.4.4).
+	_ = h.svc.BumpAuthEpoch(ctx)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -881,6 +1099,8 @@ func (h *apiHandler) deleteOIDCProvider(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// OIDC provider changes revoke outstanding sessions (F21, §3.4.4).
+	_ = h.svc.BumpAuthEpoch(ctx)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -894,8 +1114,7 @@ func (h *apiHandler) setInternalAuth(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Enabled bool `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if err := h.svc.SetInternalAuthEnabled(r.Context(), body.Enabled); err != nil {
@@ -909,6 +1128,27 @@ func (h *apiHandler) setInternalAuth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"enabled": body.Enabled})
 }
 
+// maxJSONBodySize caps JSON API/login request bodies (F11). These endpoints
+// accept small documents, so a tight bound closes unbounded-read DoS
+// (CWE-400) without affecting legitimate clients.
+const maxJSONBodySize = 1 << 20 // 1 MiB
+
+// decodeJSON decodes a JSON request body capped at maxJSONBodySize (F11),
+// mapping oversized bodies to 413 and malformed JSON to 400. It returns false
+// when the body was rejected (the response is already written).
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		if strings.Contains(err.Error(), "http: request body too large") {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+		}
+		return false
+	}
+	return true
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -920,20 +1160,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
-}
-
-func sanitizeChannelAPI(p *domain.Channel) {
-	p.EncryptionPrivateKey = ""
-	if len(p.AccessTokens) == 0 {
-		p.AccessTokens = nil
-		return
-	}
-	sanitized := make([]domain.ChannelAccessToken, len(p.AccessTokens))
-	for i, t := range p.AccessTokens {
-		t.TokenHash = ""
-		sanitized[i] = t
-	}
-	p.AccessTokens = sanitized
 }
 
 func writeCSV(w http.ResponseWriter, channels []*domain.Channel) {

@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
+	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
 
@@ -125,7 +126,18 @@ func (rs *RaftStore) ApplyBootstrap(ctx context.Context, cfg *BootstrapConfig) e
 		payload.Global = cfg.Global
 	}
 	for _, u := range cfg.Users {
-		payload.Users = append(payload.Users, fsmBootstrapUser(u))
+		// Hash once, before replication: the plaintext password must never
+		// enter the Raft log or any snapshot (CWE-312).
+		hash, err := bcrypt.GenerateFromPassword([]byte(u.Password), bcrypt.DefaultCost)
+		if err != nil {
+			return fmt.Errorf("hash bootstrap password for user %q: %w", u.Username, err)
+		}
+		payload.Users = append(payload.Users, fsmBootstrapUser{
+			Username:     u.Username,
+			PasswordHash: string(hash),
+			Roles:        u.Roles,
+			Channels:     u.Channels,
+		})
 	}
 	for _, p := range cfg.Channels {
 		ch := &domain.Channel{
@@ -207,6 +219,25 @@ func (rs *RaftStore) ApplyBootstrap(ctx context.Context, cfg *BootstrapConfig) e
 				})
 			}
 		}
+	}
+
+	// Encrypt sensitive bootstrap fields before replication (F27).
+	if payload.Global != nil {
+		if err := rs.sealConfig(payload.Global); err != nil {
+			return err
+		}
+	}
+	for _, ch := range payload.Channels {
+		if err := rs.sealChannel(ch); err != nil {
+			return err
+		}
+	}
+	for i := range payload.OIDCProviders {
+		sealed, err := rs.sealString(payload.OIDCProviders[i].ClientSecret)
+		if err != nil {
+			return err
+		}
+		payload.OIDCProviders[i].ClientSecret = sealed
 	}
 
 	val, err := json.Marshal(payload)

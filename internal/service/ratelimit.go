@@ -103,8 +103,10 @@ func NewBanTracker() *BanTracker {
 func (bt *BanTracker) recordFailure(ip, fingerprint string, windowSeconds int) {
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
+	bt.recordFailureLocked(ip, fingerprint, windowSeconds, time.Now())
+}
 
-	now := time.Now()
+func (bt *BanTracker) recordFailureLocked(ip, fingerprint string, windowSeconds int, now time.Time) {
 	windowStart := now.Add(-time.Duration(windowSeconds) * time.Second)
 
 	entries := bt.failures[ip]
@@ -146,9 +148,10 @@ func (bt *BanTracker) IsBanned(ip string) bool {
 func (bt *BanTracker) banIfSuspicious(ip string, maxUniqueFailures, banDurationSeconds, windowSeconds int) bool {
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
+	return bt.banIfSuspiciousLocked(ip, maxUniqueFailures, banDurationSeconds, windowSeconds, time.Now())
+}
 
-	now := time.Now()
-
+func (bt *BanTracker) banIfSuspiciousLocked(ip string, maxUniqueFailures, banDurationSeconds, windowSeconds int, now time.Time) bool {
 	// Clean expired failures and count unique fingerprints within window
 	fingerprints := make(map[string]struct{})
 	valid := bt.failures[ip][:0]
@@ -204,11 +207,29 @@ func (bt *BanTracker) sweep(now time.Time, windowSeconds int) {
 // hot path (webhooks, channel tokens) cannot be turned into a per-failure
 // full-map scan by an attacker forcing failures.
 func (bt *BanTracker) maybeSweep(now time.Time, windowSeconds int) {
+	bt.mu.Lock()
+	defer bt.mu.Unlock()
+	bt.maybeSweepLocked(now, windowSeconds)
+}
+
+func (bt *BanTracker) maybeSweepLocked(now time.Time, windowSeconds int) {
 	if !bt.lastSweep.IsZero() && now.Sub(bt.lastSweep) < time.Duration(windowSeconds)*time.Second {
 		return
 	}
 	bt.lastSweep = now
 	bt.sweep(now, windowSeconds)
+}
+
+// recordAndBan performs sweep + record + ban under a single lock so the
+// credential-failure hot path is race-free and pays at most one map scan per
+// throttled window (F12).
+func (bt *BanTracker) recordAndBan(ip, fingerprint string, maxUniqueFailures, banDurationSeconds, windowSeconds int) bool {
+	bt.mu.Lock()
+	defer bt.mu.Unlock()
+	now := time.Now()
+	bt.maybeSweepLocked(now, windowSeconds)
+	bt.recordFailureLocked(ip, fingerprint, windowSeconds, now)
+	return bt.banIfSuspiciousLocked(ip, maxUniqueFailures, banDurationSeconds, windowSeconds, now)
 }
 
 // clampWindow guards against a zero/unset window config, falling back to the
@@ -250,27 +271,42 @@ func (bt *BanTracker) Unban(ip string) {
 	delete(bt.banned, ip)
 }
 
-// GetRealIP extracts the client IP, honoring X-Forwarded-For/X-Real-IP only
-// when behindReverseProxy is enabled.
-func GetRealIP(r *http.Request, behindReverseProxy bool) (net.IP, error) {
-	if behindReverseProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			ips := strings.Split(xff, ",")
-			clientIP := strings.TrimSpace(ips[0])
-			ip := net.ParseIP(clientIP)
-			if ip != nil {
-				return ip, nil
-			}
+// ParseTrustedProxyCIDRs parses a list of CIDRs/IPs into networks. Bare IPs
+// are treated as /32 (or /128). Invalid entries are skipped.
+func ParseTrustedProxyCIDRs(entries []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(entries))
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
 		}
-
-		if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
-			ip := net.ParseIP(strings.TrimSpace(xrip))
-			if ip != nil {
-				return ip, nil
+		if strings.Contains(e, "/") {
+			if _, n, err := net.ParseCIDR(e); err == nil {
+				nets = append(nets, n)
 			}
+			continue
+		}
+		if ip := net.ParseIP(e); ip != nil {
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
 		}
 	}
+	return nets
+}
 
+func ipInAny(ip net.IP, nets []*net.IPNet) bool {
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func remoteIP(r *http.Request) (net.IP, error) {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		ip := net.ParseIP(r.RemoteAddr)
@@ -279,12 +315,88 @@ func GetRealIP(r *http.Request, behindReverseProxy bool) (net.IP, error) {
 		}
 		return nil, fmt.Errorf("invalid RemoteAddr %q: %w", r.RemoteAddr, err)
 	}
-
 	ip := net.ParseIP(host)
 	if ip == nil {
 		return nil, fmt.Errorf("invalid IP address %q", host)
 	}
 	return ip, nil
+}
+
+// GetRealIP extracts the client IP. Forwarded headers (X-Forwarded-For,
+// X-Real-IP) are honored only when behindReverseProxy is enabled AND the
+// direct peer (RemoteAddr) is inside a configured trusted-proxy CIDR. XFF is
+// walked right-to-left, skipping trusted proxies, so a client cannot spoof its
+// address by prepending an untrusted value (F18).
+func GetRealIP(r *http.Request, behindReverseProxy bool, trustedCIDRs []*net.IPNet) (net.IP, error) {
+	peer, err := remoteIP(r)
+	if err != nil {
+		return nil, err
+	}
+	if !behindReverseProxy || !ipInAny(peer, trustedCIDRs) {
+		return peer, nil
+	}
+
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			candidate := net.ParseIP(strings.TrimSpace(parts[i]))
+			if candidate == nil {
+				continue
+			}
+			if ipInAny(candidate, trustedCIDRs) {
+				continue
+			}
+			return candidate, nil
+		}
+	}
+	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+		if ip := net.ParseIP(strings.TrimSpace(xrip)); ip != nil {
+			return ip, nil
+		}
+	}
+	return peer, nil
+}
+
+// LoginThrottle bounds repeated failed logins per account. The key is a
+// SHA-256 fingerprint of "login:"+username; raw usernames/passwords are never
+// stored.
+type LoginThrottle struct {
+	mu       sync.Mutex
+	attempts map[string][]time.Time
+}
+
+func NewLoginThrottle() *LoginThrottle {
+	return &LoginThrottle{attempts: make(map[string][]time.Time)}
+}
+
+// Allow reports whether the account may attempt another login.
+func (lt *LoginThrottle) Allow(key string, maxAttempts, windowSeconds int) bool {
+	if maxAttempts <= 0 {
+		maxAttempts = 10
+	}
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-time.Duration(clampWindow(windowSeconds)) * time.Second)
+	valid := lt.attempts[key][:0]
+	for _, t := range lt.attempts[key] {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+	if len(valid) >= maxAttempts {
+		lt.attempts[key] = valid
+		return false
+	}
+	lt.attempts[key] = append(valid, now)
+	return true
+}
+
+// Clear resets the throttle state for a key after a successful login.
+func (lt *LoginThrottle) Clear(key string) {
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	delete(lt.attempts, key)
 }
 
 // RecordCredentialFailure records a failed credential attempt and bans the
@@ -295,16 +407,13 @@ func (s *Service) RecordCredentialFailure(ctx context.Context, tracker *BanTrack
 		return
 	}
 
-	ip, err := GetRealIP(r, cfg.Server.BehindReverseProxy)
+	ip, err := GetRealIP(r, cfg.Server.BehindReverseProxy, ParseTrustedProxyCIDRs(cfg.Server.TrustedProxyCIDRs))
 	if err != nil {
 		return
 	}
 
-	ipStr := ip.String()
 	window := clampWindow(cfg.Server.BanWindowSeconds)
-	tracker.maybeSweep(time.Now(), window)
-	tracker.recordFailure(ipStr, fingerprint, window)
-	tracker.banIfSuspicious(ipStr, cfg.Server.BanMaxUniqueFailures, cfg.Server.BanDurationSeconds, window)
+	tracker.recordAndBan(ip.String(), fingerprint, cfg.Server.BanMaxUniqueFailures, cfg.Server.BanDurationSeconds, window)
 }
 
 func FingerprintLogin(username string) string {

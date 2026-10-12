@@ -25,7 +25,50 @@ func RetVersion(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-func HandleEventsGet(broker *nats.Broker, svc *service.Service) http.HandlerFunc {
+// sseWriteTimeout bounds a single SSE write so a stalled client cannot pin a
+// handler goroutine indefinitely (F11).
+const sseWriteTimeout = 10 * time.Second
+
+// sseConnLimiter bounds concurrent SSE connections (F11).
+type sseConnLimiter struct {
+	sem chan struct{}
+}
+
+func newSSEConnLimiter(max int) *sseConnLimiter {
+	if max <= 0 {
+		max = 1000
+	}
+	return &sseConnLimiter{sem: make(chan struct{}, max)}
+}
+
+func (l *sseConnLimiter) acquire() bool {
+	select {
+	case l.sem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *sseConnLimiter) release() {
+	<-l.sem
+}
+
+// writeSSE writes one SSE frame under a per-write deadline (F11) and flushes.
+// It returns false when the client is gone or too slow, ending the stream.
+func writeSSE(w http.ResponseWriter, flusher http.Flusher, frame string) bool {
+	// Best-effort: writers without deadline support (e.g. test recorders)
+	// skip the deadline rather than fail.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(sseWriteTimeout))
+	if _, err := fmt.Fprint(w, frame); err != nil {
+		return false
+	}
+	flusher.Flush()
+	return true
+}
+
+func HandleEventsGet(broker *nats.Broker, svc *service.Service, maxConnections int) http.HandlerFunc {
+	conns := newSSEConnLimiter(maxConnections)
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		channel := chi.URLParam(r, "channel")
@@ -37,6 +80,13 @@ func HandleEventsGet(broker *nats.Broker, svc *service.Service) http.HandlerFunc
 			http.Error(w, "Channel name exceeds maximum length", http.StatusBadRequest)
 			return
 		}
+
+		// Bound concurrent event streams (F11).
+		if !conns.acquire() {
+			http.Error(w, "too many event stream connections", http.StatusServiceUnavailable)
+			return
+		}
+		defer conns.release()
 
 		corsOrigin := svc.ResolveCORSOrigin(ctx)
 
@@ -56,11 +106,12 @@ func HandleEventsGet(broker *nats.Broker, svc *service.Service) http.HandlerFunc
 			return
 		}
 
-		fmt.Fprintf(w, "data: %s\n\n", `{"message":"connected"}`)
-		flusher.Flush()
-
-		fmt.Fprintf(w, "data: %s\n\n", `{"message":"ready"}`)
-		flusher.Flush()
+		if !writeSSE(w, flusher, "data: "+`{"message":"connected"}`+"\n\n") {
+			return
+		}
+		if !writeSSE(w, flusher, "data: "+`{"message":"ready"}`+"\n\n") {
+			return
+		}
 
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -75,16 +126,16 @@ func HandleEventsGet(broker *nats.Broker, svc *service.Service) http.HandlerFunc
 			}
 		}
 		var lastMsgTs int64
-		historical, live := broker.Subscribe(channel, since, 100)
-		defer broker.Unsubscribe(channel, live)
+		historical, sub := broker.Subscribe(channel, since, 100)
+		defer broker.Unsubscribe(channel, sub)
 
 		for _, data := range historical {
-			//nolint:gosec
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
+			if !writeSSE(w, flusher, fmt.Sprintf("data: %s\n\n", data)) {
+				return
+			}
 		}
 
-		sseLoop(w, flusher, live, clientGone, ticker, &lastMsgTs)
+		sseLoop(w, flusher, sub, clientGone, ticker, &lastMsgTs)
 
 		if clientID != "" {
 			lastTs := lastMsgTs
@@ -102,23 +153,26 @@ func HandleEventsGet(broker *nats.Broker, svc *service.Service) http.HandlerFunc
 	}
 }
 
-func sseLoop(w http.ResponseWriter, flusher http.Flusher, events <-chan []byte, clientGone <-chan struct{}, ticker *time.Ticker, lastMsgTs *int64) {
+func sseLoop(w http.ResponseWriter, flusher http.Flusher, sub *nats.Subscriber, clientGone <-chan struct{}, ticker *time.Ticker, lastMsgTs *int64) {
 	for {
 		select {
 		case <-clientGone:
 			return
-		case data, ok := <-events:
+		case data, ok := <-sub.C:
 			if !ok {
 				return
 			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			sub.Ack(len(data))
+			if !writeSSE(w, flusher, fmt.Sprintf("data: %s\n\n", data)) {
+				return
+			}
 			if lastMsgTs != nil {
 				*lastMsgTs = time.Now().UTC().UnixMilli()
 			}
-			flusher.Flush()
 		case <-ticker.C:
-			fmt.Fprint(w, ": keepalive\n\n")
-			flusher.Flush()
+			if !writeSSE(w, flusher, ": keepalive\n\n") {
+				return
+			}
 		}
 	}
 }

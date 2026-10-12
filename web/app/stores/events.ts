@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef } from 'vue'
-import { isE2EEncrypted, decryptE2E } from '~/utils/crypto'
+import { isE2EEncrypted, decryptE2E, channelContext } from '~/utils/crypto'
 
 export interface SSHEvent {
   id: number
@@ -11,6 +11,10 @@ export interface SSHEvent {
   encrypted: boolean
 }
 
+// MAX_EVENTS bounds the in-memory event list so a flooding channel cannot
+// exhaust browser memory.
+export const MAX_EVENTS = 500
+
 export const useEventsStore = defineStore('events', () => {
   const events = ref<SSHEvent[]>([])
   const connected = ref(false)
@@ -19,6 +23,14 @@ export const useEventsStore = defineStore('events', () => {
 
   let eventCounter = 0
   let decryptionKey: string | undefined
+  let decryptionChannel: string | undefined
+
+  function appendEvent(event: SSHEvent) {
+    events.value.push(event)
+    if (events.value.length > MAX_EVENTS) {
+      events.value.splice(0, events.value.length - MAX_EVENTS)
+    }
+  }
 
   function isAESEncrypted(data: unknown): boolean {
     if (typeof data === 'object' && data !== null) {
@@ -33,6 +45,7 @@ export const useEventsStore = defineStore('events', () => {
     connecting.value = true
     events.value = []
     decryptionKey = privateKey
+    decryptionChannel = channel
 
     let url = `/events/${channel}`
     if (token) {
@@ -50,7 +63,7 @@ export const useEventsStore = defineStore('events', () => {
       try {
         parsed = JSON.parse(msg.data)
       } catch {
-        events.value.push({
+        appendEvent({
           id: eventCounter++,
           data: msg.data,
           timestamp: new Date().toISOString(),
@@ -71,8 +84,8 @@ export const useEventsStore = defineStore('events', () => {
           const inner = JSON.parse(decoded)
           if (isE2EEncrypted(inner) && decryptionKey) {
             try {
-              const decrypted = decryptE2E(inner, decryptionKey)
-              events.value.push({
+              const decrypted = decryptE2E(inner, decryptionKey, decryptionChannel ? channelContext(decryptionChannel) : undefined)
+              appendEvent({
                 id: eventCounter++,
                 data: JSON.parse(decrypted),
                 timestamp: new Date().toISOString(),
@@ -81,7 +94,7 @@ export const useEventsStore = defineStore('events', () => {
               })
               return
             } catch {
-              events.value.push({
+              appendEvent({
                 id: eventCounter++,
                 data: inner,
                 timestamp: new Date().toISOString(),
@@ -96,7 +109,7 @@ export const useEventsStore = defineStore('events', () => {
         }
       }
 
-      events.value.push({
+      appendEvent({
         id: eventCounter++,
         data: parsed,
         timestamp: new Date().toISOString(),
@@ -121,6 +134,7 @@ export const useEventsStore = defineStore('events', () => {
     connected.value = false
     connecting.value = false
     decryptionKey = undefined
+    decryptionChannel = undefined
   }
 
   function clear() {

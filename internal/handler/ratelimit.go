@@ -20,7 +20,7 @@ func BanMiddleware(tracker *service.BanTracker, svc *service.Service) func(http.
 				return
 			}
 
-			ip, err := service.GetRealIP(r, cfg.Server.BehindReverseProxy)
+			ip, err := service.GetRealIP(r, cfg.Server.BehindReverseProxy, service.ParseTrustedProxyCIDRs(cfg.Server.TrustedProxyCIDRs))
 			if err != nil {
 				next.ServeHTTP(w, r)
 				return
@@ -49,7 +49,7 @@ func RateLimitMiddleware(limiter *service.RateLimiter, svc *service.Service) fun
 				return
 			}
 
-			ip, err := service.GetRealIP(r, cfg.Server.BehindReverseProxy)
+			ip, err := service.GetRealIP(r, cfg.Server.BehindReverseProxy, service.ParseTrustedProxyCIDRs(cfg.Server.TrustedProxyCIDRs))
 			if err != nil {
 				next.ServeHTTP(w, r)
 				return

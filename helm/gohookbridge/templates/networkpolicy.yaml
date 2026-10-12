@@ -1,0 +1,173 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $fullname := include "gohookbridge.fullname" . -}}
+{{- $instance := .Release.Name -}}
+# Default-deny all ingress for this release's pods; egress is unrestricted by
+# default (server egress is narrowed below when CIDRs are configured).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-default-deny
+  labels:
+    {{- include "gohookbridge.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $instance }}
+  policyTypes:
+  - Ingress
+  ingress: []
+---
+# Public edge may reach the server's public (webhook-only) port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-allow-public-edge
+  labels:
+    {{- include "gohookbridge.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $instance }}
+      app.kubernetes.io/component: server
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    {{- with .Values.networkPolicy.edgeNamespaceSelector }}
+    - namespaceSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- with $.Values.networkPolicy.edgePodSelector }}
+      podSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- else }}
+    - {}
+    {{- end }}
+    ports:
+    {{- if gt (include "gohookbridge.publicPort" . | int) 0 }}
+    - protocol: TCP
+      port: {{ include "gohookbridge.publicPort" . }}
+    {{- end }}
+    - protocol: TCP
+      port: {{ .Values.server.port }}
+---
+# Internal edge (UI/API/SSE) may reach the server HTTP port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-allow-internal-edge
+  labels:
+    {{- include "gohookbridge.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $instance }}
+      app.kubernetes.io/component: server
+  policyTypes:
+  - Ingress
+  ingress:
+  - ports:
+    - protocol: TCP
+      port: {{ .Values.server.port }}
+---
+# Server peers may reach the Raft and NATS (incl. cluster route) ports.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-allow-peer-server
+  labels:
+    {{- include "gohookbridge.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $instance }}
+      app.kubernetes.io/component: server
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/instance: {{ $instance }}
+          app.kubernetes.io/component: server
+    ports:
+    - protocol: TCP
+      port: {{ .Values.server.raftPort }}
+    - protocol: TCP
+      port: {{ .Values.server.natsPort }}
+    - protocol: TCP
+      port: {{ .Values.server.natsClusterPort }}
+---
+# Server egress: DNS always, plus the configured OIDC/target CIDRs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-allow-server-egress
+  labels:
+    {{- include "gohookbridge.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $instance }}
+      app.kubernetes.io/component: server
+  policyTypes:
+  - Egress
+  egress:
+  - ports:
+    - protocol: UDP
+      port: {{ .Values.networkPolicy.dnsPort }}
+    - protocol: TCP
+      port: {{ .Values.networkPolicy.dnsPort }}
+    {{- range .Values.networkPolicy.serverEgressCIDRs }}
+  - to:
+    - ipBlock:
+        cidr: {{ . }}
+    {{- end }}
+{{- if .Values.client.enabled }}
+---
+# Client egress: DNS plus outbound webhook forwarding.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-allow-client-egress
+  labels:
+    {{- include "gohookbridge.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $instance }}
+      app.kubernetes.io/component: client
+  policyTypes:
+  - Egress
+  egress:
+  - ports:
+    - protocol: UDP
+      port: {{ .Values.networkPolicy.dnsPort }}
+    - protocol: TCP
+      port: {{ .Values.networkPolicy.dnsPort }}
+  - {}
+{{- end }}
+{{- if .Values.proxy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-allow-proxy-egress
+  labels:
+    {{- include "gohookbridge.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $instance }}
+      app.kubernetes.io/component: proxy
+  policyTypes:
+  - Egress
+  egress:
+  - ports:
+    - protocol: UDP
+      port: {{ .Values.networkPolicy.dnsPort }}
+    - protocol: TCP
+      port: {{ .Values.networkPolicy.dnsPort }}
+  - {}
+{{- end }}
+{{- end }}

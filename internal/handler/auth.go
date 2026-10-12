@@ -48,30 +48,42 @@ func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	})
 }
 
-func RequireAuth(secret [32]byte, secure bool) func(http.Handler) http.Handler {
+// unauthorizedResponse clears the session cookie and answers GETs with a
+// redirect to the login page and other methods with 401.
+func unauthorizedResponse(w http.ResponseWriter, r *http.Request, secure bool) {
+	clearSessionCookie(w, secure)
+	if r.Method == http.MethodGet {
+		redirectURL := r.URL.String()
+		//nolint:gosec
+		http.Redirect(w, r, "/?redirect="+redirectURL, http.StatusFound)
+		return
+	}
+	http.Error(w, "Unauthorized", http.StatusUnauthorized)
+}
+
+func RequireAuth(svc *service.Service, secret [32]byte, secure bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie(sessionCookieName)
 			if err != nil {
-				if r.Method == http.MethodGet {
-					redirectURL := r.URL.String()
-					//nolint:gosec
-					http.Redirect(w, r, "/?redirect="+redirectURL, http.StatusFound)
-				} else {
-					http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				}
+				unauthorizedResponse(w, r, secure)
 				return
 			}
 			token, err := service.DecodeSession(cookie.Value, secret)
 			if err != nil {
-				clearSessionCookie(w, secure)
-				if r.Method == http.MethodGet {
-					redirectURL := r.URL.String()
-					//nolint:gosec
-					http.Redirect(w, r, "/?redirect="+redirectURL, http.StatusFound)
-				} else {
-					http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				unauthorizedResponse(w, r, secure)
+				return
+			}
+			// The principal must resolve to a stored user and the session must
+			// belong to the current auth epoch; otherwise the session is stale
+			// or forged. A nil service (unit tests) skips principal resolution.
+			if svc != nil {
+				user := svc.ResolvePrincipal(r.Context(), token)
+				if user == nil || !svc.SessionEpochValid(r.Context(), token) {
+					unauthorizedResponse(w, r, secure)
+					return
 				}
+				next.ServeHTTP(w, r.WithContext(withPrincipal(r.Context(), user, token.Groups)))
 				return
 			}
 			//nolint:revive,staticcheck // context keys are package-level string constants by design
@@ -100,7 +112,7 @@ func RequireAuthDynamic(svc *service.Service, secret [32]byte, secure bool) func
 				next.ServeHTTP(w, r)
 				return
 			}
-			RequireAuth(secret, secure)(next).ServeHTTP(w, r)
+			RequireAuth(svc, secret, secure)(next).ServeHTTP(w, r)
 		})
 	}
 }
@@ -129,7 +141,7 @@ func APIAuthMethodsHandler(svc *service.Service) http.HandlerFunc {
 	}
 }
 
-func APILoginHandler(svc *service.Service, secret [32]byte, banTracker *service.BanTracker, secure bool) http.HandlerFunc {
+func APILoginHandler(svc *service.Service, secret [32]byte, banTracker *service.BanTracker, throttle *service.LoginThrottle, secure bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		cfg := svc.BuildAuthConfig(ctx)
@@ -142,8 +154,18 @@ func APILoginHandler(svc *service.Service, secret [32]byte, banTracker *service.
 			Username string `json:"username"`
 			Password string `json:"password"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		// The login endpoint is unauthenticated: cap the body so a huge
+		// payload cannot be buffered without limit (CWE-400, F11).
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+
+		// Per-account throttling is always-on and keyed by a fingerprint so raw
+		// usernames are never stored.
+		throttleKey := service.FingerprintLogin(body.Username)
+		attempts, cooldown := loginThrottleConfig(ctx, svc)
+		if throttle != nil && !throttle.Allow(throttleKey, attempts, cooldown) {
+			http.Error(w, `{"error":"too many login attempts; try again later"}`, http.StatusTooManyRequests)
 			return
 		}
 
@@ -158,14 +180,30 @@ func APILoginHandler(svc *service.Service, secret [32]byte, banTracker *service.
 			// Equalize the response time for unknown usernames with a dummy
 			// bcrypt comparison so timing does not leak account existence.
 			_ = service.ValidatePassword(dummyPasswordHash, body.Password)
-			svc.RecordCredentialFailure(ctx, banTracker, r, service.FingerprintLogin(body.Username))
+			svc.RecordCredentialFailure(ctx, banTracker, r, throttleKey)
 			http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 			return
 		}
+		if throttle != nil {
+			throttle.Clear(throttleKey)
+		}
 
+		user, err := svc.GetUserByUsername(ctx, body.Username)
+		if err != nil {
+			http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
+			return
+		}
+		sessionID, err := service.GenerateRandomHex()
+		if err != nil {
+			http.Error(w, `{"error":"failed to create session"}`, http.StatusInternalServerError)
+			return
+		}
 		token := &service.SessionToken{
-			Username:  body.Username,
+			UserID:    user.ID,
+			Username:  user.Username,
 			Method:    "internal",
+			SessionID: sessionID,
+			AuthEpoch: svc.GetAuthEpoch(ctx),
 			ExpiresAt: time.Now().Unix() + sessionMaxAge,
 		}
 		encoded, err := service.EncodeSession(token, secret)
@@ -178,6 +216,21 @@ func APILoginHandler(svc *service.Service, secret [32]byte, banTracker *service.
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	}
+}
+
+// loginThrottleConfig returns the configured per-account attempt budget and
+// cooldown, falling back to the domain defaults.
+func loginThrottleConfig(ctx context.Context, svc *service.Service) (int, int) {
+	attempts, cooldown := 10, 300
+	if cfg, err := svc.GetGlobalConfig(ctx); err == nil {
+		if cfg.Server.LoginThrottleAttempts > 0 {
+			attempts = cfg.Server.LoginThrottleAttempts
+		}
+		if cfg.Server.LoginThrottleCooldown > 0 {
+			cooldown = cfg.Server.LoginThrottleCooldown
+		}
+	}
+	return attempts, cooldown
 }
 
 func APILogoutHandler(secure bool) http.HandlerFunc {

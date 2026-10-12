@@ -24,6 +24,17 @@ type ServerConfig struct {
 	BanMaxUniqueFailures int  `json:"ban_max_unique_failures" yaml:"ban_max_unique_failures"`
 	BanWindowSeconds     int  `json:"ban_window_seconds"      yaml:"ban_window_seconds"`
 	BanDurationSeconds   int  `json:"ban_duration_seconds"    yaml:"ban_duration_seconds"`
+
+	// TrustedProxyCIDRs lists the reverse-proxy networks whose forwarded
+	// headers (X-Forwarded-For/X-Real-IP) may be trusted.
+	TrustedProxyCIDRs []string `json:"trusted_proxy_cidrs" yaml:"trusted_proxy_cidrs"`
+	// RequireKnownChannels rejects webhooks for channels that are not stored,
+	// instead of falling back to synthetic global-default channels.
+	RequireKnownChannels bool `json:"require_known_channels" yaml:"require_known_channels"`
+	// LoginThrottleAttempts/LoginThrottleCooldown bound per-account login
+	// attempts (always-on). 0 attempts = domain default (10).
+	LoginThrottleAttempts int `json:"login_throttle_attempts" yaml:"login_throttle_attempts"`
+	LoginThrottleCooldown int `json:"login_throttle_cooldown_seconds" yaml:"login_throttle_cooldown_seconds"`
 }
 
 type DefaultChannelConfig struct {
@@ -49,6 +60,9 @@ func DefaultGlobalConfig() *GlobalConfig {
 			BanMaxUniqueFailures: 5,
 			BanWindowSeconds:     300,
 			BanDurationSeconds:   3600,
+
+			LoginThrottleAttempts: 10,
+			LoginThrottleCooldown: 300,
 		},
 		Defaults: DefaultChannelConfig{},
 	}

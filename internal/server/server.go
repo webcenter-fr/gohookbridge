@@ -6,6 +6,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	_ "embed"
 	"encoding/hex"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	"github.com/webcenter-fr/gohookbridge/internal/service"
 	"github.com/webcenter-fr/gohookbridge/internal/web"
 	"github.com/webcenter-fr/gohookbridge/pkg/nats"
+	"github.com/webcenter-fr/gohookbridge/pkg/tlsreload"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -87,6 +89,20 @@ func resolveListenerConfig(address string, port int, publicAddress string, publi
 // produces a malformed URL like http://::1:8081.
 func effectivePublicAddr(address string, port int) string {
 	return net.JoinHostPort(address, strconv.Itoa(port))
+}
+
+// newHTTPServer builds an HTTP server with bounded read/idle timeouts so slow
+// or stalled clients cannot pin connections indefinitely (F11). WriteTimeout
+// is deliberately unset: it would kill long-lived SSE streams, whose writes
+// are bounded individually by per-write deadlines instead.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadTimeout:       5 * time.Minute,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 }
 
 // buildWebhookRouter builds the POST-only webhook ingestion sub-router with the
@@ -234,6 +250,11 @@ func NewServer(c *cli.Context) (*Server, error) {
 		log.Printf("WARNING: raft generation %d supersedes local %d; clearing stale Raft state to rejoin", clusterGeneration, localGeneration)
 	}
 
+	atRestKeeper, err := loadAtRestKeeper(c.String("at-rest-key-file"), c.Int("raft-replicas"), c.String("raft-dir"))
+	if err != nil {
+		return nil, err
+	}
+
 	rs, err := repository.NewRaftStore(repository.RaftConfig{
 		Dir:                   c.String("raft-dir"),
 		NodeID:                c.String("raft-node-id"),
@@ -253,6 +274,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 		ApplyTimeout:          10 * time.Second,
 		Resolver:              resolver,
 		TLS:                   raftTLS,
+		AtRest:                atRestKeeper,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("init raft store: %w", err)
@@ -297,12 +319,38 @@ func NewServer(c *cli.Context) (*Server, error) {
 	}
 
 	natsCfg := nats.Config{
-		NodeID:      c.String("raft-node-id"),
-		Port:        c.Int("nats-port"),
-		ClusterPort: c.Int("nats-cluster-port"),
-		Routes:      c.StringSlice("nats-routes"),
-		BufferSize:  c.Int("nats-buffer-size"),
-		ClusterName: c.String("nats-cluster-name"),
+		NodeID:          c.String("raft-node-id"),
+		Port:            c.Int("nats-port"),
+		ClusterPort:     c.Int("nats-cluster-port"),
+		Routes:          c.StringSlice("nats-routes"),
+		BufferSize:      c.Int("nats-buffer-size"),
+		BufferBytes:     c.Int("nats-buffer-bytes"),
+		ClusterName:     c.String("nats-cluster-name"),
+		ClusterUsername: c.String("nats-cluster-username"),
+		ClusterPassword: c.String("nats-cluster-password"),
+		DisableCluster:  c.Bool("nats-disable-cluster"),
+		MaxPayload:      c.Int("nats-max-payload"),
+		MaxPending:      c.Int64("nats-max-pending"),
+		SubQueueDepth:   c.Int("sse-queue-depth"),
+		SubQueueBytes:   c.Int("sse-queue-bytes"),
+	}
+	if caFile, certFile, keyFile := c.String("nats-cluster-tls-ca"), c.String("nats-cluster-tls-cert"), c.String("nats-cluster-tls-key"); caFile != "" || certFile != "" || keyFile != "" {
+		if caFile == "" || certFile == "" || keyFile == "" {
+			cancelStartup()
+			_ = rs.Shutdown()
+			return nil, fmt.Errorf("nats cluster TLS: ca/cert/key must all be set together")
+		}
+		provider := tlsreload.NewProvider(certFile, keyFile, caFile, 5*time.Second)
+		if err := provider.Load(); err != nil {
+			cancelStartup()
+			_ = rs.Shutdown()
+			return nil, fmt.Errorf("nats cluster TLS: %w", err)
+		}
+		go provider.Start(ctx)
+		natsCfg.ClusterTLS = provider.TLSConfig(&tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ClientAuth: tls.RequireAndVerifyClientCert,
+		})
 	}
 	broker, natsErr := nats.New(natsCfg)
 	if natsErr != nil {
@@ -332,6 +380,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 
 	rateLimiterInst := service.NewRateLimiter()
 	banTrackerInst := service.NewBanTracker()
+	loginThrottleInst := service.NewLoginThrottle()
 
 	autoCert := c.Bool("auto-cert")
 	certFile := c.String("tls-cert")
@@ -407,6 +456,8 @@ func NewServer(c *cli.Context) (*Server, error) {
 	restrictedRouter := chi.NewRouter()
 
 	mainRouter.Use(middleware.RequestID)
+	mainRouter.Use(handler.StripForwardMarker)
+	mainRouter.Use(handler.SecurityHeadersMiddleware)
 	mainRouter.Use(handler.SafeLogger)
 	mainRouter.Use(middleware.Recoverer)
 	mainRouter.Use(handler.BanMiddleware(banTrackerInst, svc))
@@ -428,7 +479,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	mainRouter.Get("/readyz", handler.RetReadyz(rs))
 	mainRouter.Get("/startup", handler.RetStartup(rs))
 
-	mainRouter.Get(handler.EventsPath, handler.ChannelAccessMiddleware(svc, "consume", banTrackerInst)(handler.HandleEventsGet(broker, svc)).ServeHTTP)
+	mainRouter.Get(handler.EventsPath, handler.ChannelAccessMiddleware(svc, "consume", banTrackerInst)(handler.HandleEventsGet(broker, svc, c.Int("max-sse-connections"))).ServeHTTP)
 
 	// OIDC routes (registered dynamically from Raft config)
 	providers, _ := svc.OIDCProviders(ctx)
@@ -440,6 +491,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 			_ = rs.Shutdown()
 			return nil, fmt.Errorf("init OIDC handler for %s: %w", provider.ID, err)
 		}
+		oidcHandler.Resolver = svc
 		mainRouter.Get("/auth/oidc/"+provider.ID+"/login", oidcHandler.LoginHandler())
 		mainRouter.Get("/auth/oidc/"+provider.ID+"/callback", oidcHandler.CallbackHandler())
 	}
@@ -452,14 +504,38 @@ func NewServer(c *cli.Context) (*Server, error) {
 	// at /api/auth: that mount would shadow the admin /api/auth/internal route
 	// registered by RegisterAPIHandlers on the /api subrouter.
 	mainRouter.Get("/api/auth/methods", handler.APIAuthMethodsHandler(svc))
-	mainRouter.Post("/api/auth/login", handler.APILoginHandler(svc, sessionSecret, banTrackerInst, cookieSecure))
+	mainRouter.Post("/api/auth/login", handler.APILoginHandler(svc, sessionSecret, banTrackerInst, loginThrottleInst, cookieSecure))
 	mainRouter.Post("/api/auth/logout", handler.APILogoutHandler(cookieSecure))
+
+	// Leader forwarding: in multi-node TLS the internal listener serves HTTPS
+	// with the per-pod certificate, and followers authenticate to the leader
+	// with the same certificate material (F13).
+	forwardScheme := "http"
+	var forwardTransport *http.Transport
+	if certFile != "" && certKey != "" && c.String("raft-tls-ca-cert") != "" {
+		provider := tlsreload.NewProvider(certFile, certKey, c.String("raft-tls-ca-cert"), 5*time.Second)
+		if err := provider.Load(); err != nil {
+			cancelStartup()
+			broker.Shutdown()
+			_ = rs.Shutdown()
+			return nil, fmt.Errorf("leader-forward TLS: %w", err)
+		}
+		go provider.Start(ctx)
+		forwardTransport = &http.Transport{
+			TLSClientConfig:       provider.TLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}),
+			ResponseHeaderTimeout: 10 * time.Second,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     true,
+		}
+		forwardScheme = "https"
+	}
 
 	// API routes — dynamic auth handles setup mode and authentication
 	apiRouter := chi.NewRouter()
 	// Mutating requests must reach the Raft leader; in an HA deployment the
 	// Service load-balances over all replicas, so followers forward writes.
-	apiRouter.Use(handler.LeaderForwardMiddleware(rs, c.Int("port")))
+	apiRouter.Use(handler.LeaderForwardMiddleware(rs, c.Int("port"), forwardTransport, forwardScheme))
+	apiRouter.Use(handler.MutationOriginValidation(svc))
 	apiRouter.Use(handler.RequireAuthDynamic(svc, sessionSecret, cookieSecure))
 	handler.RegisterAPIHandlers(apiRouter, svc)
 	// Channel-write-gated operational endpoints (no setup-mode bypass: in setup
@@ -503,11 +579,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 
 	var publicHTTPServer *http.Server
 	if cfg.publicAddr != "" {
-		publicHTTPServer = &http.Server{
-			Addr:              cfg.publicAddr,
-			Handler:           buildPublicRouter(broker, svc, banTrackerInst, rateLimiterInst, rs),
-			ReadHeaderTimeout: 10 * time.Second,
-		}
+		publicHTTPServer = newHTTPServer(cfg.publicAddr, buildPublicRouter(broker, svc, banTrackerInst, rateLimiterInst, rs))
 	}
 
 	fmt.Fprintf(os.Stdout, "Serving for webhooks on %s\n", publicURL)
@@ -517,22 +589,18 @@ func NewServer(c *cli.Context) (*Server, error) {
 	}
 
 	return &Server{
-		repo:          rs,
-		svc:           svc,
-		broker:        broker,
-		rateLimiter:   rateLimiterInst,
-		banTracker:    banTrackerInst,
-		sessionSecret: sessionSecret,
-		publicURL:     publicURL,
-		certFile:      certFile,
-		certKey:       certKey,
-		autoCert:      autoCert,
-		cancelCtx:     cancelStartup,
-		httpServer: &http.Server{
-			Addr:              cfg.internalAddr,
-			Handler:           finalRouter,
-			ReadHeaderTimeout: 10 * time.Second,
-		},
+		repo:             rs,
+		svc:              svc,
+		broker:           broker,
+		rateLimiter:      rateLimiterInst,
+		banTracker:       banTrackerInst,
+		sessionSecret:    sessionSecret,
+		publicURL:        publicURL,
+		certFile:         certFile,
+		certKey:          certKey,
+		autoCert:         autoCert,
+		cancelCtx:        cancelStartup,
+		httpServer:       newHTTPServer(cfg.internalAddr, finalRouter),
 		publicHTTPServer: publicHTTPServer,
 	}, nil
 }

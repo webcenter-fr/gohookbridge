@@ -18,6 +18,14 @@ spec:
         app.kubernetes.io/name: {{ include "gohookbridge.name" . }}
         app.kubernetes.io/component: client
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
       {{- range . }}
@@ -28,6 +36,13 @@ spec:
       - name: client
         image: "{{ .Values.client.image.repository }}:{{ .Values.client.image.tag }}"
         imagePullPolicy: {{ .Values.client.image.pullPolicy }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+          seccompProfile:
+            type: RuntimeDefault
         args:
         - client
         - {{ .Values.client.channelURL | quote }}
@@ -36,8 +51,10 @@ spec:
         - --encryption-key-file
         - {{ .Values.client.encryptionKeyFile | quote }}
         {{- end }}
-        {{- if .Values.encryption.createSecret }}
         volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        {{- if .Values.encryption.createSecret }}
         - name: encryption-key
           mountPath: /etc/gohookbridge
           readOnly: true
@@ -46,8 +63,10 @@ spec:
         resources:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-      {{- if .Values.encryption.createSecret }}
       volumes:
+      - name: tmp
+        emptyDir: {}
+      {{- if .Values.encryption.createSecret }}
       - name: encryption-key
         secret:
           secretName: {{ include "gohookbridge.encryptionSecretName" . }}

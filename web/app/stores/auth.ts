@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api, type UserInfo, type AuthMethods } from '~/utils/api'
+import { useEventsStore } from '~/stores/events'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<UserInfo | null>(null)
@@ -37,6 +38,11 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function logout() {
     await api.logout()
+    // Drop any live event stream and its buffered events so a stale session
+    // cannot keep receiving data (F21).
+    const eventsStore = useEventsStore()
+    eventsStore.disconnect()
+    eventsStore.clear()
     user.value = null
     loaded.value = false
     authMethods.value = null

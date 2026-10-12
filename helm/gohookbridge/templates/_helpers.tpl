@@ -45,11 +45,18 @@ Raft advertise FQDN for the pod hostname (POD_NAME is expanded by the shell).
 {{- printf "$(POD_NAME).%s:%v" $host .Values.server.raftPort -}}
 {{- end }}
 
-{{/*
-Raft CA Secret name.
+ {{/*
+Pre-created CA-only Secret name (public ca.crt).
 */}}
-{{- define "gohookbridge.raftCASecret" -}}
-{{- .Values.server.raft.tls.caSecret | default (printf "%s-raft-ca" (include "gohookbridge.fullname" .)) -}}
+{{- define "gohookbridge.serverTLSCASecret" -}}
+{{- .Values.server.raft.tls.caSecret | default (printf "%s-server-tls-ca" (include "gohookbridge.fullname" .)) -}}
+{{- end }}
+
+{{/*
+Pre-created node-set Secret name (ca.crt + <ordinal>.crt/.key).
+*/}}
+{{- define "gohookbridge.serverTLSNodesSecret" -}}
+{{- .Values.server.raft.tls.nodesSecret | default (printf "%s-server-tls-nodes" (include "gohookbridge.fullname" .)) -}}
 {{- end }}
 
 {{/*

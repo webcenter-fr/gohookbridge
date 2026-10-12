@@ -44,3 +44,20 @@ func TestSafeLoggerRedactsLogWithoutMutatingRequest(t *testing.T) {
 	assert.Assert(t, strings.Contains(logs, "redacted"), "log must redact the token: %s", logs)
 	assert.Assert(t, !strings.Contains(logs, "super-secret"), "log leaked the raw token: %s", logs)
 }
+
+// F33: OIDC callback query credentials (code/state/client_secret) are redacted
+// from logs without mutating the live request.
+func TestOIDCCallbackRedaction(t *testing.T) {
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+		"/auth/oidc/test/callback?code=SECRETCODE9&state=SECRETSTATE9&client_secret=SECRETCS9&token=SECRETTOK9", nil)
+
+	clean := sanitizeRequestForLog(req)
+	for _, secret := range []string{"SECRETCODE9", "SECRETSTATE9", "SECRETCS9", "SECRETTOK9"} {
+		assert.Assert(t, !strings.Contains(clean.RequestURI, secret), "log URI leaked %q", secret)
+	}
+	assert.Assert(t, strings.Contains(clean.RequestURI, "redacted"))
+
+	// The live request must be untouched.
+	assert.Assert(t, strings.Contains(req.URL.RawQuery, "SECRETCODE9"), "live request was mutated")
+	assert.Assert(t, strings.Contains(req.URL.RawQuery, "SECRETSTATE9"), "live request was mutated")
+}

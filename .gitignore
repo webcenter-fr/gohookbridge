@@ -12,3 +12,12 @@ web/dist
 internal/web/static/
 helm/gohookbridge/values-home.yaml
 .opencode
+# Never commit the security audit report or generated certificate material.
+SECURITY_AUDIT_REPORT.md
+*.pem
+*.crt
+*.key
+!**/testdata/**/*.crt
+!**/testdata/**/*.key
+at-rest-key.json
+*.audit-allowlist.local.json

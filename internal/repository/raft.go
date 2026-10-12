@@ -31,6 +31,7 @@ type RaftStore struct {
 	transport raft.Transport
 	resolver  PeerResolver
 	nodeID    string
+	keeper    *CryptoKeeper
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -60,6 +61,8 @@ type RaftConfig struct {
 	ApplyTimeout          time.Duration
 	Resolver              PeerResolver // nil = legacy resolver from Peers/AdvertiseAddr/BindAddr
 	TLS                   *tls.Config  // nil = plaintext
+	// AtRest, when set, encrypts sensitive fields before persistence.
+	AtRest *CryptoKeeper
 }
 
 // withDefaults fills unset config fields with production defaults. NodeID is
@@ -114,8 +117,14 @@ func parsePeers(entries []string) []RaftPeer {
 func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
 	withDefaults(&cfg)
 
-	if err := os.MkdirAll(cfg.Dir, 0o750); err != nil {
+	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create raft dir: %w", err)
+	}
+	// Tighten an existing directory (e.g. a mounted PVC or a temp dir created
+	// with looser permissions).
+	// #nosec G302 -- directory; 0700 is more restrictive than the 0750 threshold.
+	if err := os.Chmod(cfg.Dir, 0o700); err != nil {
+		return nil, fmt.Errorf("chmod raft dir: %w", err)
 	}
 
 	resolver := cfg.Resolver
@@ -221,7 +230,111 @@ func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
 		transport: transport,
 		resolver:  resolver,
 		nodeID:    nodeID,
+		keeper:    cfg.AtRest,
 	}, nil
+}
+
+// sealString encrypts a sensitive string for persistence (no-op for the empty
+// string or when at-rest encryption is disabled).
+func (rs *RaftStore) sealString(plain string) (string, error) {
+	if rs.keeper == nil || plain == "" {
+		return plain, nil
+	}
+	ev, err := rs.keeper.Encrypt([]byte(plain))
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// openString decrypts a persisted sensitive string. A value that is not an
+// EncryptedValue envelope is treated as legacy plaintext and returned as-is
+// (lazy migration).
+func (rs *RaftStore) openString(stored string) (string, error) {
+	if rs.keeper == nil || stored == "" {
+		return stored, nil
+	}
+	var ev EncryptedValue
+	if err := json.Unmarshal([]byte(stored), &ev); err != nil || ev.Alg == "" || ev.Ct == "" {
+		return stored, nil
+	}
+	plain, err := rs.keeper.Decrypt(ev)
+	if err != nil {
+		return "", err
+	}
+	return string(plain), nil
+}
+
+func (rs *RaftStore) sealChannel(p *domain.Channel) error {
+	if rs.keeper == nil {
+		return nil
+	}
+	var err error
+	if p.WebhookSecret, err = rs.sealString(p.WebhookSecret); err != nil {
+		return err
+	}
+	if p.EncryptionKey, err = rs.sealString(p.EncryptionKey); err != nil {
+		return err
+	}
+	if p.EncryptionPrivateKey, err = rs.sealString(p.EncryptionPrivateKey); err != nil {
+		return err
+	}
+	for i := range p.WebhookSignatures {
+		if p.WebhookSignatures[i], err = rs.sealString(p.WebhookSignatures[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (rs *RaftStore) openChannel(p *domain.Channel) error {
+	if rs.keeper == nil {
+		return nil
+	}
+	var err error
+	if p.WebhookSecret, err = rs.openString(p.WebhookSecret); err != nil {
+		return err
+	}
+	if p.EncryptionKey, err = rs.openString(p.EncryptionKey); err != nil {
+		return err
+	}
+	if p.EncryptionPrivateKey, err = rs.openString(p.EncryptionPrivateKey); err != nil {
+		return err
+	}
+	for i := range p.WebhookSignatures {
+		if p.WebhookSignatures[i], err = rs.openString(p.WebhookSignatures[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (rs *RaftStore) sealConfig(cfg *domain.GlobalConfig) error {
+	if rs.keeper == nil {
+		return nil
+	}
+	var err error
+	if cfg.Server.SessionSecret, err = rs.sealString(cfg.Server.SessionSecret); err != nil {
+		return err
+	}
+	cfg.Defaults.WebhookSecret, err = rs.sealString(cfg.Defaults.WebhookSecret)
+	return err
+}
+
+func (rs *RaftStore) openConfig(cfg *domain.GlobalConfig) error {
+	if rs.keeper == nil {
+		return nil
+	}
+	var err error
+	if cfg.Server.SessionSecret, err = rs.openString(cfg.Server.SessionSecret); err != nil {
+		return err
+	}
+	cfg.Defaults.WebhookSecret, err = rs.openString(cfg.Defaults.WebhookSecret)
+	return err
 }
 
 // resolveBootstrapState computes this node's stable ID and whether it seeds
@@ -774,6 +887,45 @@ func (rs *RaftStore) Apply(cmd []byte) (interface{}, error) {
 	return future.Response(), nil
 }
 
+// fsmKV is one key mutation in a transactional "set-multi" command.
+type fsmKV struct {
+	Key    string `json:"key"`
+	Value  []byte `json:"value,omitempty"`
+	Delete bool   `json:"delete,omitempty"`
+}
+
+// applyResponse converts the FSM's Apply response into an error. The FSM
+// returns an error value for rejected mutations (e.g. duplicate channel); only
+// surfacing it lets callers translate it back to domain.ErrAlreadyExists.
+func applyResponse(resp interface{}) error {
+	if resp == nil {
+		return nil
+	}
+	if err, ok := resp.(error); ok && err != nil {
+		return err
+	}
+	return nil
+}
+
+// applyMulti applies several key mutations as a single Raft entry (one FSM
+// transaction), so multi-record writes are atomic across the cluster.
+func (rs *RaftStore) applyMulti(entries []fsmKV) error {
+	payload, err := json.Marshal(fsmMultiPayload{Entries: entries})
+	if err != nil {
+		return err
+	}
+	cmd := fsmCommand{Op: "set-multi", Value: payload}
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return err
+	}
+	resp, err := rs.Apply(data)
+	if err != nil {
+		return err
+	}
+	return applyResponse(resp)
+}
+
 func (rs *RaftStore) applyCommand(op, key string, value []byte) error {
 	cmd := fsmCommand{
 		Op:  op,
@@ -786,8 +938,11 @@ func (rs *RaftStore) applyCommand(op, key string, value []byte) error {
 	if err != nil {
 		return err
 	}
-	_, err = rs.Apply(data)
-	return err
+	resp, err := rs.Apply(data)
+	if err != nil {
+		return err
+	}
+	return applyResponse(resp)
 }
 
 func (rs *RaftStore) HasData() (bool, error) {
@@ -836,6 +991,9 @@ func (rs *RaftStore) GetChannel(ctx context.Context, id string) (*domain.Channel
 	if err := json.Unmarshal(val, &ch); err != nil {
 		return nil, err
 	}
+	if err := rs.openChannel(&ch); err != nil {
+		return nil, err
+	}
 	return &ch, nil
 }
 
@@ -857,12 +1015,18 @@ func (rs *RaftStore) ListChannels(ctx context.Context) ([]*domain.Channel, error
 		}
 		seen[id] = true
 		val, err := getFSMValue(rs.db, "/channels/"+id+"/")
-		if err != nil || val == nil {
+		if err != nil {
+			return nil, err
+		}
+		if val == nil {
 			continue
 		}
 		var ch domain.Channel
 		if err := json.Unmarshal(val, &ch); err != nil {
-			continue
+			return nil, fmt.Errorf("unmarshal channel %q: %w", id, err)
+		}
+		if err := rs.openChannel(&ch); err != nil {
+			return nil, err
 		}
 		domain.MigrateChannel(&ch)
 		channels = append(channels, &ch)
@@ -874,7 +1038,11 @@ func (rs *RaftStore) CreateChannel(ctx context.Context, p *domain.Channel) error
 	if p.ID == "" {
 		return fmt.Errorf("%w: channel ID required", domain.ErrInvalidArgument)
 	}
-	val, err := json.Marshal(p)
+	sealed := *p
+	if err := rs.sealChannel(&sealed); err != nil {
+		return err
+	}
+	val, err := json.Marshal(&sealed)
 	if err != nil {
 		return err
 	}
@@ -902,7 +1070,11 @@ func (rs *RaftStore) UpdateChannel(ctx context.Context, p *domain.Channel) error
 	if p.ID == "" {
 		return fmt.Errorf("%w: channel ID required", domain.ErrInvalidArgument)
 	}
-	val, err := json.Marshal(p)
+	sealed := *p
+	if err := rs.sealChannel(&sealed); err != nil {
+		return err
+	}
+	val, err := json.Marshal(&sealed)
 	if err != nil {
 		return err
 	}
@@ -922,9 +1094,10 @@ func (rs *RaftStore) GetGlobalConfig(ctx context.Context) (*domain.GlobalConfig,
 	}
 	if val != nil {
 		var sc domain.ServerConfig
-		if err := json.Unmarshal(val, &sc); err == nil {
-			cfg.Server = sc
+		if err := json.Unmarshal(val, &sc); err != nil {
+			return nil, fmt.Errorf("unmarshal server config: %w", err)
 		}
+		cfg.Server = sc
 	}
 
 	val, err = getFSMValue(rs.db, "/global/defaults/")
@@ -933,11 +1106,15 @@ func (rs *RaftStore) GetGlobalConfig(ctx context.Context) (*domain.GlobalConfig,
 	}
 	if val != nil {
 		var dc domain.DefaultChannelConfig
-		if err := json.Unmarshal(val, &dc); err == nil {
-			cfg.Defaults = dc
+		if err := json.Unmarshal(val, &dc); err != nil {
+			return nil, fmt.Errorf("unmarshal defaults config: %w", err)
 		}
+		cfg.Defaults = dc
 	}
 
+	if err := rs.openConfig(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -945,19 +1122,25 @@ func (rs *RaftStore) UpdateGlobalConfig(ctx context.Context, cfg *domain.GlobalC
 	if cfg == nil {
 		return fmt.Errorf("%w: config required", domain.ErrInvalidArgument)
 	}
+	sealed := *cfg
+	if err := rs.sealConfig(&sealed); err != nil {
+		return err
+	}
 	//nolint:gosec
-	scVal, err := json.Marshal(cfg.Server)
+	scVal, err := json.Marshal(sealed.Server)
 	if err != nil {
 		return err
 	}
-	if err := rs.applyCommand("set", "/global/server/", scVal); err != nil {
-		return err
-	}
-	dcVal, err := json.Marshal(cfg.Defaults)
+	dcVal, err := json.Marshal(sealed.Defaults)
 	if err != nil {
 		return err
 	}
-	return rs.applyCommand("set", "/global/defaults/", dcVal)
+	// Both records are written in a single transaction so the server and
+	// defaults can never diverge.
+	return rs.applyMulti([]fsmKV{
+		{Key: "/global/server/", Value: scVal},
+		{Key: "/global/defaults/", Value: dcVal},
+	})
 }
 
 func (rs *RaftStore) GetUser(ctx context.Context, id string) (*domain.User, error) {
@@ -1002,6 +1185,27 @@ func (rs *RaftStore) GetUserByUsername(ctx context.Context, username string) (*d
 		return nil, fmt.Errorf("%w: user %q", domain.ErrNotFound, username)
 	}
 	return rs.GetUser(ctx, idx.UserID)
+}
+
+// GetUserByExternalIdentity resolves the user bound to an OIDC (provider,
+// issuer, subject) tuple by scanning the user set. issuer must already be
+// normalized (no trailing slash) by the caller.
+func (rs *RaftStore) GetUserByExternalIdentity(ctx context.Context, providerID, issuer, subject string) (*domain.User, error) {
+	if providerID == "" || issuer == "" || subject == "" {
+		return nil, fmt.Errorf("%w: external identity incomplete", domain.ErrInvalidArgument)
+	}
+	users, err := rs.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range users {
+		for _, id := range u.ExternalIdentities {
+			if id.ProviderID == providerID && id.Issuer == issuer && id.Subject == subject {
+				return u, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%w: no user for external identity %s/%s/%s", domain.ErrNotFound, providerID, issuer, subject)
 }
 
 func (rs *RaftStore) ListUsers(ctx context.Context) ([]*domain.User, error) {
@@ -1054,11 +1258,8 @@ func (rs *RaftStore) CreateUser(ctx context.Context, u *domain.User) error {
 	if err != nil {
 		return err
 	}
-	if resp != nil {
-		//nolint:forcetypeassert // preserve domain.ErrAlreadyExists across Apply
-		return resp.(error)
-	}
-	return rs.applyCommand("set", usernameIndexKey(u.Username)+"/", usernameIndexValue(u.ID))
+	// The FSM writes the user and its username index in one transaction.
+	return applyResponse(resp)
 }
 
 func (rs *RaftStore) UpdateUser(ctx context.Context, u *domain.User) error {
@@ -1071,16 +1272,14 @@ func (rs *RaftStore) UpdateUser(ctx context.Context, u *domain.User) error {
 	if err != nil {
 		return err
 	}
-	if err := rs.applyCommand("set", "/users/"+u.ID+"/", val); err != nil {
-		return err
-	}
-	if err := rs.applyCommand("set", usernameIndexKey(u.Username)+"/", usernameIndexValue(u.ID)); err != nil {
-		return err
+	entries := []fsmKV{
+		{Key: "/users/" + u.ID + "/", Value: val},
+		{Key: usernameIndexKey(u.Username) + "/", Value: usernameIndexValue(u.ID)},
 	}
 	if oldUsername != "" {
-		return rs.applyCommand("delete", "/users/by-username/"+oldUsername+"/", nil)
+		entries = append(entries, fsmKV{Key: "/users/by-username/" + oldUsername + "/", Delete: true})
 	}
-	return nil
+	return rs.applyMulti(entries)
 }
 
 func (rs *RaftStore) DeleteUser(ctx context.Context, id string) error {
@@ -1088,10 +1287,10 @@ func (rs *RaftStore) DeleteUser(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := rs.applyCommand("delete", "/users/"+id+"/", nil); err != nil {
-		return err
-	}
-	return rs.applyCommand("delete", "/users/by-username/"+u.Username+"/", nil)
+	return rs.applyMulti([]fsmKV{
+		{Key: "/users/" + id + "/", Delete: true},
+		{Key: "/users/by-username/" + u.Username + "/", Delete: true},
+	})
 }
 
 func (rs *RaftStore) GetSetupModeEndTime(ctx context.Context) time.Time {
@@ -1114,6 +1313,71 @@ func (rs *RaftStore) SetSetupModeEndTime(ctx context.Context, t time.Time) error
 	return rs.applyCommand("set", "/meta/setup_end", val)
 }
 
+// MigrateAtRest re-writes every sensitive record through the configured
+// CryptoKeeper, sealing any legacy plaintext values and re-sealing under the
+// current primary key (lazy migration + key rotation).
+func (rs *RaftStore) MigrateAtRest(ctx context.Context) error {
+	if rs.keeper == nil {
+		return fmt.Errorf("at-rest encryption is not configured")
+	}
+	channels, err := rs.ListChannels(ctx)
+	if err != nil {
+		return err
+	}
+	for _, ch := range channels {
+		if err := rs.UpdateChannel(ctx, ch); err != nil {
+			return err
+		}
+	}
+	cfg, err := rs.GetGlobalConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if err := rs.UpdateGlobalConfig(ctx, cfg); err != nil {
+		return err
+	}
+	providers, err := rs.OIDCProviders(ctx)
+	if err != nil {
+		return err
+	}
+	if len(providers) > 0 {
+		if err := rs.SetOIDCProviders(ctx, providers); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GetAuthEpoch returns the persisted session/auth epoch (0 when unset).
+func (rs *RaftStore) GetAuthEpoch(ctx context.Context) (int64, error) {
+	val, err := getFSMValue(rs.db, "/meta/auth_epoch")
+	if err != nil {
+		return 0, err
+	}
+	if val == nil {
+		return 0, nil
+	}
+	var epoch int64
+	if err := json.Unmarshal(val, &epoch); err != nil {
+		return 0, err
+	}
+	return epoch, nil
+}
+
+// BumpAuthEpoch increments the session/auth epoch, invalidating every
+// outstanding session across the cluster.
+func (rs *RaftStore) BumpAuthEpoch(ctx context.Context) error {
+	current, err := rs.GetAuthEpoch(ctx)
+	if err != nil {
+		return err
+	}
+	val, err := json.Marshal(current + 1)
+	if err != nil {
+		return err
+	}
+	return rs.applyCommand("set", "/meta/auth_epoch", val)
+}
+
 func (rs *RaftStore) OIDCProviders(ctx context.Context) ([]domain.OIDCProvider, error) {
 	val, err := getFSMValue(rs.db, "/global/auth/oidc_providers")
 	if err != nil || val == nil {
@@ -1123,12 +1387,28 @@ func (rs *RaftStore) OIDCProviders(ctx context.Context) ([]domain.OIDCProvider, 
 	if err := json.Unmarshal(val, &providers); err != nil {
 		return nil, err
 	}
+	for i := range providers {
+		opened, err := rs.openString(providers[i].ClientSecret)
+		if err != nil {
+			return nil, err
+		}
+		providers[i].ClientSecret = opened
+	}
 	return providers, nil
 }
 
 func (rs *RaftStore) SetOIDCProviders(ctx context.Context, providers []domain.OIDCProvider) error {
+	sealed := make([]domain.OIDCProvider, len(providers))
+	copy(sealed, providers)
+	for i := range sealed {
+		s, err := rs.sealString(sealed[i].ClientSecret)
+		if err != nil {
+			return err
+		}
+		sealed[i].ClientSecret = s
+	}
 	//nolint:gosec
-	val, err := json.Marshal(providers)
+	val, err := json.Marshal(sealed)
 	if err != nil {
 		return err
 	}

@@ -24,6 +24,13 @@ spec:
       {{- if .Values.serviceAccount.create }}
       serviceAccountName: {{ include "gohookbridge.fullname" . }}
       {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       terminationGracePeriodSeconds: {{ .Values.server.terminationGracePeriodSeconds | default 60 }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -35,6 +42,13 @@ spec:
       - name: server
         image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
         imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+          seccompProfile:
+            type: RuntimeDefault
         env:
         - name: POD_NAME
           valueFrom:
@@ -44,6 +58,13 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        {{- if and (gt (int .Values.server.replicas) 1) .Values.server.nats.clusterAuth.username .Values.server.nats.clusterAuth.existingSecret }}
+        - name: NATS_CLUSTER_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.server.nats.clusterAuth.existingSecret }}
+              key: {{ .Values.server.nats.clusterAuth.passwordKey | default "password" }}
+        {{- end }}
         args:
         - server
         - --address
@@ -85,8 +106,15 @@ spec:
         - {{ .Values.server.raft.performanceMultiplier | default 5.0 | printf "%.1f" | quote }}
         {{- if .Values.server.raft.tls.enabled }}
         - --raft-tls-enabled
-        - --raft-tls-ca-secret
-        - {{ include "gohookbridge.raftCASecret" . | quote }}
+        {{- if gt (int .Values.server.replicas) 1 }}
+        # Multi-node: manual pre-provisioned per-pod certificates.
+        - --raft-tls-ca-cert
+        - /etc/gohookbridge/tls/ca.crt
+        - --raft-tls-cert
+        - /etc/gohookbridge/tls/tls.crt
+        - --raft-tls-key
+        - /etc/gohookbridge/tls/tls.key
+        {{- end }}
         {{- end }}
         {{- if .Values.server.raft.recoveryMode }}
         - --raft-recovery-mode
@@ -95,6 +123,9 @@ spec:
         - {{ include "gohookbridge.raftPeers" . | quote }}
         - --nats-port
         - "{{ .Values.server.natsPort }}"
+        {{- if eq (int .Values.server.replicas) 1 }}
+        - --nats-disable-cluster
+        {{- else }}
         - --nats-cluster-port
         - "{{ .Values.server.natsClusterPort }}"
         - --nats-routes
@@ -104,9 +135,36 @@ spec:
         # webhook fan-out stays local to each pod.
         - --nats-cluster-name
         - {{ .Values.server.natsClusterName | default (include "gohookbridge.fullname" .) | quote }}
+        {{- if .Values.server.raft.tls.enabled }}
+        - --nats-cluster-tls-ca
+        - /etc/gohookbridge/tls/ca.crt
+        - --nats-cluster-tls-cert
+        - /etc/gohookbridge/tls/tls.crt
+        - --nats-cluster-tls-key
+        - /etc/gohookbridge/tls/tls.key
+        {{- end }}
+        {{- if .Values.server.nats.clusterAuth.username }}
+        - --nats-cluster-username
+        - {{ .Values.server.nats.clusterAuth.username | quote }}
+        - --nats-cluster-password
+        - $(NATS_CLUSTER_PASSWORD)
+        {{- end }}
+        {{- end }}
         {{- if .Values.server.bootstrap.enabled }}
         - --bootstrap-config-file
         - /etc/gohookbridge/bootstrap.yaml
+        {{- end }}
+        {{- if .Values.encryption.kek.existingSecret }}
+        - --at-rest-key-file
+        - /etc/gohookbridge/kek/key.json
+        {{- end }}
+        {{- if and .Values.server.raft.tls.enabled (gt (int .Values.server.replicas) 1) }}
+        # Multi-node: the internal listener serves HTTPS from the same per-pod
+        # certificate so leader forwarding can authenticate with mTLS (F13).
+        - --tls-cert
+        - /etc/gohookbridge/tls/tls.crt
+        - --tls-key
+        - /etc/gohookbridge/tls/tls.key
         {{- end }}
         ports:
         - name: http
@@ -140,6 +198,9 @@ spec:
           httpGet:
             path: {{ .startup.httpGet.path }}
             port: {{ .startup.httpGet.port }}
+          {{- if and $.Values.server.raft.tls.enabled (gt (int $.Values.server.replicas) 1) }}
+          scheme: HTTPS
+          {{- end }}
           initialDelaySeconds: 10
           periodSeconds: 5
           failureThreshold: 60
@@ -148,6 +209,9 @@ spec:
           httpGet:
             path: {{ .readiness.httpGet.path }}
             port: {{ .readiness.httpGet.port }}
+          {{- if and $.Values.server.raft.tls.enabled (gt (int $.Values.server.replicas) 1) }}
+          scheme: HTTPS
+          {{- end }}
           initialDelaySeconds: 5
           periodSeconds: 5
           failureThreshold: 3
@@ -156,6 +220,9 @@ spec:
           httpGet:
             path: {{ .liveness.httpGet.path }}
             port: {{ .liveness.httpGet.port }}
+          {{- if and $.Values.server.raft.tls.enabled (gt (int $.Values.server.replicas) 1) }}
+          scheme: HTTPS
+          {{- end }}
           initialDelaySeconds: 30
           periodSeconds: 10
           failureThreshold: 3
@@ -164,9 +231,33 @@ spec:
         volumeMounts:
         - name: raft-data
           mountPath: {{ .Values.server.raftDir }}
+        - name: tmp
+          mountPath: /tmp
         {{- if .Values.server.bootstrap.enabled }}
         - name: bootstrap
-          mountPath: /etc/gohookbridge
+          mountPath: /etc/gohookbridge/bootstrap.yaml
+          subPath: bootstrap.yaml
+          readOnly: true
+        {{- end }}
+        {{- if and .Values.server.raft.tls.enabled (gt (int .Values.server.replicas) 1) }}
+        # Per-pod certificate material from the shared node-set Secret: each
+        # pod projects only its own <ordinal>.crt/.key plus the public CA.
+        - name: server-tls
+          mountPath: /etc/gohookbridge/tls/tls.crt
+          subPathExpr: $(POD_NAME).crt
+          readOnly: true
+        - name: server-tls
+          mountPath: /etc/gohookbridge/tls/tls.key
+          subPathExpr: $(POD_NAME).key
+          readOnly: true
+        - name: server-tls
+          mountPath: /etc/gohookbridge/tls/ca.crt
+          subPath: ca.crt
+          readOnly: true
+        {{- end }}
+        {{- if .Values.encryption.kek.existingSecret }}
+        - name: kek
+          mountPath: /etc/gohookbridge/kek
           readOnly: true
         {{- end }}
         {{- with .Values.server.resources }}
@@ -174,10 +265,22 @@ spec:
           {{- toYaml . | nindent 10 }}
         {{- end }}
       volumes:
+      - name: tmp
+        emptyDir: {}
       {{- if .Values.server.bootstrap.enabled }}
       - name: bootstrap
         secret:
           secretName: {{ include "gohookbridge.fullname" . }}-bootstrap
+      {{- end }}
+      {{- if and .Values.server.raft.tls.enabled (gt (int .Values.server.replicas) 1) }}
+      - name: server-tls
+        secret:
+          secretName: {{ include "gohookbridge.serverTLSNodesSecret" . }}
+      {{- end }}
+      {{- if .Values.encryption.kek.existingSecret }}
+      - name: kek
+        secret:
+          secretName: {{ .Values.encryption.kek.existingSecret }}
       {{- end }}
   volumeClaimTemplates:
   - metadata:

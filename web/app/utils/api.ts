@@ -14,14 +14,14 @@ export interface Channel {
   id: string
   description?: string
   created_by?: string
-  webhook_secret?: string
+  // Secrets are never returned by the API; only their configured state is.
+  webhook_secret_configured?: boolean
   allowed_ips?: string[]
   max_body_size?: number
   message_ttl_seconds?: number
   encryption_mode?: string
-  encryption_key?: string
+  encryption_key_configured?: boolean
   encryption_public_key?: string
-  encryption_public_keys?: string[]
   access_mode?: string
   access_tokens?: { id: string; name: string; scope: string; created_at: string }[]
 }
@@ -32,7 +32,8 @@ export interface GlobalConfig {
     behind_reverse_proxy: boolean
     cors_origin: string
     footer: string
-    session_secret: string
+    trusted_proxy_cidrs?: string[]
+    require_known_channels: boolean
     rate_limit_enabled: boolean
     rate_limit_requests: number
     rate_limit_window_seconds: number
@@ -40,9 +41,11 @@ export interface GlobalConfig {
     ban_max_unique_failures: number
     ban_window_seconds: number
     ban_duration_seconds: number
+    login_throttle_attempts: number
+    login_throttle_cooldown_seconds: number
   }
   defaults: {
-    webhook_secret: string
+    webhook_secret_configured?: boolean
     allowed_ips: string[]
     message_ttl_seconds: number
   }

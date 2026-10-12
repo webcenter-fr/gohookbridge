@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -140,7 +141,7 @@ func TestHandleEventsGet(t *testing.T) {
 		response := newSyncRecorder()
 		done := make(chan struct{})
 		go func() {
-			ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())(HandleEventsGet(broker, svc)).ServeHTTP(response, req)
+			ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())(HandleEventsGet(broker, svc, 1000)).ServeHTTP(response, req)
 			close(done)
 		}()
 
@@ -166,7 +167,7 @@ func TestHandleEventsGet(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 		w := httptest.NewRecorder()
-		ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())(HandleEventsGet(broker, svc)).ServeHTTP(w, req)
+		ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())(HandleEventsGet(broker, svc, 1000)).ServeHTTP(w, req)
 		assert.Equal(t, w.Result().StatusCode, http.StatusForbidden)
 	})
 
@@ -227,7 +228,7 @@ func TestHandleEventsGet(t *testing.T) {
 		response := newSyncRecorder()
 		done := make(chan struct{})
 		go func() {
-			ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())(HandleEventsGet(broker, svc)).ServeHTTP(response, req)
+			ChannelAccessMiddleware(svc, "consume", service.NewBanTracker())(HandleEventsGet(broker, svc, 1000)).ServeHTTP(response, req)
 			close(done)
 		}()
 
@@ -255,7 +256,7 @@ func TestHandleEventsGet(t *testing.T) {
 		response := newSyncRecorder()
 		done := make(chan struct{})
 		go func() {
-			HandleEventsGet(broker, svc).ServeHTTP(response, req)
+			HandleEventsGet(broker, svc, 1000).ServeHTTP(response, req)
 			close(done)
 		}()
 
@@ -314,7 +315,7 @@ func TestHandleEventsGetCORSOrigin(t *testing.T) {
 			}))
 
 			router := chi.NewRouter()
-			router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", HandleEventsGet(broker, svc))
+			router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", HandleEventsGet(broker, svc, 1000))
 
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/plainchannel1", nil)
 			reqCtx, cancel := context.WithCancel(req.Context())
@@ -370,7 +371,7 @@ func TestHandleEventsGetWithNATS(t *testing.T) {
 	svc := service.NewService(storetest.NewRaftStore(t), nil)
 
 	router := chi.NewRouter()
-	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", HandleEventsGet(broker, svc))
+	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", HandleEventsGet(broker, svc, 1000))
 
 	t.Run("Delivers historical and live events via NATS", func(t *testing.T) {
 		err := broker.Publish("nats-sse-channel", []byte(`{"history":true}`))
@@ -409,7 +410,7 @@ func TestHandleEventsGetWithNATS(t *testing.T) {
 	t.Run("Handles unprotected channel with NATS broker", func(t *testing.T) {
 		localRouter := chi.NewRouter()
 		svc3 := service.NewService(storetest.NewRaftStore(t), nil)
-		localRouter.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", HandleEventsGet(broker, svc3))
+		localRouter.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", HandleEventsGet(broker, svc3, 1000))
 
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/unprotected-nats", nil)
 		reqCtx, cancel := context.WithCancel(req.Context())
@@ -455,7 +456,7 @@ func TestHandleEventsGetWithClientID(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	router := chi.NewRouter()
-	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", HandleEventsGet(broker, svc))
+	router.Get("/events/{channel:[a-zA-Z0-9_-]{12,64}}", HandleEventsGet(broker, svc, 1000))
 
 	t.Run("Delivers only events after cursor", func(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events/cursor-channel?client_id=test-client", nil)
@@ -520,4 +521,95 @@ func TestStartupEndpoint(t *testing.T) {
 	w = httptest.NewRecorder()
 	RetStartup(&fakeHealth{started: false})(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/startup", nil))
 	assert.Equal(t, w.Code, http.StatusServiceUnavailable)
+}
+
+// F11: concurrent SSE connections are bounded by --max-sse-connections; a
+// connection beyond the cap is rejected with 503 while a slot is held.
+func TestHandleEventsGetConnectionCap(t *testing.T) {
+	broker := newNatsBroker(t, 4253)
+	svc := service.NewService(storetest.NewRaftStore(t), nil)
+	h := HandleEventsGet(broker, svc, 1)
+
+	newReq := func(ctx context.Context) *http.Request {
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/events/cap-channel", nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "cap-channel")
+		return req.WithContext(context.WithValue(ctx, chi.RouteCtxKey, rctx))
+	}
+
+	// Hold the single connection slot with a streaming request.
+	reqCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := newSyncRecorder()
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(first, newReq(reqCtx))
+		close(done)
+	}()
+	assert.Assert(t, eventually(t, func() bool {
+		return strings.Contains(first.Body(), `{"message":"connected"}`)
+	}))
+
+	// The second connection is rejected while the first holds the slot.
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, newReq(context.Background()))
+	assert.Equal(t, w.Result().StatusCode, http.StatusServiceUnavailable)
+
+	cancel()
+	<-done
+
+	// Once the slot is released, a new connection is accepted again.
+	reqCtx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	second := newSyncRecorder()
+	done2 := make(chan struct{})
+	go func() {
+		h.ServeHTTP(second, newReq(reqCtx2))
+		close(done2)
+	}()
+	assert.Assert(t, eventually(t, func() bool {
+		return strings.Contains(second.Body(), `{"message":"connected"}`)
+	}))
+	cancel2()
+	<-done2
+}
+
+// deadlineRecorder records the write deadline set through
+// http.NewResponseController (F11).
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadline time.Time
+	set      bool
+}
+
+func (d *deadlineRecorder) SetWriteDeadline(t time.Time) error {
+	d.deadline = t
+	d.set = true
+	return nil
+}
+
+// F11: every SSE write runs under a per-write deadline so a stalled client
+// cannot pin the handler goroutine indefinitely.
+func TestWriteSSESetsWriteDeadline(t *testing.T) {
+	rec := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	assert.Assert(t, writeSSE(rec, rec, "data: {}\n\n"))
+	assert.Assert(t, rec.set, "writeSSE must set a per-write deadline")
+	remaining := time.Until(rec.deadline)
+	assert.Assert(t, remaining > 0 && remaining <= sseWriteTimeout,
+		"deadline must be within the write timeout, got %v", remaining)
+	assert.Assert(t, strings.Contains(rec.Body.String(), "data: {}"))
+}
+
+// failWriter fails every write, simulating a stalled or broken client.
+type failWriter struct{ header http.Header }
+
+func (f *failWriter) Header() http.Header       { return f.header }
+func (f *failWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+func (f *failWriter) WriteHeader(int)           {}
+func (f *failWriter) Flush()                    {}
+
+// F11: a failed SSE write ends the stream instead of looping forever.
+func TestWriteSSEWriteErrorEndsStream(t *testing.T) {
+	w := &failWriter{header: http.Header{}}
+	assert.Assert(t, !writeSSE(w, w, "data: {}\n\n"))
 }

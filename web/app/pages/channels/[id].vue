@@ -29,12 +29,15 @@
           <UFormField label="Description">
             <UTextarea v-model="form.description" :maxlength="500" class="w-full" />
           </UFormField>
-          <UFormField label="Webhook Secret">
-            <UFieldGroup class="w-full">
-              <UInput v-model="form.webhook_secret" type="password" placeholder="webhook secret" class="flex-1" />
-              <UButton color="neutral" variant="soft" @click="handleGenerateSecret">Generate</UButton>
-            </UFieldGroup>
-          </UFormField>
+           <UFormField label="Webhook Secret">
+             <UFieldGroup class="w-full">
+               <UInput :model-value="form.webhook_secret_preview" type="password" readonly :placeholder="form.webhook_secret_configured ? 'configured (hidden)' : 'not configured'" class="flex-1" />
+               <UButton color="neutral" variant="soft" @click="handleGenerateSecret">Generate</UButton>
+             </UFieldGroup>
+             <p v-if="form.webhook_secret_preview" class="text-sm text-(--ui-text-warning) mt-1">
+               Copy this secret now — it is shown only once.
+             </p>
+           </UFormField>
           <UFormField label="Allowed IPs">
             <div class="flex flex-col gap-2 w-full">
               <div v-for="(ip, i) in form.allowed_ips" :key="i" class="flex items-center gap-2">
@@ -83,11 +86,14 @@
           </UFormField>
           <UFormField v-if="form.encryption_mode === 'server_side'" label="Encryption Key">
             <UFieldGroup class="w-full">
-              <UInput v-model="form.encryption_key" type="password" placeholder="AES-256 key (base64)" class="flex-1" />
+              <UInput :model-value="form.encryption_key_preview" type="password" readonly :placeholder="form.encryption_key_configured ? 'configured (hidden)' : 'not configured'" class="flex-1" />
               <UButton color="neutral" variant="soft" @click="handleGenerateEncryptionKey('server_side')">Generate Key</UButton>
             </UFieldGroup>
             <p class="text-sm text-(--ui-text-muted) mt-1">
               All subscribers receive AES-encrypted payloads. Clients must use <code>--encryption-key</code> to decrypt.
+            </p>
+            <p v-if="form.encryption_key_preview" class="text-sm text-(--ui-text-warning) mt-1">
+              Copy this key now — it is shown only once.
             </p>
           </UFormField>
           <UFormField v-if="form.encryption_mode === 'e2e'" label="Channel Keypair">
@@ -149,8 +155,8 @@
           <template v-else-if="form.encryption_mode === 'server_side'">
             <p class="text-sm text-(--ui-text-muted)">Encryption Key (AES-256-GCM):</p>
             <div class="flex items-center gap-2 w-full">
-              <UInput :model-value="form.encryption_key" type="password" readonly class="flex-1" />
-              <UButton size="sm" color="neutral" variant="soft" @click="copyText(form.encryption_key)">Copy</UButton>
+              <UInput :model-value="form.encryption_key_preview" type="password" readonly class="flex-1" />
+              <UButton size="sm" color="neutral" variant="soft" @click="copyText(form.encryption_key_preview)">Copy</UButton>
             </div>
             <p class="text-sm text-(--ui-text-muted) mt-2">Client command:</p>
             <AppCodeBlock :code="clientCommandAES" language="bash" />
@@ -353,12 +359,16 @@ const tabItems = [
 
 const form = reactive({
   description: '',
-  webhook_secret: '',
+  // Secrets are write-only: the API returns only *_configured booleans, and a
+  // regenerated secret/key is shown once in the *_preview fields.
+  webhook_secret_configured: false,
+  webhook_secret_preview: '',
   allowed_ips: [''] as string[],
   max_body_size: 26214400,
   message_ttl_seconds: 0,
   encryption_mode: '',
-  encryption_key: '',
+  encryption_key_configured: false,
+  encryption_key_preview: '',
   encryption_public_key: '',
   access_mode: 'public',
 })
@@ -542,8 +552,8 @@ const clientCommandNoEnc = computed(() => {
 })
 
 const clientCommandAES = computed(() => {
-  if (!form.encryption_key) return ''
-  let cmd = `gohookbridge client --encryption-key ${form.encryption_key} ${origin}/${channelId} http://localhost:8080`
+  const key = form.encryption_key_preview || '<encryption-key>'
+  let cmd = `gohookbridge client --encryption-key ${key} ${origin}/${channelId} http://localhost:8080`
   if (form.access_mode === 'token') {
     const t = findConsumeToken()
     if (t) cmd += ` --token <${t.name || t.id}_token>`
@@ -714,12 +724,12 @@ onMounted(async () => {
 
     channel.value = await api.getChannel(channelId)
     form.description = channel.value.description || ''
-    form.webhook_secret = channel.value.webhook_secret || ''
+    form.webhook_secret_configured = !!channel.value.webhook_secret_configured
     form.allowed_ips = (channel.value.allowed_ips?.length ? channel.value.allowed_ips : [''])
     form.max_body_size = channel.value.max_body_size || 26214400
     form.message_ttl_seconds = channel.value.message_ttl_seconds || 0
     form.encryption_mode = channel.value.encryption_mode || ''
-    form.encryption_key = channel.value.encryption_key || ''
+    form.encryption_key_configured = !!channel.value.encryption_key_configured
     form.encryption_public_key = channel.value.encryption_public_key || ''
     form.access_mode = channel.value.access_mode || 'public'
 
@@ -751,14 +761,14 @@ async function handleSave() {
   const clean = (arr: string[]) => arr.filter(s => s.trim() !== '')
   const maxBodyBytes = bodySizeToBytes(form.max_body_size, bodySizeUnit.value)
   try {
+    // Secrets and access_mode are server-owned/regenerate-only and are never
+    // sent on save.
     await api.updateChannel(channelId, {
       description: form.description || undefined,
-      webhook_secret: form.webhook_secret || undefined,
       allowed_ips: clean(form.allowed_ips),
       max_body_size: maxBodyBytes,
       message_ttl_seconds: form.message_ttl_seconds || 0,
       encryption_mode: form.encryption_mode || undefined,
-      encryption_key: form.encryption_key || undefined,
       encryption_public_key: form.encryption_mode === 'e2e' ? form.encryption_public_key || undefined : undefined,
     })
     toast.add({ title: 'Saved', color: 'success' })
@@ -770,7 +780,8 @@ async function handleSave() {
 async function handleGenerateSecret() {
   try {
     const result = await api.generateWebhookSecret(channelId)
-    form.webhook_secret = result.webhook_secret
+    form.webhook_secret_configured = true
+    form.webhook_secret_preview = result.webhook_secret
     toast.add({ title: 'Secret generated', color: 'success' })
   } catch (e: any) {
     toast.add({ title: e.message || 'Failed to generate secret', color: 'error' })
@@ -781,7 +792,8 @@ async function handleGenerateEncryptionKey(mode: string) {
   try {
     const result = await api.generateEncryptionKey(channelId, mode)
     if (result.encryption_key) {
-      form.encryption_key = result.encryption_key
+      form.encryption_key_configured = true
+      form.encryption_key_preview = result.encryption_key
     }
     form.encryption_mode = result.encryption_mode || mode
     toast.add({ title: `${mode} key generated`, color: 'success' })

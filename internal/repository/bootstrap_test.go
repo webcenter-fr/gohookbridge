@@ -1,7 +1,10 @@
 package repository
 
 import (
+	"bytes"
+
 	"context"
+	"github.com/hashicorp/raft"
 	"os"
 	"path/filepath"
 	"testing"
@@ -476,4 +479,35 @@ func TestLoadBootstrap_AuthYAML(t *testing.T) {
 	assert.Equal(t, p.IssuerURL, "https://accounts.google.com")
 	assert.DeepEqual(t, p.Scopes, []string{"openid", "profile", "email"})
 	assert.Equal(t, p.GroupsClaim, "groups")
+}
+
+// F15: the plaintext password must never reach the replicated Raft log.
+func TestApplyBootstrapHashesBeforeApply(t *testing.T) {
+	rs := newTestRaftStore(t)
+	plaintext := "plaintext-should-not-persist"
+
+	cfg := &BootstrapConfig{
+		Users: []BootstrapUser{{Username: "bob", Password: plaintext, Roles: []string{"admin"}}},
+	}
+	assert.NilError(t, rs.ApplyBootstrap(context.Background(), cfg))
+
+	logStore := newBoltLogStore(rs.db)
+	first, err := logStore.FirstIndex()
+	assert.NilError(t, err)
+	last, err := logStore.LastIndex()
+	assert.NilError(t, err)
+
+	foundHash := false
+	for i := first; i <= last; i++ {
+		var entry raft.Log
+		if err := logStore.GetLog(i, &entry); err != nil {
+			continue
+		}
+		assert.Assert(t, !bytes.Contains(entry.Data, []byte(plaintext)),
+			"plaintext password leaked into the Raft log at index %d", i)
+		if bytes.Contains(entry.Data, []byte("password_hash")) {
+			foundHash = true
+		}
+	}
+	assert.Assert(t, foundHash, "the bootstrap entry must carry a password_hash")
 }

@@ -8,3 +8,10 @@ web/.nuxt
 web/.output
 web/dist
 internal/web/static
+# Never ship secrets or local-only configuration into a build context.
+values-home.yaml
+helm/gohookbridge/values-home.yaml
+AGENTS.local.md
+SECURITY_AUDIT_REPORT.md
+.env
+*.local.yaml

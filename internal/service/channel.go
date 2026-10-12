@@ -3,20 +3,39 @@ package service
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
 
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 )
 
-// ResolveChannelConfig resolves a channel's effective configuration. When the
-// channel does not exist it returns a synthetic channel built from the global
-// defaults, mirroring the historical webhook behavior for unconfigured
-// channels.
+// globalOrDefault returns the stored global config, or an error other than
+// ErrNotFound (fail closed: a transiently unreadable config must not silently
+// downgrade security policy).
+func (s *Service) globalOrFail(ctx context.Context) (*domain.GlobalConfig, error) {
+	global, err := s.repo.GetGlobalConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve global config: %w", err)
+	}
+	return global, nil
+}
+
+// ResolveChannelConfig resolves a channel's effective configuration. A missing
+// channel returns domain.ErrNotFound when require_known_channels is enabled;
+// otherwise it returns a synthetic channel built from the global defaults
+// (legacy behavior). Repository errors other than ErrNotFound are propagated.
 func (s *Service) ResolveChannelConfig(ctx context.Context, id string) (*domain.Channel, error) {
 	ch, err := s.repo.GetChannel(ctx, id)
 	if err != nil {
-		global, globalErr := s.repo.GetGlobalConfig(ctx)
-		if globalErr != nil {
-			global = domain.DefaultGlobalConfig()
+		if !errors.Is(err, domain.ErrNotFound) {
+			return nil, err
+		}
+		global, gerr := s.globalOrFail(ctx)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if global.Server.RequireKnownChannels {
+			return nil, fmt.Errorf("%w: channel %q", domain.ErrNotFound, id)
 		}
 		return &domain.Channel{
 			ID:                id,
@@ -26,9 +45,9 @@ func (s *Service) ResolveChannelConfig(ctx context.Context, id string) (*domain.
 			MessageTTLSeconds: global.Defaults.MessageTTLSeconds,
 		}, nil
 	}
-	global, globalErr := s.repo.GetGlobalConfig(ctx)
-	if globalErr != nil {
-		global = domain.DefaultGlobalConfig()
+	global, gerr := s.globalOrFail(ctx)
+	if gerr != nil {
+		return nil, gerr
 	}
 	return domain.ResolveChannelConfig(ch, global), nil
 }
@@ -36,9 +55,12 @@ func (s *Service) ResolveChannelConfig(ctx context.Context, id string) (*domain.
 func (s *Service) ResolveChannelWebhookSecret(ctx context.Context, channelID string) (string, error) {
 	p, err := s.repo.GetChannel(ctx, channelID)
 	if err != nil {
-		global, globalErr := s.repo.GetGlobalConfig(ctx)
-		if globalErr != nil {
-			global = domain.DefaultGlobalConfig()
+		if !errors.Is(err, domain.ErrNotFound) {
+			return "", err
+		}
+		global, gerr := s.globalOrFail(ctx)
+		if gerr != nil {
+			return "", gerr
 		}
 		return global.Defaults.WebhookSecret, nil
 	}
@@ -46,9 +68,9 @@ func (s *Service) ResolveChannelWebhookSecret(ctx context.Context, channelID str
 	if p.WebhookSecret != "" {
 		return p.WebhookSecret, nil
 	}
-	global, globalErr := s.repo.GetGlobalConfig(ctx)
-	if globalErr != nil {
-		global = domain.DefaultGlobalConfig()
+	global, gerr := s.globalOrFail(ctx)
+	if gerr != nil {
+		return "", gerr
 	}
 	return global.Defaults.WebhookSecret, nil
 }
@@ -56,18 +78,21 @@ func (s *Service) ResolveChannelWebhookSecret(ctx context.Context, channelID str
 func (s *Service) ResolveChannelAllowedIPs(ctx context.Context, channelID string) ([]string, error) {
 	p, err := s.repo.GetChannel(ctx, channelID)
 	if err != nil {
-		global, globalErr := s.repo.GetGlobalConfig(ctx)
-		if globalErr != nil {
-			global = domain.DefaultGlobalConfig()
+		if !errors.Is(err, domain.ErrNotFound) {
+			return nil, err
+		}
+		global, gerr := s.globalOrFail(ctx)
+		if gerr != nil {
+			return nil, gerr
 		}
 		return global.Defaults.AllowedIPs, nil
 	}
 	if len(p.AllowedIPs) > 0 {
 		return p.AllowedIPs, nil
 	}
-	global, globalErr := s.repo.GetGlobalConfig(ctx)
-	if globalErr != nil {
-		global = domain.DefaultGlobalConfig()
+	global, gerr := s.globalOrFail(ctx)
+	if gerr != nil {
+		return nil, gerr
 	}
 	return global.Defaults.AllowedIPs, nil
 }
@@ -75,18 +100,21 @@ func (s *Service) ResolveChannelAllowedIPs(ctx context.Context, channelID string
 func (s *Service) ResolveChannelMaxBodySize(ctx context.Context, channelID string) (int, error) {
 	p, err := s.repo.GetChannel(ctx, channelID)
 	if err != nil {
-		global, globalErr := s.repo.GetGlobalConfig(ctx)
-		if globalErr != nil {
-			global = domain.DefaultGlobalConfig()
+		if !errors.Is(err, domain.ErrNotFound) {
+			return 0, err
+		}
+		global, gerr := s.globalOrFail(ctx)
+		if gerr != nil {
+			return 0, gerr
 		}
 		return global.Server.MaxBodySize, nil
 	}
 	if p.MaxBodySize > 0 {
 		return p.MaxBodySize, nil
 	}
-	global, globalErr := s.repo.GetGlobalConfig(ctx)
-	if globalErr != nil {
-		global = domain.DefaultGlobalConfig()
+	global, gerr := s.globalOrFail(ctx)
+	if gerr != nil {
+		return 0, gerr
 	}
 	return global.Server.MaxBodySize, nil
 }
@@ -114,6 +142,16 @@ func (s *Service) ResolveBehindReverseProxy(ctx context.Context) bool {
 		return false
 	}
 	return global.Server.BehindReverseProxy
+}
+
+// ResolveTrustedProxyCIDRs returns the configured trusted reverse-proxy
+// networks whose forwarded headers may be honored.
+func (s *Service) ResolveTrustedProxyCIDRs(ctx context.Context) []string {
+	global, err := s.repo.GetGlobalConfig(ctx)
+	if err != nil {
+		return nil
+	}
+	return global.Server.TrustedProxyCIDRs
 }
 
 func (s *Service) ResolveFooter(ctx context.Context) string {

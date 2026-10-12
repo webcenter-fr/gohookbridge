@@ -146,7 +146,9 @@ func TestChannelContextSetsChannelID(t *testing.T) {
 		called = true
 		channelID, _ := r.Context().Value(contextKeyChannelID).(string)
 		assert.Equal(t, channelID, "test-channel")
-		assert.Assert(t, svc.UserHasPermission(r.Context(), "admin", domain.PermChannelWrite, channelID))
+		admin, err := svc.GetUserByUsername(r.Context(), "admin")
+		assert.NilError(t, err)
+		assert.Assert(t, svc.UserHasPermission(r.Context(), admin, nil, domain.PermChannelWrite, channelID))
 	})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/send/test-channel", nil)

@@ -88,3 +88,15 @@ func TestSPAHandlerRealEmbed(t *testing.T) {
 		assert.Equal(t, resp.StatusCode, http.StatusOK)
 	})
 }
+
+// F23: the SPA response carries browser hardening headers.
+func TestSPASecurityHeaders(t *testing.T) {
+	h := spaHandlerFrom(newTestFS(t))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	assert.Equal(t, w.Header().Get("X-Frame-Options"), "DENY")
+	assert.Equal(t, w.Header().Get("X-Content-Type-Options"), "nosniff")
+	assert.Equal(t, w.Header().Get("Referrer-Policy"), "no-referrer")
+	assert.Equal(t, w.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'")
+}

@@ -14,18 +14,15 @@ metadata:
   labels: {{- include "gohookbridge.labels" . | nindent 4 }}
 rules:
 {{- if .Values.server.raft.tls.enabled }}
-# create cannot be scoped by resourceNames (the name does not exist yet), so
-# it is granted on the secrets collection. get is scoped to the raft CA Secret
-# only, so a compromised server cannot read unrelated Secrets in the namespace.
+# The auto-CA was removed (F14): the server no longer creates or updates
+# Secrets. It only reads its own pre-provisioned node-set Secret and the public
+# CA Secret, scoped by name.
 - apiGroups: [""]
   resources: ["secrets"]
-  verbs: ["create"]
-- apiGroups: [""]
-  resources: ["secrets"]
-  resourceNames: ["{{ include "gohookbridge.raftCASecret" . }}"]
-  # get: read the shared CA; update: bump the recovery generation on the
-  # bootstrap node so stale nodes fence themselves off and rejoin.
-  verbs: ["get", "update"]
+  resourceNames:
+  - {{ include "gohookbridge.serverTLSNodesSecret" . | quote }}
+  - {{ include "gohookbridge.serverTLSCASecret" . | quote }}
+  verbs: ["get"]
 {{- end }}
 {{- if $oidcRefs }}
 # Read the OIDC client_secret_ref Secrets at bootstrap. Scoped to the
