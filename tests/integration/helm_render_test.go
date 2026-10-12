@@ -161,6 +161,9 @@ func TestManualCertMounts(t *testing.T) {
 	assert.Assert(t, strings.Contains(out, "subPathExpr: $(POD_NAME).crt"), "expected per-pod cert projection")
 	assert.Assert(t, strings.Contains(out, "/etc/gohookbridge/tls/tls.key"), "expected TLS key mount path")
 	assert.Assert(t, strings.Contains(out, "--raft-tls-ca-cert"), "expected manual raft CA flag")
+	// Multi-node listener serves HTTPS so leader forwarding can use mTLS (F13).
+	assert.Assert(t, strings.Contains(out, "--tls-cert"), "expected HTTPS internal listener flag")
+	assert.Assert(t, strings.Contains(out, "scheme: HTTPS"), "expected HTTPS probes")
 }
 
 // F28: workloads run locked down.

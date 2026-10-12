@@ -158,6 +158,14 @@ spec:
         - --at-rest-key-file
         - /etc/gohookbridge/kek/key.json
         {{- end }}
+        {{- if and .Values.server.raft.tls.enabled (gt (int .Values.server.replicas) 1) }}
+        # Multi-node: the internal listener serves HTTPS from the same per-pod
+        # certificate so leader forwarding can authenticate with mTLS (F13).
+        - --tls-cert
+        - /etc/gohookbridge/tls/tls.crt
+        - --tls-key
+        - /etc/gohookbridge/tls/tls.key
+        {{- end }}
         ports:
         - name: http
           containerPort: {{ .Values.server.port }}
@@ -190,6 +198,9 @@ spec:
           httpGet:
             path: {{ .startup.httpGet.path }}
             port: {{ .startup.httpGet.port }}
+          {{- if and $.Values.server.raft.tls.enabled (gt (int $.Values.server.replicas) 1) }}
+          scheme: HTTPS
+          {{- end }}
           initialDelaySeconds: 10
           periodSeconds: 5
           failureThreshold: 60
@@ -198,6 +209,9 @@ spec:
           httpGet:
             path: {{ .readiness.httpGet.path }}
             port: {{ .readiness.httpGet.port }}
+          {{- if and $.Values.server.raft.tls.enabled (gt (int $.Values.server.replicas) 1) }}
+          scheme: HTTPS
+          {{- end }}
           initialDelaySeconds: 5
           periodSeconds: 5
           failureThreshold: 3
@@ -206,6 +220,9 @@ spec:
           httpGet:
             path: {{ .liveness.httpGet.path }}
             port: {{ .liveness.httpGet.port }}
+          {{- if and $.Values.server.raft.tls.enabled (gt (int $.Values.server.replicas) 1) }}
+          scheme: HTTPS
+          {{- end }}
           initialDelaySeconds: 30
           periodSeconds: 10
           failureThreshold: 3
