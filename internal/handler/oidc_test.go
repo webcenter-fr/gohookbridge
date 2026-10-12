@@ -87,3 +87,39 @@ func TestOIDCCollisionRejected(t *testing.T) {
 		assert.Equal(t, tok.Method, "oidc")
 	})
 }
+
+// F22: the OIDC client is bounded and honors an endpoint allowlist; plain-http
+// non-loopback issuers are rejected.
+func TestOIDCClientBoundsAndAllowlist(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-oidc-bounds-32")
+
+	t.Run("http non-loopback issuer rejected", func(t *testing.T) {
+		_, err := NewOIDCHandler(domain.OIDCProvider{
+			ID: "test", ClientID: "c", IssuerURL: "http://example.com",
+		}, secret, "http://localhost:3333", true)
+		assert.Assert(t, err != nil)
+	})
+
+	mock := newOIDCMock(t)
+	mockServer := mock.start()
+	defer mockServer.Close()
+
+	base := domain.OIDCProvider{
+		ID: "test", Name: "TestProvider", ClientID: "test-client",
+		ClientSecret: "s", IssuerURL: mockServer.URL, Scopes: []string{"openid"},
+	}
+
+	t.Run("disallowed endpoint rejected", func(t *testing.T) {
+		p := base
+		p.AllowedEndpoints = []string{"https://evil.example/token"}
+		_, err := NewOIDCHandler(p, secret, mockServer.URL, true)
+		assert.Assert(t, err != nil)
+	})
+
+	t.Run("allowed endpoints accepted", func(t *testing.T) {
+		p := base
+		p.AllowedEndpoints = []string{mockServer.URL + "/token", mockServer.URL + "/userinfo"}
+		_, err := NewOIDCHandler(p, secret, mockServer.URL, true)
+		assert.NilError(t, err)
+	})
+}

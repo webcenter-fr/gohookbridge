@@ -456,6 +456,7 @@ func publishEvent(broker *nats.Broker, channel string, reencoded []byte) error {
 func sensitiveHeaderForLogs(header string) bool {
 	switch strings.ToLower(header) {
 	case "authorization", "proxy-authorization", "cookie",
+		"x-api-key", "x-auth-token", "password", "secret",
 		"x-gitlab-token", "x-hub-signature", "x-hub-signature-256",
 		"x-gitea-signature", "x-amz-signature":
 		return true

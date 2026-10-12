@@ -272,8 +272,8 @@ func saveData(rd *replayDataOpts, logger *slog.Logger, pm payloadMsg) error {
 		LocalDebugURL string
 	}{
 		Headers:       headers,
-		TargetURL:     rd.targetURL,
-		LocalDebugURL: rd.localDebugURL,
+		TargetURL:     shellQuote(rd.targetURL),
+		LocalDebugURL: shellQuote(rd.localDebugURL),
 		ContentType:   shellQuote(pm.contentType),
 		FileBase:      fbasepath,
 	}); err != nil {
@@ -302,6 +302,7 @@ type replayDataOpts struct {
 	execCommand                 string
 	execOnEvents                []string
 	execEnvVars                 []string
+	execTimeout                 time.Duration
 	encryptionKeyFile           string
 	encryptionKey               string
 	resume                      bool
@@ -346,7 +347,40 @@ func replayData(ropts *replayDataOpts, logger *slog.Logger, pm payloadMsg) error
 	return nil
 }
 
+// execOutputLimit caps captured exec stdout/stderr (F26).
+const execOutputLimit = 1 << 20 // 1 MiB
+
+type limitedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (l *limitedBuffer) Write(p []byte) (int, error) {
+	if l.buf.Len() >= l.limit {
+		l.truncated = true
+		return len(p), nil
+	}
+	remaining := l.limit - l.buf.Len()
+	if len(p) > remaining {
+		l.truncated = true
+		_, _ = l.buf.Write(p[:remaining])
+		return len(p), nil
+	}
+	return l.buf.Write(p)
+}
+
+func (l *limitedBuffer) Len() int       { return l.buf.Len() }
+func (l *limitedBuffer) String() string { return l.buf.String() }
+
 func runExecCommand(ctx context.Context, rd *replayDataOpts, logger *slog.Logger, pm payloadMsg) error {
+	timeout := rd.execTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	if len(rd.execOnEvents) > 0 {
 		if pm.eventType == "" {
 			logger.DebugContext(ctx, "skipping exec: event has no type and exec-on-events filter is set")
@@ -395,9 +429,10 @@ func runExecCommand(ctx context.Context, rd *replayDataOpts, logger *slog.Logger
 		"GOHOOKBRIDGE_PAYLOAD_FILE="+payloadFile.Name(),
 		"GOHOOKBRIDGE_HEADERS_FILE="+headersFile.Name(),
 	)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &limitedBuffer{limit: execOutputLimit}
+	stderr := &limitedBuffer{limit: execOutputLimit}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	if err = cmd.Run(); err != nil {
 		if stdout.Len() > 0 {

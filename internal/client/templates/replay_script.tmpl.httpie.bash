@@ -3,7 +3,7 @@
 #
 # Usage: ./script.sh [OPTIONS] [TARGET_URL]
 # Options:
-#   -l, --local     Use local debug URL ({{ .LocalDebugURL }})
+#   -l, --local     Use local debug URL $targetURL
 #   -t, --target    Specify target URL
 #   -h, --help      Show this help message
 #   -v, --verbose   Enable verbose output
@@ -12,7 +12,7 @@ set -euo pipefail
 cd $(dirname $(readlink -f $0))
 
 # Default values
-targetURL="{{ .TargetURL }}"
+targetURL={{ .TargetURL }}
 verbose=false
 use_local=false
 
@@ -43,7 +43,7 @@ while true; do
             echo "Replay webhook payload to target URL using httpie"
             echo ""
             echo "Options:"
-            echo "  -l, --local     Use local debug URL ({{ .LocalDebugURL }})"
+            echo "  -l, --local     Use local debug URL $targetURL"
             echo "  -t, --target    Specify target URL"
             echo "  -h, --help      Show this help message"
             echo "  -v, --verbose   Enable verbose output"
@@ -87,7 +87,7 @@ fi
 
 # Apply local flag or environment variable
 if [[ "$use_local" == "true" ]]; then
-    targetURL="{{ .LocalDebugURL }}"
+    targetURL={{ .LocalDebugURL }}
 elif [[ -n "${GOHOOKBRIDGE_DEBUG_SERVICE:-}" ]]; then
     targetURL="${GOHOOKBRIDGE_DEBUG_SERVICE}"
 fi

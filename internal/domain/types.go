@@ -106,6 +106,12 @@ type OIDCProvider struct {
 	IssuerURL    string   `json:"issuer_url"`
 	Scopes       []string `json:"scopes"`
 	GroupsClaim  string   `json:"groups_claim"`
+	// AllowedEndpoints restricts the discovery/token/userinfo endpoints the
+	// server will call (exact URL or host+path prefix). Empty = discovered
+	// endpoints only, validated against the issuer origin.
+	AllowedEndpoints []string `json:"allowed_endpoints,omitempty"`
+	// AllowInsecureIssuer permits a plain-http issuer other than loopback.
+	AllowInsecureIssuer bool `json:"allow_insecure_issuer,omitempty"`
 }
 
 type RoleMapping struct {

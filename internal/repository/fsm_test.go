@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/raft"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
+	"golang.org/x/crypto/bcrypt"
 	"gotest.tools/v3/assert"
 )
 
@@ -262,4 +264,35 @@ func TestFSM_Restore_Corrupted(t *testing.T) {
 	rc := io.NopCloser(bytes.NewReader([]byte("{invalid json")))
 	err := fsm.Restore(rc)
 	assert.ErrorContains(t, err, "invalid snapshot data")
+}
+
+// F15: the FSM rejects a bootstrap payload carrying a plaintext password and
+// never stores one.
+func TestBootstrapCommandContainsNoPlaintextPassword(t *testing.T) {
+	fsm := newTestFSM(t)
+
+	hash, err := bcrypt.GenerateFromPassword([]byte("s3cret-password"), bcrypt.MinCost)
+	assert.NilError(t, err)
+	payload := fsmBootstrapPayload{Users: []fsmBootstrapUser{{
+		Username:     "admin",
+		PasswordHash: string(hash),
+		Roles:        []string{"admin"},
+	}}}
+	cmdBytes := marshalCmd(t, "bootstrap", "", payload)
+	assert.Assert(t, !bytes.Contains(cmdBytes, []byte("s3cret-password")), "plaintext password in command")
+	applyOK(t, fsm, cmdBytes)
+
+	val := mustGetValue(t, fsm, "/users/admin/")
+	assert.Assert(t, bytes.Contains(val, []byte("password_hash")))
+	assert.Assert(t, !bytes.Contains(val, []byte("s3cret-password")))
+
+	// A plaintext password field is rejected outright.
+	fsm2 := newTestFSM(t)
+	cmd2 := marshalCmd(t, "bootstrap", "", fsmBootstrapPayload{Users: []fsmBootstrapUser{{
+		Username: "x", Password: "plain", PasswordHash: "h",
+	}}})
+	result := fsm2.Apply(&raft.Log{Data: cmd2})
+	applyErr, ok := result.(error)
+	assert.Assert(t, ok && applyErr != nil, "plaintext password must be rejected")
+	assert.Assert(t, strings.Contains(applyErr.Error(), "plaintext"), "got %v", applyErr)
 }

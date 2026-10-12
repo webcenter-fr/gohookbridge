@@ -25,21 +25,21 @@ type GlobalConfigUpdateRequest struct {
 // ServerConfigUpdateRequest mirrors ServerConfig without the session secret
 // (which is never settable through the API).
 type ServerConfigUpdateRequest struct {
-	MaxBodySize             *int      `json:"max_body_size"`
-	BehindReverseProxy      *bool     `json:"behind_reverse_proxy"`
-	CORSOrigin              *string   `json:"cors_origin"`
-	Footer                  *string   `json:"footer"`
-	TrustedProxyCIDRs       *[]string `json:"trusted_proxy_cidrs"`
-	RateLimitEnabled        *bool     `json:"rate_limit_enabled"`
-	RateLimitRequests       *int      `json:"rate_limit_requests"`
-	RateLimitWindowSeconds  *int      `json:"rate_limit_window_seconds"`
-	BanEnabled              *bool     `json:"ban_enabled"`
-	BanMaxUniqueFailures    *int      `json:"ban_max_unique_failures"`
-	BanWindowSeconds        *int      `json:"ban_window_seconds"`
-	BanDurationSeconds      *int      `json:"ban_duration_seconds"`
-	RequireKnownChannels    *bool     `json:"require_known_channels"`
-	LoginThrottleAttempts   *int      `json:"login_throttle_attempts"`
-	LoginThrottleCooldown   *int      `json:"login_throttle_cooldown_seconds"`
+	MaxBodySize            *int      `json:"max_body_size"`
+	BehindReverseProxy     *bool     `json:"behind_reverse_proxy"`
+	CORSOrigin             *string   `json:"cors_origin"`
+	Footer                 *string   `json:"footer"`
+	TrustedProxyCIDRs      *[]string `json:"trusted_proxy_cidrs"`
+	RateLimitEnabled       *bool     `json:"rate_limit_enabled"`
+	RateLimitRequests      *int      `json:"rate_limit_requests"`
+	RateLimitWindowSeconds *int      `json:"rate_limit_window_seconds"`
+	BanEnabled             *bool     `json:"ban_enabled"`
+	BanMaxUniqueFailures   *int      `json:"ban_max_unique_failures"`
+	BanWindowSeconds       *int      `json:"ban_window_seconds"`
+	BanDurationSeconds     *int      `json:"ban_duration_seconds"`
+	RequireKnownChannels   *bool     `json:"require_known_channels"`
+	LoginThrottleAttempts  *int      `json:"login_throttle_attempts"`
+	LoginThrottleCooldown  *int      `json:"login_throttle_cooldown_seconds"`
 	// SessionSecret is accepted only to reject an attempt to set it.
 	SessionSecret *string `json:"session_secret"`
 }

@@ -230,7 +230,7 @@ func TestSaveData(t *testing.T) {
 			expectedHeader := fmt.Sprintf("-H '%s: %s'", k, v)
 			assert.Assert(t, strings.Contains(actualScript, expectedHeader), "Script missing expected header: %s. Got: %s", expectedHeader, actualScript)
 		}
-		assert.Assert(t, strings.Contains(actualScript, fmt.Sprintf("targetURL=\"%s\"", opts.targetURL)), "Script missing targetURL. Got: %s", actualScript)
+		assert.Assert(t, strings.Contains(actualScript, fmt.Sprintf("targetURL='%s'", opts.targetURL)), "Script missing targetURL. Got: %s", actualScript)
 		assert.Assert(t, strings.Contains(actualScript, fmt.Sprintf("-d @./%s.json", expectedFileBase)), "Script missing filebase. Got: %s", actualScript)
 
 		stat, err := os.Stat(shFilePath)
@@ -283,7 +283,7 @@ func TestSaveData(t *testing.T) {
 			expectedHeader := fmt.Sprintf("-H '%s: %s'", k, v)
 			assert.Assert(t, strings.Contains(actualScript, expectedHeader), "Script missing expected header: %s. Got: %s", expectedHeader, actualScript)
 		}
-		assert.Assert(t, strings.Contains(actualScript, fmt.Sprintf("targetURL=\"%s\"", opts.targetURL)), "Script missing targetURL. Got: %s", actualScript)
+		assert.Assert(t, strings.Contains(actualScript, fmt.Sprintf("targetURL='%s'", opts.targetURL)), "Script missing targetURL. Got: %s", actualScript)
 		assert.Assert(t, strings.Contains(actualScript, fmt.Sprintf("-d @./%s.json", expectedFileBase)), "Script missing filebase. Got: %s", actualScript)
 
 		stat, err := os.Stat(shFilePath)
@@ -1615,4 +1615,36 @@ func TestResumeFlagAppendsClientIDToURL(t *testing.T) {
 	assert.Assert(t, privateKey == nil)
 	assert.Equal(t, channel, "auto-channel")
 	assert.Assert(t, strings.Contains(sseURL, "client_id="))
+}
+
+// F26: exec output is bounded and commands are bounded by a timeout.
+func TestExecOutputAndTimeoutBounds(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	pm := payloadMsg{
+		body:        []byte(`{}`),
+		timestamp:   "2023-10-27T10.00.01.000",
+		contentType: "application/json",
+		eventType:   "push",
+	}
+
+	t.Run("large output is truncated without failing", func(t *testing.T) {
+		opts := &replayDataOpts{
+			execCommand: "head -c 2097152 /dev/zero | tr '\\0' 'a'",
+			decorate:    false,
+		}
+		err := runExecCommand(context.Background(), opts, logger, pm)
+		assert.NilError(t, err)
+	})
+
+	t.Run("timeout bounds long commands", func(t *testing.T) {
+		opts := &replayDataOpts{
+			execCommand: "sleep 5",
+			execTimeout: 100 * time.Millisecond,
+			decorate:    false,
+		}
+		start := time.Now()
+		err := runExecCommand(context.Background(), opts, logger, pm)
+		assert.Assert(t, err != nil)
+		assert.Assert(t, time.Since(start) < 3*time.Second, "timeout must bound the command")
+	})
 }

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -279,4 +280,25 @@ func TestExtractSignatureValue(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/ch", nil)
 		assert.Equal(t, "unknown", ExtractSignatureValue(req))
 	})
+}
+
+// F12: concurrent sweep/record/ban must be race-free (run with -race).
+func TestBanTrackerConcurrentSweep(t *testing.T) {
+	bt := NewBanTracker()
+
+	done := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		go func(n int) {
+			defer func() { done <- struct{}{} }()
+			for j := 0; j < 100; j++ {
+				bt.recordAndBan("192.0.2.1", fmt.Sprintf("fp-%d", n), 5, 3600, 60)
+				bt.Sweep(60)
+				bt.IsBanned("192.0.2.1")
+				bt.ListBans()
+			}
+		}(i)
+	}
+	for i := 0; i < 8; i++ {
+		<-done
+	}
 }

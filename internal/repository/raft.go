@@ -31,6 +31,7 @@ type RaftStore struct {
 	transport raft.Transport
 	resolver  PeerResolver
 	nodeID    string
+	keeper    *CryptoKeeper
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -60,6 +61,8 @@ type RaftConfig struct {
 	ApplyTimeout          time.Duration
 	Resolver              PeerResolver // nil = legacy resolver from Peers/AdvertiseAddr/BindAddr
 	TLS                   *tls.Config  // nil = plaintext
+	// AtRest, when set, encrypts sensitive fields before persistence.
+	AtRest *CryptoKeeper
 }
 
 // withDefaults fills unset config fields with production defaults. NodeID is
@@ -114,8 +117,14 @@ func parsePeers(entries []string) []RaftPeer {
 func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
 	withDefaults(&cfg)
 
-	if err := os.MkdirAll(cfg.Dir, 0o750); err != nil {
+	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create raft dir: %w", err)
+	}
+	// Tighten an existing directory (e.g. a mounted PVC or a temp dir created
+	// with looser permissions).
+	// #nosec G302 -- directory; 0700 is more restrictive than the 0750 threshold.
+	if err := os.Chmod(cfg.Dir, 0o700); err != nil {
+		return nil, fmt.Errorf("chmod raft dir: %w", err)
 	}
 
 	resolver := cfg.Resolver
@@ -221,7 +230,111 @@ func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
 		transport: transport,
 		resolver:  resolver,
 		nodeID:    nodeID,
+		keeper:    cfg.AtRest,
 	}, nil
+}
+
+// sealString encrypts a sensitive string for persistence (no-op for the empty
+// string or when at-rest encryption is disabled).
+func (rs *RaftStore) sealString(plain string) (string, error) {
+	if rs.keeper == nil || plain == "" {
+		return plain, nil
+	}
+	ev, err := rs.keeper.Encrypt([]byte(plain))
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// openString decrypts a persisted sensitive string. A value that is not an
+// EncryptedValue envelope is treated as legacy plaintext and returned as-is
+// (lazy migration).
+func (rs *RaftStore) openString(stored string) (string, error) {
+	if rs.keeper == nil || stored == "" {
+		return stored, nil
+	}
+	var ev EncryptedValue
+	if err := json.Unmarshal([]byte(stored), &ev); err != nil || ev.Alg == "" || ev.Ct == "" {
+		return stored, nil
+	}
+	plain, err := rs.keeper.Decrypt(ev)
+	if err != nil {
+		return "", err
+	}
+	return string(plain), nil
+}
+
+func (rs *RaftStore) sealChannel(p *domain.Channel) error {
+	if rs.keeper == nil {
+		return nil
+	}
+	var err error
+	if p.WebhookSecret, err = rs.sealString(p.WebhookSecret); err != nil {
+		return err
+	}
+	if p.EncryptionKey, err = rs.sealString(p.EncryptionKey); err != nil {
+		return err
+	}
+	if p.EncryptionPrivateKey, err = rs.sealString(p.EncryptionPrivateKey); err != nil {
+		return err
+	}
+	for i := range p.WebhookSignatures {
+		if p.WebhookSignatures[i], err = rs.sealString(p.WebhookSignatures[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (rs *RaftStore) openChannel(p *domain.Channel) error {
+	if rs.keeper == nil {
+		return nil
+	}
+	var err error
+	if p.WebhookSecret, err = rs.openString(p.WebhookSecret); err != nil {
+		return err
+	}
+	if p.EncryptionKey, err = rs.openString(p.EncryptionKey); err != nil {
+		return err
+	}
+	if p.EncryptionPrivateKey, err = rs.openString(p.EncryptionPrivateKey); err != nil {
+		return err
+	}
+	for i := range p.WebhookSignatures {
+		if p.WebhookSignatures[i], err = rs.openString(p.WebhookSignatures[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (rs *RaftStore) sealConfig(cfg *domain.GlobalConfig) error {
+	if rs.keeper == nil {
+		return nil
+	}
+	var err error
+	if cfg.Server.SessionSecret, err = rs.sealString(cfg.Server.SessionSecret); err != nil {
+		return err
+	}
+	cfg.Defaults.WebhookSecret, err = rs.sealString(cfg.Defaults.WebhookSecret)
+	return err
+}
+
+func (rs *RaftStore) openConfig(cfg *domain.GlobalConfig) error {
+	if rs.keeper == nil {
+		return nil
+	}
+	var err error
+	if cfg.Server.SessionSecret, err = rs.openString(cfg.Server.SessionSecret); err != nil {
+		return err
+	}
+	cfg.Defaults.WebhookSecret, err = rs.openString(cfg.Defaults.WebhookSecret)
+	return err
 }
 
 // resolveBootstrapState computes this node's stable ID and whether it seeds
@@ -878,6 +991,9 @@ func (rs *RaftStore) GetChannel(ctx context.Context, id string) (*domain.Channel
 	if err := json.Unmarshal(val, &ch); err != nil {
 		return nil, err
 	}
+	if err := rs.openChannel(&ch); err != nil {
+		return nil, err
+	}
 	return &ch, nil
 }
 
@@ -909,6 +1025,9 @@ func (rs *RaftStore) ListChannels(ctx context.Context) ([]*domain.Channel, error
 		if err := json.Unmarshal(val, &ch); err != nil {
 			return nil, fmt.Errorf("unmarshal channel %q: %w", id, err)
 		}
+		if err := rs.openChannel(&ch); err != nil {
+			return nil, err
+		}
 		domain.MigrateChannel(&ch)
 		channels = append(channels, &ch)
 	}
@@ -919,7 +1038,11 @@ func (rs *RaftStore) CreateChannel(ctx context.Context, p *domain.Channel) error
 	if p.ID == "" {
 		return fmt.Errorf("%w: channel ID required", domain.ErrInvalidArgument)
 	}
-	val, err := json.Marshal(p)
+	sealed := *p
+	if err := rs.sealChannel(&sealed); err != nil {
+		return err
+	}
+	val, err := json.Marshal(&sealed)
 	if err != nil {
 		return err
 	}
@@ -947,7 +1070,11 @@ func (rs *RaftStore) UpdateChannel(ctx context.Context, p *domain.Channel) error
 	if p.ID == "" {
 		return fmt.Errorf("%w: channel ID required", domain.ErrInvalidArgument)
 	}
-	val, err := json.Marshal(p)
+	sealed := *p
+	if err := rs.sealChannel(&sealed); err != nil {
+		return err
+	}
+	val, err := json.Marshal(&sealed)
 	if err != nil {
 		return err
 	}
@@ -985,6 +1112,9 @@ func (rs *RaftStore) GetGlobalConfig(ctx context.Context) (*domain.GlobalConfig,
 		cfg.Defaults = dc
 	}
 
+	if err := rs.openConfig(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -992,12 +1122,16 @@ func (rs *RaftStore) UpdateGlobalConfig(ctx context.Context, cfg *domain.GlobalC
 	if cfg == nil {
 		return fmt.Errorf("%w: config required", domain.ErrInvalidArgument)
 	}
+	sealed := *cfg
+	if err := rs.sealConfig(&sealed); err != nil {
+		return err
+	}
 	//nolint:gosec
-	scVal, err := json.Marshal(cfg.Server)
+	scVal, err := json.Marshal(sealed.Server)
 	if err != nil {
 		return err
 	}
-	dcVal, err := json.Marshal(cfg.Defaults)
+	dcVal, err := json.Marshal(sealed.Defaults)
 	if err != nil {
 		return err
 	}
@@ -1179,6 +1313,41 @@ func (rs *RaftStore) SetSetupModeEndTime(ctx context.Context, t time.Time) error
 	return rs.applyCommand("set", "/meta/setup_end", val)
 }
 
+// MigrateAtRest re-writes every sensitive record through the configured
+// CryptoKeeper, sealing any legacy plaintext values and re-sealing under the
+// current primary key (lazy migration + key rotation).
+func (rs *RaftStore) MigrateAtRest(ctx context.Context) error {
+	if rs.keeper == nil {
+		return fmt.Errorf("at-rest encryption is not configured")
+	}
+	channels, err := rs.ListChannels(ctx)
+	if err != nil {
+		return err
+	}
+	for _, ch := range channels {
+		if err := rs.UpdateChannel(ctx, ch); err != nil {
+			return err
+		}
+	}
+	cfg, err := rs.GetGlobalConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if err := rs.UpdateGlobalConfig(ctx, cfg); err != nil {
+		return err
+	}
+	providers, err := rs.OIDCProviders(ctx)
+	if err != nil {
+		return err
+	}
+	if len(providers) > 0 {
+		if err := rs.SetOIDCProviders(ctx, providers); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // GetAuthEpoch returns the persisted session/auth epoch (0 when unset).
 func (rs *RaftStore) GetAuthEpoch(ctx context.Context) (int64, error) {
 	val, err := getFSMValue(rs.db, "/meta/auth_epoch")
@@ -1218,12 +1387,28 @@ func (rs *RaftStore) OIDCProviders(ctx context.Context) ([]domain.OIDCProvider, 
 	if err := json.Unmarshal(val, &providers); err != nil {
 		return nil, err
 	}
+	for i := range providers {
+		opened, err := rs.openString(providers[i].ClientSecret)
+		if err != nil {
+			return nil, err
+		}
+		providers[i].ClientSecret = opened
+	}
 	return providers, nil
 }
 
 func (rs *RaftStore) SetOIDCProviders(ctx context.Context, providers []domain.OIDCProvider) error {
+	sealed := make([]domain.OIDCProvider, len(providers))
+	copy(sealed, providers)
+	for i := range sealed {
+		s, err := rs.sealString(sealed[i].ClientSecret)
+		if err != nil {
+			return err
+		}
+		sealed[i].ClientSecret = s
+	}
 	//nolint:gosec
-	val, err := json.Marshal(providers)
+	val, err := json.Marshal(sealed)
 	if err != nil {
 		return err
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,7 +20,82 @@ import (
 const (
 	oidcStateCookieName = "oidc_state"
 	oidcNonceCookieName = "oidc_nonce"
+	// oidcMaxBody caps provider responses (discovery/token/userinfo).
+	oidcMaxBody = 1 << 20 // 1 MiB
 )
+
+// newOIDCHTTPClient returns a bounded HTTP client: 10s overall timeout, 5s
+// response-header timeout, and no cross-origin redirects (F22).
+func newOIDCHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+				return fmt.Errorf("cross-origin redirect refused: %s", req.URL.Host)
+			}
+			return nil
+		},
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: 5 * time.Second,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		},
+	}
+}
+
+// readCapped reads at most limit bytes from r, erroring when the body exceeds
+// it.
+func readCapped(r io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("response body exceeds %d bytes", limit)
+	}
+	return data, nil
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// validateIssuer enforces https issuers (loopback http allowed, or http with
+// AllowInsecureIssuer) and validates the security-sensitive endpoints against
+// the allowlist.
+func validateIssuer(provider domain.OIDCProvider) error {
+	u, err := url.Parse(provider.IssuerURL)
+	if err != nil {
+		return fmt.Errorf("parse issuer_url: %w", err)
+	}
+	if u.Scheme != "https" && !provider.AllowInsecureIssuer && !isLoopbackHost(u.Hostname()) {
+		return fmt.Errorf("issuer_url must use https (set allow_insecure_issuer only for trusted loopback/dev providers)")
+	}
+	return nil
+}
+
+func endpointAllowed(provider domain.OIDCProvider, endpoint string) bool {
+	if len(provider.AllowedEndpoints) == 0 {
+		return true
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	for _, allowed := range provider.AllowedEndpoints {
+		a, err := url.Parse(allowed)
+		if err != nil {
+			continue
+		}
+		if a.Host == u.Host && strings.HasPrefix(u.Path, a.Path) {
+			return true
+		}
+	}
+	return false
+}
 
 // oidcDiscoveryTimeout bounds the provider discovery/JWKS fetches performed at
 // startup so a hanging issuer cannot block the server from serving forever.
@@ -48,12 +124,18 @@ type OIDCHandler struct {
 	// (tests only) the legacy display-name session is emitted.
 	Resolver OIDCPrincipalResolver
 	verifier *oidc.IDTokenVerifier
+	http     *http.Client
 }
 
 func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, publicURL string, secureCookies bool) (*OIDCHandler, error) {
 	if provider.GroupsClaim == "" {
 		provider.GroupsClaim = "groups"
 	}
+	if err := validateIssuer(provider); err != nil {
+		return nil, err
+	}
+	client := newOIDCHTTPClient()
+
 	// Bound the startup fetches: a hanging issuer must not block boot. The
 	// verifier's JWKS refresh uses its own background context (go-oidc), so
 	// canceling this context after discovery is safe.
@@ -65,12 +147,15 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("oidc discovery returned %d", resp.StatusCode)
+	}
+	body, err := readCapped(resp.Body, oidcMaxBody)
 	if err != nil {
 		return nil, err
 	}
@@ -78,10 +163,16 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 	if err := json.Unmarshal(body, &disc); err != nil {
 		return nil, err
 	}
+	if !endpointAllowed(provider, disc.TokenEndpoint) || !endpointAllowed(provider, disc.UserinfoEndpoint) {
+		return nil, fmt.Errorf("oidc discovery returned endpoints outside allowed_endpoints")
+	}
+	if disc.TokenEndpoint == "" {
+		return nil, fmt.Errorf("oidc discovery is missing token_endpoint")
+	}
 	// go-oidc provider for ID-token verification (signature/JWKS, iss, aud,
 	// exp). The manual OIDCDiscovery above is kept for token exchange and
 	// userinfo.
-	p, err := oidc.NewProvider(discCtx, provider.IssuerURL)
+	p, err := oidc.NewProvider(oidc.ClientContext(discCtx, client), provider.IssuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("oidc provider discovery: %w", err)
 	}
@@ -92,6 +183,7 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 		PublicURL:     publicURL,
 		SecureCookies: secureCookies,
 		verifier:      p.Verifier(&oidc.Config{ClientID: provider.ClientID}),
+		http:          client,
 	}, nil
 }
 
@@ -233,7 +325,7 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 		}
 
 		// No id_token returned: fall back to the userinfo flow (unchanged).
-		userInfo, err := h.getUserInfo(accessToken)
+		userInfo, err := h.getUserInfo(r.Context(), accessToken)
 		if err != nil {
 			http.Error(w, "Userinfo failed: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -331,12 +423,15 @@ func (h *OIDCHandler) exchangeCode(code string, r *http.Request) (map[string]any
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token endpoint returned %d", resp.StatusCode)
+	}
+	body, err := readCapped(resp.Body, oidcMaxBody)
 	if err != nil {
 		return nil, err
 	}
@@ -347,18 +442,21 @@ func (h *OIDCHandler) exchangeCode(code string, r *http.Request) (map[string]any
 	return result, nil
 }
 
-func (h *OIDCHandler) getUserInfo(accessToken string) (map[string]any, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.Discovery.UserinfoEndpoint, nil)
+func (h *OIDCHandler) getUserInfo(ctx context.Context, accessToken string) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.Discovery.UserinfoEndpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("userinfo endpoint returned %d", resp.StatusCode)
+	}
+	body, err := readCapped(resp.Body, oidcMaxBody)
 	if err != nil {
 		return nil, err
 	}

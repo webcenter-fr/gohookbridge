@@ -221,6 +221,25 @@ func (rs *RaftStore) ApplyBootstrap(ctx context.Context, cfg *BootstrapConfig) e
 		}
 	}
 
+	// Encrypt sensitive bootstrap fields before replication (F27).
+	if payload.Global != nil {
+		if err := rs.sealConfig(payload.Global); err != nil {
+			return err
+		}
+	}
+	for _, ch := range payload.Channels {
+		if err := rs.sealChannel(ch); err != nil {
+			return err
+		}
+	}
+	for i := range payload.OIDCProviders {
+		sealed, err := rs.sealString(payload.OIDCProviders[i].ClientSecret)
+		if err != nil {
+			return err
+		}
+		payload.OIDCProviders[i].ClientSecret = sealed
+	}
+
 	val, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal bootstrap payload: %w", err)

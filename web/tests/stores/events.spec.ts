@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import nacl from 'tweetnacl'
 import { encodeBase64 } from 'tweetnacl-util'
-import { useEventsStore } from '~/stores/events'
+import { useEventsStore, MAX_EVENTS } from '~/stores/events'
 
 class FakeEventSource {
   static instances: FakeEventSource[] = []
@@ -177,5 +177,23 @@ describe('useEventsStore', () => {
     store.clear()
 
     expect(store.events).toHaveLength(0)
+  })
+})
+
+describe('useEventsStore event cap', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    FakeEventSource.instances = []
+  })
+
+  it('caps the event list at MAX_EVENTS (F11)', () => {
+    const store = useEventsStore()
+    store.connect('flood')
+    const src = lastSource()
+    for (let i = 0; i < MAX_EVENTS + 50; i++) {
+      src.onmessage?.({ data: JSON.stringify({ n: i }) })
+    }
+    expect(store.events.length).toBe(MAX_EVENTS)
+    expect((store.events[store.events.length - 1] as any).data.n).toBe(MAX_EVENTS + 49)
   })
 })

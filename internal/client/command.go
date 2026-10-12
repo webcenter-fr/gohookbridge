@@ -108,6 +108,7 @@ func clientAction(c *cli.Context) error {
 			execCommand:       c.String("exec"),
 			execOnEvents:      c.StringSlice("exec-on-events"),
 			execEnvVars:       c.StringSlice("exec-env-vars"),
+			execTimeout:       c.Duration("exec-timeout"),
 			encryptionKeyFile: c.String("encryption-key-file"),
 			encryptionKey:     c.String("encryption-key"),
 			resume:            c.Bool("resume"),

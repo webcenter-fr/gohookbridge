@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useAuthStore } from '~/stores/auth'
+import { useEventsStore } from '~/stores/events'
 
 const mockGetMe = vi.fn()
 const mockLogin = vi.fn()
@@ -88,5 +89,23 @@ describe('useAuthStore', () => {
     await store.checkSession()
 
     expect(store.isAdmin).toBe(false)
+  })
+})
+
+describe('useAuthStore logout side effects', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    mockLogout.mockReset()
+  })
+
+  it('logoutClearsEvents (F21)', async () => {
+    mockLogout.mockResolvedValue(undefined)
+    const events = useEventsStore()
+    events.events.push({ id: 1, data: {}, timestamp: 't', raw: 'r', encrypted: false })
+    const store = useAuthStore()
+
+    await store.logout()
+
+    expect(events.events.length).toBe(0)
   })
 })

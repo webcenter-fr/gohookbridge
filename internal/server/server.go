@@ -236,6 +236,11 @@ func NewServer(c *cli.Context) (*Server, error) {
 		log.Printf("WARNING: raft generation %d supersedes local %d; clearing stale Raft state to rejoin", clusterGeneration, localGeneration)
 	}
 
+	atRestKeeper, err := loadAtRestKeeper(c.String("at-rest-key-file"), c.Int("raft-replicas"))
+	if err != nil {
+		return nil, err
+	}
+
 	rs, err := repository.NewRaftStore(repository.RaftConfig{
 		Dir:                   c.String("raft-dir"),
 		NodeID:                c.String("raft-node-id"),
@@ -255,6 +260,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 		ApplyTimeout:          10 * time.Second,
 		Resolver:              resolver,
 		TLS:                   raftTLS,
+		AtRest:                atRestKeeper,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("init raft store: %w", err)
@@ -434,6 +440,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 
 	mainRouter.Use(middleware.RequestID)
 	mainRouter.Use(handler.StripForwardMarker)
+	mainRouter.Use(handler.SecurityHeadersMiddleware)
 	mainRouter.Use(handler.SafeLogger)
 	mainRouter.Use(middleware.Recoverer)
 	mainRouter.Use(handler.BanMiddleware(banTrackerInst, svc))
@@ -511,6 +518,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	// Mutating requests must reach the Raft leader; in an HA deployment the
 	// Service load-balances over all replicas, so followers forward writes.
 	apiRouter.Use(handler.LeaderForwardMiddleware(rs, c.Int("port"), forwardTransport, forwardScheme))
+	apiRouter.Use(handler.MutationOriginValidation(svc))
 	apiRouter.Use(handler.RequireAuthDynamic(svc, sessionSecret, cookieSecure))
 	handler.RegisterAPIHandlers(apiRouter, svc)
 	// Channel-write-gated operational endpoints (no setup-mode bypass: in setup
