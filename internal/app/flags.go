@@ -416,6 +416,77 @@ var ServerFlags = []cli.Flag{
 		Value:   10000,
 		EnvVars: []string{"GOHOOKBRIDGE_NATS_BUFFER_SIZE"},
 	},
+	&cli.IntFlag{
+		Name:    "nats-buffer-bytes",
+		Usage:   "Max retained payload bytes in the ring buffer (0 = unbounded)",
+		Value:   67108864, // 64 MiB
+		EnvVars: []string{"GOHOOKBRIDGE_NATS_BUFFER_BYTES"},
+	},
+	&cli.IntFlag{
+		Name:    "nats-max-payload",
+		Usage:   "Max single NATS message payload in bytes",
+		Value:   1048576, // 1 MiB
+		EnvVars: []string{"GOHOOKBRIDGE_NATS_MAX_PAYLOAD"},
+	},
+	&cli.StringFlag{
+		Name:    "nats-cluster-username",
+		Usage:   "Username for NATS cluster route authentication",
+		EnvVars: []string{"GOHOOKBRIDGE_NATS_CLUSTER_USERNAME"},
+	},
+	&cli.StringFlag{
+		Name:    "nats-cluster-password",
+		Usage:   "Password for NATS cluster route authentication",
+		EnvVars: []string{"GOHOOKBRIDGE_NATS_CLUSTER_PASSWORD"},
+	},
+	&cli.StringFlag{
+		Name:    "nats-cluster-tls-ca",
+		Usage:   "CA certificate file for NATS cluster route TLS",
+		EnvVars: []string{"GOHOOKBRIDGE_NATS_CLUSTER_TLS_CA"},
+	},
+	&cli.StringFlag{
+		Name:    "nats-cluster-tls-cert",
+		Usage:   "Client certificate file for NATS cluster route TLS",
+		EnvVars: []string{"GOHOOKBRIDGE_NATS_CLUSTER_TLS_CERT"},
+	},
+	&cli.StringFlag{
+		Name:    "nats-cluster-tls-key",
+		Usage:   "Client key file for NATS cluster route TLS",
+		EnvVars: []string{"GOHOOKBRIDGE_NATS_CLUSTER_TLS_KEY"},
+	},
+	&cli.BoolFlag{
+		Name:    "nats-disable-cluster",
+		Usage:   "Disable the NATS cluster listener and routes (single-node)",
+		EnvVars: []string{"GOHOOKBRIDGE_NATS_DISABLE_CLUSTER"},
+	},
+	&cli.IntFlag{
+		Name:    "sse-queue-depth",
+		Usage:   "Per-subscriber SSE queue depth",
+		Value:   100,
+		EnvVars: []string{"GOHOOKBRIDGE_SSE_QUEUE_DEPTH"},
+	},
+	&cli.IntFlag{
+		Name:    "sse-queue-bytes",
+		Usage:   "Per-subscriber SSE queue byte budget",
+		Value:   4194304,
+		EnvVars: []string{"GOHOOKBRIDGE_SSE_QUEUE_BYTES"},
+	},
+	&cli.IntFlag{
+		Name:    "max-sse-connections",
+		Usage:   "Maximum concurrent SSE connections",
+		Value:   1000,
+		EnvVars: []string{"GOHOOKBRIDGE_MAX_SSE_CONNECTIONS"},
+	},
+	&cli.StringFlag{
+		Name:    "at-rest-key-file",
+		Usage:   "Path to the at-rest encryption key file (JSON). Required in production.",
+		EnvVars: []string{"GOHOOKBRIDGE_AT_REST_KEY_FILE"},
+	},
+	&cli.DurationFlag{
+		Name:    "exec-timeout",
+		Usage:   "Timeout for client exec commands",
+		Value:   30 * time.Second,
+		EnvVars: []string{"GOHOOKBRIDGE_EXEC_TIMEOUT"},
+	},
 	&cli.BoolFlag{
 		Name:  "dev-admin",
 		Usage: "Auto-create an admin user on first boot when no users exist (development only). Password is written to raft-data/admin-password.txt.",

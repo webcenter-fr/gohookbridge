@@ -2,6 +2,7 @@ package nats
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/url"
 	"sync"
@@ -17,11 +18,23 @@ type Config struct {
 	ClusterPort int
 	Routes      []string
 	BufferSize  int
+	BufferBytes int
 	// ClusterName is the NATS cluster name shared by all nodes of an HA
 	// deployment. Without it every server generates a random name, route
 	// connections between nodes are rejected with "Cluster Name Conflict",
 	// and webhook fan-out only reaches subscribers on the same node.
 	ClusterName string
+	// ClusterUsername/ClusterPassword authenticate cluster route connections.
+	ClusterUsername string
+	ClusterPassword string
+	// ClusterTLS, when set, wraps cluster route connections in TLS.
+	ClusterTLS *tls.Config
+	// DisableCluster disables the cluster listener and routes entirely
+	// (single-node deployments).
+	DisableCluster bool
+	// MaxPayload/MaxPending bound per-message and per-client buffering.
+	MaxPayload int
+	MaxPending int64
 }
 
 type Broker struct {
@@ -33,37 +46,68 @@ type Broker struct {
 	cancel context.CancelFunc
 }
 
-func New(cfg Config) (*Broker, error) {
-	b := &Broker{
-		buffer: NewRingBuffer(cfg.BufferSize, DefaultMaxAge),
-		subs:   make(map[string]map[chan []byte]struct{}),
-	}
-
-	if cfg.NodeID == "" {
-		cfg.NodeID = "gohookbridge"
-	}
-
+// buildServerOptions maps a Config to NATS server options. It is extracted so
+// cluster TLS/auth/disable wiring is unit-testable without starting a server.
+func buildServerOptions(cfg *Config) (*server.Options, error) {
 	var routes []*url.URL
-	for _, r := range cfg.Routes {
-		u, err := url.Parse(r)
-		if err != nil {
-			return nil, fmt.Errorf("invalid route URL %q: %w", r, err)
+	if !cfg.DisableCluster {
+		for _, r := range cfg.Routes {
+			u, err := url.Parse(r)
+			if err != nil {
+				return nil, fmt.Errorf("invalid route URL %q: %w", r, err)
+			}
+			if cfg.ClusterUsername != "" {
+				u.User = url.UserPassword(cfg.ClusterUsername, cfg.ClusterPassword)
+			}
+			routes = append(routes, u)
 		}
-		routes = append(routes, u)
 	}
 
 	opts := &server.Options{
 		ServerName: cfg.NodeID,
 		Host:       "127.0.0.1",
 		Port:       cfg.Port,
-		Cluster: server.ClusterOpts{
+		Routes:     routes,
+	}
+	if cfg.MaxPayload > 0 {
+		opts.MaxPayload = int32(cfg.MaxPayload)
+	}
+	if cfg.MaxPending > 0 {
+		opts.MaxPending = cfg.MaxPending
+	}
+	if !cfg.DisableCluster {
+		opts.Cluster = server.ClusterOpts{
 			Host: "0.0.0.0",
 			Port: cfg.ClusterPort,
-		},
-		Routes: routes,
+		}
+		if cfg.ClusterName != "" {
+			opts.Cluster.Name = cfg.ClusterName
+		}
+		if cfg.ClusterUsername != "" {
+			opts.Cluster.Username = cfg.ClusterUsername
+			opts.Cluster.Password = cfg.ClusterPassword
+		}
+		if cfg.ClusterTLS != nil {
+			opts.Cluster.TLSConfig = cfg.ClusterTLS
+			opts.Cluster.TLSTimeout = 2.0
+		}
 	}
-	if cfg.ClusterName != "" {
-		opts.Cluster.Name = cfg.ClusterName
+	return opts, nil
+}
+
+func New(cfg Config) (*Broker, error) {
+	if cfg.NodeID == "" {
+		cfg.NodeID = "gohookbridge"
+	}
+
+	opts, err := buildServerOptions(&cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	b := &Broker{
+		buffer: NewRingBuffer(cfg.BufferSize, cfg.BufferBytes, DefaultMaxAge),
+		subs:   make(map[string]map[chan []byte]struct{}),
 	}
 
 	ns, err := server.NewServer(opts)

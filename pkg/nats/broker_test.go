@@ -1,6 +1,7 @@
 package nats
 
 import (
+	"crypto/tls"
 	"testing"
 	"time"
 
@@ -8,7 +9,7 @@ import (
 )
 
 func TestRingBufferAppendAndGet(t *testing.T) {
-	rb := NewRingBuffer(5, time.Hour)
+	rb := NewRingBuffer(5, 0, time.Hour)
 
 	rb.Append("ch1", []byte("data1"))
 	rb.Append("ch1", []byte("data2"))
@@ -25,7 +26,7 @@ func TestRingBufferAppendAndGet(t *testing.T) {
 }
 
 func TestRingBufferSizeLimitEviction(t *testing.T) {
-	rb := NewRingBuffer(3, time.Hour)
+	rb := NewRingBuffer(3, 0, time.Hour)
 
 	rb.Append("ch1", []byte("data1"))
 	rb.Append("ch1", []byte("data2"))
@@ -40,7 +41,7 @@ func TestRingBufferSizeLimitEviction(t *testing.T) {
 }
 
 func TestRingBufferTTLEviction(t *testing.T) {
-	rb := NewRingBuffer(100, 50*time.Millisecond)
+	rb := NewRingBuffer(100, 0, 50*time.Millisecond)
 
 	rb.Append("ch1", []byte("data1"))
 	time.Sleep(100 * time.Millisecond)
@@ -51,7 +52,7 @@ func TestRingBufferTTLEviction(t *testing.T) {
 }
 
 func TestRingBufferGetLimit(t *testing.T) {
-	rb := NewRingBuffer(100, time.Hour)
+	rb := NewRingBuffer(100, 0, time.Hour)
 
 	for i := 0; i < 10; i++ {
 		rb.Append("ch1", []byte(string(rune('0'+i))))
@@ -62,7 +63,7 @@ func TestRingBufferGetLimit(t *testing.T) {
 }
 
 func TestRingBufferPerChannelTTL(t *testing.T) {
-	rb := NewRingBuffer(100, time.Hour)
+	rb := NewRingBuffer(100, 0, time.Hour)
 
 	rb.SetChannelTTL("short", 50*time.Millisecond)
 	rb.SetChannelTTL("long", time.Hour)
@@ -82,7 +83,7 @@ func TestRingBufferPerChannelTTL(t *testing.T) {
 }
 
 func TestRingBufferEmptyGet(t *testing.T) {
-	rb := NewRingBuffer(10, time.Hour)
+	rb := NewRingBuffer(10, 0, time.Hour)
 
 	historical := rb.Get("nonexistent", time.Time{}, 0)
 	assert.Equal(t, 0, len(historical))
@@ -244,7 +245,7 @@ func TestBrokerClusterFanout(t *testing.T) {
 }
 
 func TestRingBufferPerChannelTTLEvictionMixed(t *testing.T) {
-	rb := NewRingBuffer(100, time.Hour)
+	rb := NewRingBuffer(100, 0, time.Hour)
 
 	rb.SetChannelTTL("short", 50*time.Millisecond)
 
@@ -260,4 +261,40 @@ func TestRingBufferPerChannelTTLEvictionMixed(t *testing.T) {
 	historicalLong := rb.Get("long", time.Time{}, 0)
 	assert.Equal(t, 1, len(historicalLong), "long TTL channel should still exist")
 	assert.Equal(t, "long-lived", string(historicalLong[0]))
+}
+
+func TestClusterTLSAndAuthConfigured(t *testing.T) {
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	opts, err := buildServerOptions(&Config{
+		NodeID:          "n1",
+		Port:            4222,
+		ClusterPort:     6222,
+		Routes:          []string{"nats://nats-0.nats:6222"},
+		ClusterName:     "gohookbridge",
+		ClusterUsername: "route-user",
+		ClusterPassword: "route-pass",
+		ClusterTLS:      tlsCfg,
+	})
+	assert.NilError(t, err)
+	assert.Equal(t, opts.Cluster.Username, "route-user")
+	assert.Equal(t, opts.Cluster.Password, "route-pass")
+	assert.Equal(t, opts.Cluster.TLSConfig, tlsCfg)
+	assert.Assert(t, opts.Cluster.TLSTimeout > 0)
+	assert.Equal(t, 1, len(opts.Routes))
+	assert.Equal(t, "route-user", opts.Routes[0].User.Username())
+	pass, _ := opts.Routes[0].User.Password()
+	assert.Equal(t, "route-pass", pass)
+}
+
+func TestDisableClusterSingleNode(t *testing.T) {
+	opts, err := buildServerOptions(&Config{
+		NodeID:         "n1",
+		Port:           4222,
+		ClusterPort:    6222,
+		Routes:         []string{"nats://nats-0.nats:6222"},
+		DisableCluster: true,
+	})
+	assert.NilError(t, err)
+	assert.Equal(t, 0, opts.Cluster.Port, "cluster listener must be disabled")
+	assert.Equal(t, 0, len(opts.Routes), "routes must be dropped when the cluster is disabled")
 }

@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -239,4 +241,39 @@ func nestedMap(t *testing.T, m map[string]any, key string) map[string]any {
 	value, ok := nested(t, m, key).(map[string]any)
 	assert.Assert(t, ok, "key %q must be a map, got %T", key, m[key])
 	return value
+}
+
+// F04: the source allowlist drops secrets, local-only values, and VCS/docs.
+func TestSourceAllowlistFiltersSecrets(t *testing.T) {
+	in := []string{
+		"README.md",
+		"internal/main.go",
+		"values-home.yaml",
+		"AGENTS.local.md",
+		"SECURITY_AUDIT_REPORT.md",
+		".git/config",
+		"web/node_modules/left-pad/index.js",
+	}
+	kept := FilterSourcePaths(in)
+	assert.Equal(t, 2, len(kept))
+	for _, o := range kept {
+		for _, bad := range ForbiddenSourcePatterns {
+			assert.Assert(t, !strings.Contains(o, bad), "filtered-out pattern %q leaked in %q", bad, o)
+		}
+	}
+}
+
+// F06: the embedded ingress probe checks the fail-closed exposure rules and
+// stays in sync with scripts/verify-ingress.sh.
+func TestVerifyIngressScript(t *testing.T) {
+	assert.Assert(t, strings.Contains(VerifyIngressScript, "$PUBLIC_URL/api/auth/methods"))
+	assert.Assert(t, strings.Contains(VerifyIngressScript, "INTERNAL_HOST"))
+	assert.Assert(t, strings.Contains(VerifyIngressScript, "$PUBLIC_URL/health"))
+
+	repoScript := filepath.Join("..", "..", "..", "..", "scripts", "verify-ingress.sh")
+	if data, err := os.ReadFile(repoScript); err == nil {
+		assert.Assert(t, strings.Contains(string(data), "/api/auth/methods"))
+		assert.Assert(t, strings.Contains(string(data), "--internal-host"))
+		assert.Assert(t, strings.Contains(string(data), "--public-url"))
+	}
 }

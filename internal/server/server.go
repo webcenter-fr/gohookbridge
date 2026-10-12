@@ -6,6 +6,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	_ "embed"
 	"encoding/hex"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	"github.com/webcenter-fr/gohookbridge/internal/service"
 	"github.com/webcenter-fr/gohookbridge/internal/web"
 	"github.com/webcenter-fr/gohookbridge/pkg/nats"
+	"github.com/webcenter-fr/gohookbridge/pkg/tlsreload"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -297,12 +299,35 @@ func NewServer(c *cli.Context) (*Server, error) {
 	}
 
 	natsCfg := nats.Config{
-		NodeID:      c.String("raft-node-id"),
-		Port:        c.Int("nats-port"),
-		ClusterPort: c.Int("nats-cluster-port"),
-		Routes:      c.StringSlice("nats-routes"),
-		BufferSize:  c.Int("nats-buffer-size"),
-		ClusterName: c.String("nats-cluster-name"),
+		NodeID:          c.String("raft-node-id"),
+		Port:            c.Int("nats-port"),
+		ClusterPort:     c.Int("nats-cluster-port"),
+		Routes:          c.StringSlice("nats-routes"),
+		BufferSize:      c.Int("nats-buffer-size"),
+		BufferBytes:     c.Int("nats-buffer-bytes"),
+		ClusterName:     c.String("nats-cluster-name"),
+		ClusterUsername: c.String("nats-cluster-username"),
+		ClusterPassword: c.String("nats-cluster-password"),
+		DisableCluster:  c.Bool("nats-disable-cluster"),
+		MaxPayload:      c.Int("nats-max-payload"),
+	}
+	if caFile, certFile, keyFile := c.String("nats-cluster-tls-ca"), c.String("nats-cluster-tls-cert"), c.String("nats-cluster-tls-key"); caFile != "" || certFile != "" || keyFile != "" {
+		if caFile == "" || certFile == "" || keyFile == "" {
+			cancelStartup()
+			_ = rs.Shutdown()
+			return nil, fmt.Errorf("nats cluster TLS: ca/cert/key must all be set together")
+		}
+		provider := tlsreload.NewProvider(certFile, keyFile, caFile, 5*time.Second)
+		if err := provider.Load(); err != nil {
+			cancelStartup()
+			_ = rs.Shutdown()
+			return nil, fmt.Errorf("nats cluster TLS: %w", err)
+		}
+		go provider.Start(ctx)
+		natsCfg.ClusterTLS = provider.TLSConfig(&tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ClientAuth: tls.RequireAndVerifyClientCert,
+		})
 	}
 	broker, natsErr := nats.New(natsCfg)
 	if natsErr != nil {
@@ -408,6 +433,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	restrictedRouter := chi.NewRouter()
 
 	mainRouter.Use(middleware.RequestID)
+	mainRouter.Use(handler.StripForwardMarker)
 	mainRouter.Use(handler.SafeLogger)
 	mainRouter.Use(middleware.Recoverer)
 	mainRouter.Use(handler.BanMiddleware(banTrackerInst, svc))
@@ -457,11 +483,34 @@ func NewServer(c *cli.Context) (*Server, error) {
 	mainRouter.Post("/api/auth/login", handler.APILoginHandler(svc, sessionSecret, banTrackerInst, loginThrottleInst, cookieSecure))
 	mainRouter.Post("/api/auth/logout", handler.APILogoutHandler(cookieSecure))
 
+	// Leader forwarding: in multi-node TLS the internal listener serves HTTPS
+	// with the per-pod certificate, and followers authenticate to the leader
+	// with the same certificate material (F13).
+	forwardScheme := "http"
+	var forwardTransport *http.Transport
+	if certFile != "" && certKey != "" && c.String("raft-tls-ca-cert") != "" {
+		provider := tlsreload.NewProvider(certFile, certKey, c.String("raft-tls-ca-cert"), 5*time.Second)
+		if err := provider.Load(); err != nil {
+			cancelStartup()
+			broker.Shutdown()
+			_ = rs.Shutdown()
+			return nil, fmt.Errorf("leader-forward TLS: %w", err)
+		}
+		go provider.Start(ctx)
+		forwardTransport = &http.Transport{
+			TLSClientConfig:       provider.TLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}),
+			ResponseHeaderTimeout: 10 * time.Second,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     true,
+		}
+		forwardScheme = "https"
+	}
+
 	// API routes — dynamic auth handles setup mode and authentication
 	apiRouter := chi.NewRouter()
 	// Mutating requests must reach the Raft leader; in an HA deployment the
 	// Service load-balances over all replicas, so followers forward writes.
-	apiRouter.Use(handler.LeaderForwardMiddleware(rs, c.Int("port")))
+	apiRouter.Use(handler.LeaderForwardMiddleware(rs, c.Int("port"), forwardTransport, forwardScheme))
 	apiRouter.Use(handler.RequireAuthDynamic(svc, sessionSecret, cookieSecure))
 	handler.RegisterAPIHandlers(apiRouter, svc)
 	// Channel-write-gated operational endpoints (no setup-mode bypass: in setup

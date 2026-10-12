@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +27,7 @@ func (f *fakeLeaderInfo) LeaderAddress() string { return f.addr }
 func TestLeaderForwardMiddleware(t *testing.T) {
 	t.Run("leader serves the request locally", func(t *testing.T) {
 		var called bool
-		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: true, addr: "leader.example:6001"}, 3333)(
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: true, addr: "leader.example:6001"}, 3333, nil, "http")(
 			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				called = true
 				w.WriteHeader(http.StatusTeapot)
@@ -41,7 +43,7 @@ func TestLeaderForwardMiddleware(t *testing.T) {
 
 	t.Run("read-only requests are not forwarded on a follower", func(t *testing.T) {
 		var called bool
-		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "leader.example:6001"}, 3333)(
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "leader.example:6001"}, 3333, nil, "http")(
 			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				called = true
 				w.WriteHeader(http.StatusOK)
@@ -74,7 +76,7 @@ func TestLeaderForwardMiddleware(t *testing.T) {
 		leaderPort, err := strconv.Atoi(leaderURL.Port())
 		assert.NilError(t, err)
 
-		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "127.0.0.1:6001"}, leaderPort)(
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "127.0.0.1:6001"}, leaderPort, nil, "http")(
 			http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Error("handler must not be called on a follower")
 			}),
@@ -93,7 +95,7 @@ func TestLeaderForwardMiddleware(t *testing.T) {
 	})
 
 	t.Run("follower returns 503 when no leader is known", func(t *testing.T) {
-		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false}, 3333)(
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false}, 3333, nil, "http")(
 			http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Error("handler must not be called on a follower")
 			}),
@@ -107,7 +109,7 @@ func TestLeaderForwardMiddleware(t *testing.T) {
 
 	t.Run("already forwarded request is served locally", func(t *testing.T) {
 		var called atomic.Bool
-		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "leader.example:6001"}, 3333)(
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "leader.example:6001"}, 3333, nil, "http")(
 			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				called.Store(true)
 				w.WriteHeader(http.StatusOK)
@@ -121,5 +123,54 @@ func TestLeaderForwardMiddleware(t *testing.T) {
 
 		assert.Assert(t, called.Load())
 		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+}
+
+// F13: inbound client-supplied forward markers are stripped.
+func TestForwardMarkerStrippedFromInbound(t *testing.T) {
+	seen := "unset"
+	h := StripForwardMarker(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get(leaderForwardedHeader)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/channels/", nil)
+	req.Header.Set(leaderForwardedHeader, "1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, "", seen)
+}
+
+// F13: forwarding uses TLS and rejects a peer whose certificate is not signed
+// by the configured CA.
+func TestLeaderForwardUsesTLSAndRejectsWrongCert(t *testing.T) {
+	leader := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer leader.Close()
+
+	leaderURL, err := url.Parse(leader.URL)
+	assert.NilError(t, err)
+	leaderPort, err := strconv.Atoi(leaderURL.Port())
+	assert.NilError(t, err)
+
+	t.Run("trusted CA forwards", func(t *testing.T) {
+		tr := leader.Client().Transport.(*http.Transport).Clone()
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "127.0.0.1:6001"}, leaderPort, tr, "https")(
+			http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("must not be called") }),
+		)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/channels/", nil))
+		assert.Equal(t, http.StatusCreated, rec.Code)
+	})
+
+	t.Run("untrusted CA is rejected", func(t *testing.T) {
+		tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS12}}
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "127.0.0.1:6001"}, leaderPort, tr, "https")(
+			http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("must not be called") }),
+		)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/channels/", nil))
+		assert.Equal(t, http.StatusBadGateway, rec.Code)
 	})
 }

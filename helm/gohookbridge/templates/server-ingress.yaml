@@ -1,13 +1,22 @@
 {{- if and .Values.server.enabled .Values.server.ingress.enabled }}
+{{- $allowlist := .Values.server.ingress.allowlistSourceRange | default list }}
+{{- if and .Values.server.ingress.private (not .Values.server.ingress.internalLoadBalancer) (eq (len $allowlist) 0) }}
+{{- fail "server.ingress.private=true requires server.ingress.internalLoadBalancer=true or a non-empty server.ingress.allowlistSourceRange (fail-closed internal ingress)" }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ include "gohookbridge.fullname" . }}-server
   labels:
     {{- include "gohookbridge.labels" . | nindent 4 }}
-  {{- with .Values.server.ingress.annotations }}
+  {{- if or .Values.server.ingress.annotations $allowlist }}
   annotations:
+    {{- with .Values.server.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if $allowlist }}
+    nginx.ingress.kubernetes.io/whitelist-source-range: {{ join "," $allowlist | quote }}
+    {{- end }}
   {{- end }}
 spec:
   {{- if .Values.server.ingress.className }}
