@@ -412,6 +412,24 @@ func (s *Service) CanAssignRoles(ctx context.Context, actor *domain.User, actorG
 	return true
 }
 
+// CanAssignChannels reports whether the actor may grant the given channel
+// membership list. A wildcard entry requires the actor to hold wildcard
+// channel access; every other entry must fall within the actor's own channel
+// scope. This closes the cross-channel escalation where a delegated
+// users:write/rbac:write manager could grant a target channel access to
+// channels the manager cannot itself reach (F02, §3.1.3).
+func (s *Service) CanAssignChannels(actor *domain.User, channels []string) bool {
+	if actor == nil {
+		return false
+	}
+	for _, c := range channels {
+		if !hasChannelAccessList(actor.Channels, c) {
+			return false
+		}
+	}
+	return true
+}
+
 // HasChannelRole reports whether the principal holds at least the given
 // channel role (owner > write > read), via creator status or a channel ACL.
 func (s *Service) HasChannelRole(ctx context.Context, user *domain.User, groups []string, channelID, role string) bool {

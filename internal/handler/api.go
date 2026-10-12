@@ -473,17 +473,6 @@ func (h *apiHandler) resolveActor(ctx context.Context) (*domain.User, []string) 
 	return user, GetGroupsFromContext(ctx)
 }
 
-// authorizeGrant denies the request unless the actor may grant every role and
-// scope the target request asks for.
-func (h *apiHandler) authorizeGrant(w http.ResponseWriter, ctx context.Context, roles []string, channelScope string) bool {
-	actor, groups := h.resolveActor(ctx)
-	if actor == nil || !h.svc.CanAssignRoles(ctx, actor, groups, roles, channelScope) {
-		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
-		return false
-	}
-	return true
-}
-
 func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var input struct {
@@ -500,7 +489,16 @@ func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.authorizeGrant(w, ctx, input.Roles, "*") {
+	actor, groups := h.resolveActor(ctx)
+	if actor == nil || !h.svc.CanAssignRoles(ctx, actor, groups, input.Roles, "*") {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
+		return
+	}
+	// The actor may only grant channel membership within its own scope: a
+	// delegated user manager must not mint a user with wildcard (or broader)
+	// channel access than it holds itself (F02 cross-channel escalation).
+	if !h.svc.CanAssignChannels(actor, input.Channels) {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
 		return
 	}
 
@@ -596,6 +594,10 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Roles != nil && hasAdminRole(u.Roles) && !hasAdminRole(input.Roles) {
 		writeError(w, http.StatusBadRequest, "cannot remove admin role")
+		return
+	}
+	if input.Channels != nil && !h.svc.CanAssignChannels(actor, input.Channels) {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
 		return
 	}
 	if input.Username != "" {
@@ -699,6 +701,10 @@ func (h *apiHandler) updateBinding(w http.ResponseWriter, r *http.Request) {
 	if actor == nil ||
 		!h.svc.CanAssignRoles(ctx, actor, groups, u.Roles, "*") ||
 		!h.svc.CanAssignRoles(ctx, actor, groups, binding.Roles, "*") {
+		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
+		return
+	}
+	if !h.svc.CanAssignChannels(actor, binding.Channels) {
 		writeError(w, http.StatusForbidden, "forbidden: insufficient privileges")
 		return
 	}
@@ -1028,6 +1034,8 @@ func (h *apiHandler) updateAllOIDCProviders(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// OIDC provider changes revoke outstanding sessions (F21, §3.4.4).
+	_ = h.svc.BumpAuthEpoch(ctx)
 	writeJSON(w, http.StatusOK, providers)
 }
 
@@ -1064,6 +1072,8 @@ func (h *apiHandler) updateOIDCProvider(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// OIDC provider changes revoke outstanding sessions (F21, §3.4.4).
+	_ = h.svc.BumpAuthEpoch(ctx)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -1089,6 +1099,8 @@ func (h *apiHandler) deleteOIDCProvider(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// OIDC provider changes revoke outstanding sessions (F21, §3.4.4).
+	_ = h.svc.BumpAuthEpoch(ctx)
 	w.WriteHeader(http.StatusNoContent)
 }
 

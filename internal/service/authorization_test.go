@@ -245,3 +245,22 @@ func TestCanAssignRoles(t *testing.T) {
 	assert.Assert(t, svc.CanAssignRoles(ctx, principal(t, svc, "projectadmin"), nil, []string{"channel_viewer"}, "proj1"))
 	assert.Assert(t, !svc.CanAssignRoles(ctx, principal(t, svc, "projectadmin"), nil, []string{"channel_viewer"}, "other"))
 }
+
+// F02: a delegated manager may only grant channel membership within its own
+// scope; wildcard or out-of-scope channels are rejected.
+func TestCanAssignChannels(t *testing.T) {
+	svc := setupUsersWithRoles(t)
+
+	admin := principal(t, svc, "admin1")           // Channels: ["*"]
+	projectAdmin := principal(t, svc, "projectadmin") // Channels: ["proj1","proj2"]
+	scoped := principal(t, svc, "scopeduser")      // Channels: ["proj1"]
+
+	assert.Assert(t, svc.CanAssignChannels(admin, []string{"*"}))
+	assert.Assert(t, svc.CanAssignChannels(admin, []string{"proj1", "proj2"}))
+	assert.Assert(t, svc.CanAssignChannels(projectAdmin, []string{"proj1"}))
+	assert.Assert(t, !svc.CanAssignChannels(projectAdmin, []string{"*"}))
+	assert.Assert(t, !svc.CanAssignChannels(projectAdmin, []string{"proj3"}))
+	assert.Assert(t, svc.CanAssignChannels(scoped, []string{"proj1"}))
+	assert.Assert(t, !svc.CanAssignChannels(scoped, []string{"proj2"}))
+	assert.Assert(t, !svc.CanAssignChannels(nil, []string{"proj1"}))
+}
