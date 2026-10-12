@@ -302,3 +302,35 @@ func TestBanTrackerConcurrentSweep(t *testing.T) {
 		<-done
 	}
 }
+
+// F18: forwarded headers are trusted only from configured proxy CIDRs, walked
+// right-to-left.
+func TestGetRealIPTrustedProxyCIDR(t *testing.T) {
+	t.Run("untrusted peer ignores XFF", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", nil)
+		req.RemoteAddr = "203.0.113.9:1234"
+		req.Header.Set("X-Forwarded-For", "10.0.0.1")
+		ip, err := GetRealIP(req, true, ParseTrustedProxyCIDRs([]string{"192.168.0.0/16"}))
+		assert.NilError(t, err)
+		assert.Equal(t, ip.String(), "203.0.113.9")
+	})
+
+	t.Run("trusted peer walks XFF right-to-left", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", nil)
+		req.RemoteAddr = "192.168.1.1:1"
+		req.Header.Set("X-Forwarded-For", "198.51.100.7, 10.0.0.1")
+		trusted := ParseTrustedProxyCIDRs([]string{"192.168.0.0/16", "10.0.0.0/8"})
+		ip, err := GetRealIP(req, true, trusted)
+		assert.NilError(t, err)
+		assert.Equal(t, ip.String(), "198.51.100.7")
+	})
+
+	t.Run("behind proxy disabled uses peer", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", nil)
+		req.RemoteAddr = "192.168.1.1:1"
+		req.Header.Set("X-Forwarded-For", "198.51.100.7")
+		ip, err := GetRealIP(req, false, nil)
+		assert.NilError(t, err)
+		assert.Equal(t, ip.String(), "192.168.1.1")
+	})
+}
