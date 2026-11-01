@@ -1,6 +1,6 @@
 module github.com/webcenter-fr/gohookbridge
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
@@ -20,7 +20,7 @@ require (
 	github.com/urfave/cli/v2 v2.27.7
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/crypto v0.53.0
-	golang.org/x/text v0.38.0
+	golang.org/x/text v0.43.0
 	gopkg.in/cenkalti/backoff.v1 v1.1.0
 	gopkg.in/yaml.v3 v3.0.1
 	gotest.tools/v3 v3.5.2
