@@ -120,10 +120,12 @@ func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create raft dir: %w", err)
 	}
-	// Tighten an existing directory (e.g. a mounted PVC or a temp dir created
-	// with looser permissions).
+	// Tighten an existing directory (e.g. a temp dir created with looser
+	// permissions). Ignore ErrPermission for root-owned PVC mountpoints where
+	// Kubernetes fsGroup manages directory access and the container runs as a
+	// non-root UID (F27/F28).
 	// #nosec G302 -- directory; 0700 is more restrictive than the 0750 threshold.
-	if err := os.Chmod(cfg.Dir, 0o700); err != nil {
+	if err := os.Chmod(cfg.Dir, 0o700); err != nil && !errors.Is(err, os.ErrPermission) {
 		return nil, fmt.Errorf("chmod raft dir: %w", err)
 	}
 

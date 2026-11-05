@@ -32,16 +32,14 @@ spec:
   policyTypes:
   - Ingress
   ingress:
-  - from:
-    {{- with .Values.networkPolicy.edgeNamespaceSelector }}
+  - {{- with .Values.networkPolicy.edgeNamespaceSelector }}
+    from:
     - namespaceSelector:
         {{- toYaml . | nindent 8 }}
       {{- with $.Values.networkPolicy.edgePodSelector }}
       podSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-    {{- else }}
-    - {}
     {{- end }}
     ports:
     {{- if gt (include "gohookbridge.publicPort" . | int) 0 }}

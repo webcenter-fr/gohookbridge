@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -218,13 +219,16 @@ func readRaftCASecret(clientset kubernetes.Interface, namespace, name string) (c
 }
 
 // ensureTLSDir creates the TLS material directory with 0700 permissions,
-// tightening an existing directory (e.g. a mounted PVC) if needed.
+// tightening an existing directory if permitted.
 func ensureTLSDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	// #nosec G302 -- dir is a directory; 0700 is more restrictive than the 0750 directory threshold.
-	return os.Chmod(dir, 0o700)
+	if err := os.Chmod(dir, 0o700); err != nil && !errors.Is(err, os.ErrPermission) {
+		return err
+	}
+	return nil
 }
 
 // ensureLocalRaftCA loads/creates the CA files under <dir> for the local-only
