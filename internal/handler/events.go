@@ -34,11 +34,11 @@ type sseConnLimiter struct {
 	sem chan struct{}
 }
 
-func newSSEConnLimiter(max int) *sseConnLimiter {
-	if max <= 0 {
-		max = 1000
+func newSSEConnLimiter(limit int) *sseConnLimiter {
+	if limit <= 0 {
+		limit = 1000
 	}
-	return &sseConnLimiter{sem: make(chan struct{}, max)}
+	return &sseConnLimiter{sem: make(chan struct{}, limit)}
 }
 
 func (l *sseConnLimiter) acquire() bool {
@@ -60,7 +60,7 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, frame string) bool {
 	// Best-effort: writers without deadline support (e.g. test recorders)
 	// skip the deadline rather than fail.
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(sseWriteTimeout))
-	if _, err := fmt.Fprint(w, frame); err != nil {
+	if _, err := fmt.Fprint(w, frame); err != nil { //nolint:gosec // SSE frame payload is JSON-marshaled server event data over text/event-stream
 		return false
 	}
 	flusher.Flush()

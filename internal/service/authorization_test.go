@@ -251,9 +251,9 @@ func TestCanAssignRoles(t *testing.T) {
 func TestCanAssignChannels(t *testing.T) {
 	svc := setupUsersWithRoles(t)
 
-	admin := principal(t, svc, "admin1")           // Channels: ["*"]
+	admin := principal(t, svc, "admin1")              // Channels: ["*"]
 	projectAdmin := principal(t, svc, "projectadmin") // Channels: ["proj1","proj2"]
-	scoped := principal(t, svc, "scopeduser")      // Channels: ["proj1"]
+	scoped := principal(t, svc, "scopeduser")         // Channels: ["proj1"]
 
 	assert.Assert(t, svc.CanAssignChannels(admin, []string{"*"}))
 	assert.Assert(t, svc.CanAssignChannels(admin, []string{"proj1", "proj2"}))

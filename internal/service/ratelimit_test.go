@@ -283,7 +283,7 @@ func TestExtractSignatureValue(t *testing.T) {
 }
 
 // F12: concurrent sweep/record/ban must be race-free (run with -race).
-func TestBanTrackerConcurrentSweep(t *testing.T) {
+func TestBanTrackerConcurrentSweep(_ *testing.T) {
 	bt := NewBanTracker()
 
 	done := make(chan struct{})

@@ -204,7 +204,5 @@ func (rb *RingBuffer) evictExpired() {
 	rb.tail = 0
 	rb.full = len(kept) == rb.maxSize
 	rb.head = len(kept) % rb.maxSize
-	for i, e := range kept {
-		rb.entries[i] = e
-	}
+	copy(rb.entries, kept)
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
@@ -21,24 +22,28 @@ func randomKey(t *testing.T) []byte {
 	return k
 }
 
-func keeperWith(t *testing.T, primary string, kids ...string) *CryptoKeeper {
+func keeperWith(t *testing.T, kids ...string) *CryptoKeeper {
 	t.Helper()
 	keys := make(map[string][]byte, len(kids))
 	for _, kid := range kids {
 		keys[kid] = randomKey(t)
 	}
+	primary := ""
+	if len(kids) > 0 {
+		primary = kids[0]
+	}
 	return NewCryptoKeeper(primary, keys)
 }
 
 func TestEncryptDecryptRoundTrip(t *testing.T) {
-	keeper := keeperWith(t, "k1", "k1")
+	keeper := keeperWith(t, "k1")
 
 	ev, err := keeper.Encrypt([]byte("super-secret"))
 	assert.NilError(t, err)
 	assert.Equal(t, ev.Alg, "A256GCM")
 	assert.Equal(t, ev.KID, "k1")
 	assert.Assert(t, ev.Ct != "")
-	assert.Assert(t, !bytes.Contains([]byte(ev.Ct), []byte("super-secret")))
+	assert.Assert(t, !strings.Contains(ev.Ct, "super-secret"))
 
 	plain, err := keeper.Decrypt(ev)
 	assert.NilError(t, err)
@@ -48,7 +53,7 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 // F27: legacy plaintext records keep working and are sealed by the migration.
 func TestMigrationFromPlaintext(t *testing.T) {
 	rs := newTestRaftStore(t)
-	rs.keeper = keeperWith(t, "k1", "k1")
+	rs.keeper = keeperWith(t, "k1")
 	ctx := context.Background()
 
 	legacy := domain.Channel{ID: "legacy", WebhookSecret: "plaintext-secret"}
@@ -73,7 +78,7 @@ func TestMigrationFromPlaintext(t *testing.T) {
 
 // F27: values encrypted under an old key remain readable after a rotation.
 func TestKeyRotation(t *testing.T) {
-	oldKeeper := keeperWith(t, "k1", "k1")
+	oldKeeper := keeperWith(t, "k1")
 	ev, err := oldKeeper.Encrypt([]byte("rotated-secret"))
 	assert.NilError(t, err)
 
@@ -94,7 +99,7 @@ func TestKeyRotation(t *testing.T) {
 // F27: snapshots must never contain plaintext secrets.
 func TestSnapshotEncrypted(t *testing.T) {
 	rs := newTestRaftStore(t)
-	rs.keeper = keeperWith(t, "k1", "k1")
+	rs.keeper = keeperWith(t, "k1")
 	ctx := context.Background()
 
 	assert.NilError(t, rs.CreateChannel(ctx, &domain.Channel{

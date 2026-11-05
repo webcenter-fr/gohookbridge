@@ -117,7 +117,7 @@ func (p *Provider) reload() {
 	current := p.current.Load()
 	modTime, err := p.latestModTime()
 	if err != nil {
-		p.warn("tlsreload: stat certificates: %v", err)
+		p.warnf("tlsreload: stat certificates: %v", err)
 		return
 	}
 	if current != nil && !modTime.After(current.modTime) {
@@ -126,11 +126,11 @@ func (p *Provider) reload() {
 	}
 	st, err := p.readState()
 	if err != nil {
-		p.warn("tlsreload: reload rejected, keeping previous certificate: %v", err)
+		p.warnf("tlsreload: reload rejected, keeping previous certificate: %v", err)
 		return
 	}
 	p.current.Store(st)
-	p.warn("tlsreload: certificate reloaded from %s", p.certFile)
+	p.warnf("tlsreload: certificate reloaded from %s", p.certFile)
 }
 
 func (p *Provider) checkRenewalWindow(st *state) {
@@ -138,7 +138,7 @@ func (p *Provider) checkRenewalWindow(st *state) {
 		return
 	}
 	if time.Until(st.cert.Leaf.NotAfter) < RenewalWindow {
-		p.warn("tlsreload: certificate for %s expires soon (%s); no valid replacement loaded",
+		p.warnf("tlsreload: certificate for %s expires soon (%s); no valid replacement loaded",
 			p.certFile, st.cert.Leaf.NotAfter.Format(time.RFC3339))
 	}
 }
@@ -189,7 +189,7 @@ func (p *Provider) readState() (*state, error) {
 	return &state{cert: &leaf, pool: pool, modTime: modTime}, nil
 }
 
-func (p *Provider) warn(format string, args ...any) {
+func (p *Provider) warnf(format string, args ...any) {
 	if p.logger != nil {
 		p.logger.Printf(format, args...)
 	}

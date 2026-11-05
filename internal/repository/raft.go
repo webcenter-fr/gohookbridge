@@ -260,6 +260,7 @@ func (rs *RaftStore) openString(stored string) (string, error) {
 	}
 	var ev EncryptedValue
 	if err := json.Unmarshal([]byte(stored), &ev); err != nil || ev.Alg == "" || ev.Ct == "" {
+		//nolint:nilerr // non-JSON stored values are legacy plaintext and returned as-is for lazy migration
 		return stored, nil
 	}
 	plain, err := rs.keeper.Decrypt(ev)
@@ -283,8 +284,8 @@ func (rs *RaftStore) sealChannel(p *domain.Channel) error {
 	if p.EncryptionPrivateKey, err = rs.sealString(p.EncryptionPrivateKey); err != nil {
 		return err
 	}
-	for i := range p.WebhookSignatures {
-		if p.WebhookSignatures[i], err = rs.sealString(p.WebhookSignatures[i]); err != nil {
+	for i := range p.WebhookSignatures { //nolint:staticcheck // seal deprecated legacy field if present
+		if p.WebhookSignatures[i], err = rs.sealString(p.WebhookSignatures[i]); err != nil { //nolint:staticcheck // seal deprecated legacy field if present
 			return err
 		}
 	}
@@ -305,8 +306,8 @@ func (rs *RaftStore) openChannel(p *domain.Channel) error {
 	if p.EncryptionPrivateKey, err = rs.openString(p.EncryptionPrivateKey); err != nil {
 		return err
 	}
-	for i := range p.WebhookSignatures {
-		if p.WebhookSignatures[i], err = rs.openString(p.WebhookSignatures[i]); err != nil {
+	for i := range p.WebhookSignatures { //nolint:staticcheck // open deprecated legacy field if present
+		if p.WebhookSignatures[i], err = rs.openString(p.WebhookSignatures[i]); err != nil { //nolint:staticcheck // open deprecated legacy field if present
 			return err
 		}
 	}

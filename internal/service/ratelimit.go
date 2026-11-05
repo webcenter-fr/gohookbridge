@@ -100,7 +100,7 @@ func NewBanTracker() *BanTracker {
 	}
 }
 
-func (bt *BanTracker) recordFailure(ip, fingerprint string, windowSeconds int) {
+func (bt *BanTracker) recordFailure(ip, fingerprint string, windowSeconds int) { //nolint:unparam // ip parameter kept for test symmetry with banIfSuspicious
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
 	bt.recordFailureLocked(ip, fingerprint, windowSeconds, time.Now())
@@ -145,7 +145,7 @@ func (bt *BanTracker) IsBanned(ip string) bool {
 	return false
 }
 
-func (bt *BanTracker) banIfSuspicious(ip string, maxUniqueFailures, banDurationSeconds, windowSeconds int) bool {
+func (bt *BanTracker) banIfSuspicious(ip string, maxUniqueFailures, banDurationSeconds, windowSeconds int) bool { //nolint:unparam // ip parameter kept for test symmetry
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
 	return bt.banIfSuspiciousLocked(ip, maxUniqueFailures, banDurationSeconds, windowSeconds, time.Now())
@@ -223,13 +223,13 @@ func (bt *BanTracker) maybeSweepLocked(now time.Time, windowSeconds int) {
 // recordAndBan performs sweep + record + ban under a single lock so the
 // credential-failure hot path is race-free and pays at most one map scan per
 // throttled window (F12).
-func (bt *BanTracker) recordAndBan(ip, fingerprint string, maxUniqueFailures, banDurationSeconds, windowSeconds int) bool {
+func (bt *BanTracker) recordAndBan(ip, fingerprint string, maxUniqueFailures, banDurationSeconds, windowSeconds int) {
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
 	now := time.Now()
 	bt.maybeSweepLocked(now, windowSeconds)
 	bt.recordFailureLocked(ip, fingerprint, windowSeconds, now)
-	return bt.banIfSuspiciousLocked(ip, maxUniqueFailures, banDurationSeconds, windowSeconds, now)
+	bt.banIfSuspiciousLocked(ip, maxUniqueFailures, banDurationSeconds, windowSeconds, now)
 }
 
 // clampWindow guards against a zero/unset window config, falling back to the

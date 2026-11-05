@@ -2,13 +2,12 @@ package repository
 
 import (
 	"bytes"
-
 	"context"
-	"github.com/hashicorp/raft"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/hashicorp/raft"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"golang.org/x/crypto/bcrypt"
 	"gotest.tools/v3/assert"

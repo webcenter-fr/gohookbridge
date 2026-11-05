@@ -36,11 +36,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AUR_PRIVATE_KEY: ${{ secrets.AUR_PRIVATE_KEY }}
         run: |
-          ARGS="goreleaser --source . --version ${GITHUB_REF_NAME} --gh-token env:GITHUB_TOKEN"
+          ARGS=(goreleaser --source . --version "${GITHUB_REF_NAME}" --gh-token env:GITHUB_TOKEN)
           if [ -n "${AUR_PRIVATE_KEY}" ]; then
-            ARGS="${ARGS} --aur-key env:AUR_PRIVATE_KEY"
+            ARGS+=(--aur-key env:AUR_PRIVATE_KEY)
           fi
-          dagger call -m ./dagger/gohookbridge ${ARGS} export --path dist
+          dagger call -m ./dagger/gohookbridge "${ARGS[@]}" export --path dist
       - name: Upload GoReleaser dist as artifact
         uses: actions/upload-artifact@v4
         with:

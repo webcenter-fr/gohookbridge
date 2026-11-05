@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,7 +39,7 @@ func TestProxyHeaderAllowlist(t *testing.T) {
 
 	handler := proxyHandler(pub, upstream.URL, upstream.Client(), 1<<20)
 
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"hello":"world"}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", strings.NewReader(`{"hello":"world"}`))
 	req.RemoteAddr = "203.0.113.7:54321"
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Github-Event", "push")
@@ -78,7 +79,7 @@ func TestProxyMaxBodySize(t *testing.T) {
 	pub, _, err := crypto.GenerateKeyPair()
 	assert.NilError(t, err)
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer upstream.Close()
@@ -86,7 +87,7 @@ func TestProxyMaxBodySize(t *testing.T) {
 	handler := proxyHandler(pub, upstream.URL, upstream.Client(), 1024)
 
 	big := strings.Repeat("a", 2048)
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(big))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", strings.NewReader(big))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -94,7 +95,7 @@ func TestProxyMaxBodySize(t *testing.T) {
 	assert.Equal(t, w.Result().StatusCode, http.StatusRequestEntityTooLarge)
 
 	// A body within the budget is accepted.
-	req = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"ok":true}`))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", strings.NewReader(`{"ok":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	handler(w, req)
@@ -116,7 +117,7 @@ func TestProxyBodyIsEncrypted(t *testing.T) {
 
 	handler := proxyHandler(pub, upstream.URL, upstream.Client(), 1<<20)
 
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"hello":"world"}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", strings.NewReader(`{"hello":"world"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler(w, req)

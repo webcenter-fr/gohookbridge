@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"sync"
@@ -127,7 +128,7 @@ func buildServerOptions(cfg *Config) (*server.Options, error) {
 		Port:       cfg.Port,
 		Routes:     routes,
 	}
-	if cfg.MaxPayload > 0 {
+	if cfg.MaxPayload > 0 && cfg.MaxPayload <= math.MaxInt32 {
 		opts.MaxPayload = int32(cfg.MaxPayload)
 	}
 	if cfg.MaxPending > 0 {

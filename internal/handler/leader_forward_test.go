@@ -155,7 +155,9 @@ func TestLeaderForwardUsesTLSAndRejectsWrongCert(t *testing.T) {
 	assert.NilError(t, err)
 
 	t.Run("trusted CA forwards", func(t *testing.T) {
-		tr := leader.Client().Transport.(*http.Transport).Clone()
+		baseTransport, ok := leader.Client().Transport.(*http.Transport)
+		assert.Assert(t, ok)
+		tr := baseTransport.Clone()
 		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "127.0.0.1:6001"}, leaderPort, tr, "https")(
 			http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("must not be called") }),
 		)

@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/template"
 	"time"
 
@@ -455,6 +456,14 @@ func runExecCommand(ctx context.Context, rd *replayDataOpts, logger *slog.Logger
 
 	//nolint:gosec // Command is intentionally user-provided
 	cmd := exec.CommandContext(ctx, "sh", "-c", rd.execCommand)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 100 * time.Millisecond
 	cmd.Env = append(buildExecEnv(rd.execEnvVars),
 		"GOHOOKBRIDGE_EVENT_TYPE="+pm.eventType,
 		"GOHOOKBRIDGE_EVENT_ID="+pm.eventID,

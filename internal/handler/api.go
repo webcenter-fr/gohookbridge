@@ -173,8 +173,9 @@ func (h *apiHandler) createChannel(w http.ResponseWriter, r *http.Request) {
 	// Server-owned fields must never come from the body.
 	ch.AccessTokens = nil
 	ch.AccessMode = ""
-	//nolint:staticcheck // deprecated field is never accepted from the body
+	//nolint:staticcheck // deprecated fields are never accepted from the body
 	ch.WebhookSignatures = nil
+	//nolint:staticcheck // deprecated fields are never accepted from the body
 	ch.EncryptionEnabled = false
 	if !validEncryptionMode(ch.EncryptionMode) {
 		writeError(w, http.StatusBadRequest, "encryption_mode must be '', 'server_side', or 'e2e'")

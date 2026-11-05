@@ -33,7 +33,7 @@ type ServerConfig struct {
 	RequireKnownChannels bool `json:"require_known_channels" yaml:"require_known_channels"`
 	// LoginThrottleAttempts/LoginThrottleCooldown bound per-account login
 	// attempts (always-on). 0 attempts = domain default (10).
-	LoginThrottleAttempts int `json:"login_throttle_attempts" yaml:"login_throttle_attempts"`
+	LoginThrottleAttempts int `json:"login_throttle_attempts"         yaml:"login_throttle_attempts"`
 	LoginThrottleCooldown int `json:"login_throttle_cooldown_seconds" yaml:"login_throttle_cooldown_seconds"`
 }
 
