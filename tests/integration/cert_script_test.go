@@ -59,7 +59,7 @@ func TestGenerateRaftCertsSANs(t *testing.T) {
 	}
 
 	// The node-set directory feeds the shared Secret.
-	for _, name := range []string{"ca.crt", "0.crt", "0.key", "1.crt", "1.key"} {
+	for _, name := range []string{"ca.crt", "0.crt", "0.key", "1.crt", "1.key", "gohookbridge-server-0.crt", "gohookbridge-server-0.key", "gohookbridge-server-1.crt", "gohookbridge-server-1.key"} {
 		_, err := os.Stat(filepath.Join(out, "nodes", name))
 		assert.NilError(t, err, "nodes/%s missing", name)
 	}

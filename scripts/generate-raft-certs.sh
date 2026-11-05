@@ -96,6 +96,8 @@ EOF
 
   cp "$dir/tls.crt" "$NODES_DIR/$i.crt"
   cp "$dir/tls.key" "$NODES_DIR/$i.key"
+  cp "$dir/tls.crt" "$NODES_DIR/$NAME-server-$i.crt"
+  cp "$dir/tls.key" "$NODES_DIR/$NAME-server-$i.key"
 done
 rm -f "$OUT/ca.srl"
 
