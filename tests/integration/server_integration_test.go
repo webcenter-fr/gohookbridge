@@ -111,8 +111,7 @@ func TestServerEndToEndWebhookRelay(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			cancel()
-			<-runDone
-			t.Fatal("server did not become ready in time")
+			t.Fatalf("server did not become ready in time (run err: %v)", <-runDone)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
