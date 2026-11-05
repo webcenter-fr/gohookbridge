@@ -523,3 +523,110 @@ To re-enter setup mode, stop the server, delete the Raft data directory, and res
 ## Reporting Vulnerabilities
 
 Please report security issues by opening a [GitHub issue](https://github.com/webcenter-fr/gohookbridge/issues). For sensitive disclosures, use GitHub's private vulnerability reporting feature on the Security tab. RBAC permission bypass bugs (such as context key type mismatches) are considered critical severity.
+
+---
+
+## Security remediation (2026-10-12): F01–F36
+
+This section documents the controls added by the `fix/security-audit-remediation`
+change set. It supersedes any conflicting statement above.
+
+### Authorization and identity (F01, F02, F03, F34, F35)
+- Authorization is **principal-based**: `RequireAuth` resolves the signed
+  session to a stored user and stores it in the request context. Handlers never
+  authorize on a display-only username.
+- OIDC identity is bound to the exact `(provider, issuer, subject)` triple via
+  `User.ExternalIdentities`. Email and legacy `oidc_subjects` are **never** used
+  for authorization; there is no auto-linking. `email_verified: false` is
+  rejected.
+- Every admin route carries a per-operation permission gate and the channel ID
+  is established (`channelCtx`) **before** any auth gate, closing the
+  read→write and cross-channel object-access bypasses.
+- Grant policy (`CanAssignRoles`): a role granting `*` requires the actor to
+  hold `*`; every other requested role requires the actor to hold all of its
+  permissions; a less-privileged user cannot reset a more-privileged user's
+  password or self-promote. Denials return `403 forbidden: insufficient
+  privileges`.
+- The FSM returns mutation errors through Raft `Apply` (so `ErrAlreadyExists`
+  survives) and multi-record writes are applied in a single Bolt transaction.
+
+### Configuration and secret handling (F08, F09)
+- Update endpoints use pointer-semantics DTOs: a missing field is preserved, an
+  explicit zero clears it. Identity/provenance/token/mode fields are never read
+  from the body.
+- Read endpoints return safe projections (only `webhook_secret_configured` /
+  `encryption_key_configured` booleans); secrets and token hashes are never
+  emitted. One-time plaintext is returned only by the dedicated
+  generate-secret / access-token / encryption-key endpoints.
+- Policy reads are fail-closed: a missing/unreadable configuration is an error,
+  not a silent default. `require_known_channels` turns unknown channels into
+  404 and a missing signature secret into 503.
+
+### Cryptography (F32)
+- Server-side AES-256-GCM binds the channel as AAD
+  (`gohookbridge.channel.<id>`); NaCl envelopes are version 2 and seal
+  `context || 0x00 || plaintext`. Version 1 (context-free) envelopes remain
+  accepted during the compatibility window and are deprecated.
+- Forward secrecy note: NaCl `box` provides **no** forward secrecy — an
+  ephemeral sender key protects the message, but compromise of the recipient
+  static private key decrypts all past messages. Treat the client private key
+  accordingly.
+- At-rest encryption (F27): sensitive Raft-stored fields are sealed with
+  AES-256-GCM under a KEK (`--at-rest-key-file`, mounted from
+  `encryption.kek.existingSecret`); `migrate-at-rest` seals legacy plaintext and
+  `rotate-at-rest-key` re-seals under a new primary key while retaining old keys
+  for decryption. KMS/etcd-level encryption remains an operator/cloud item.
+
+### Network and peer trust (F05, F06, F07, F13, F14, F18, F28)
+- The chart renders a release-scoped `NetworkPolicy` (default-deny + explicit
+  allow rules) when `networkPolicy.enabled=true`.
+- Internal ingress is fail-closed: `server.ingress.private=true` requires an
+  internal load balancer or a non-empty source allowlist, otherwise the render
+  fails. `scripts/verify-ingress.sh` proves the public edge exposes only
+  health/`POST /{channel}`.
+- NATS cluster routes support TLS + username/password auth and can be disabled
+  for single-node (`--nats-disable-cluster`).
+- Leader forwarding uses mutual TLS (client cert + CA pool via `pkg/tlsreload`);
+  inbound `X-Gohookbridge-Leader-Forwarded` markers are stripped.
+- Multi-node uses **manual pre-provisioned per-node certificates** (offline CA,
+  `scripts/generate-raft-certs.sh` / `rotate-raft-certs.sh`); the shared auto-CA
+  and its namespace-wide Secret write RBAC were removed. The CA private key
+  never enters the cluster. A local self-signed CA remains for single-node/dev
+  only.
+- Forwarded headers are honored only from configured `trusted_proxy_cidrs`,
+  walking `X-Forwarded-For` right-to-left.
+- All workloads run non-root with `allowPrivilegeEscalation:false`,
+  `readOnlyRootFilesystem:true`, all capabilities dropped, and
+  `seccompProfile: RuntimeDefault`.
+
+### Sessions, throttling, budgets (F11, F12, F19, F21, F24, F25, F26)
+- Sessions carry a `sid` and `auth_epoch`; deleting a user, resetting a
+  password, or changing roles bumps the epoch and revokes outstanding sessions.
+- Per-account login throttling is always on (429 after a configurable number of
+  failures) and keyed by a SHA-256 fingerprint.
+- The in-memory ring buffer is bounded by entry count **and** bytes; per-entry
+  channel TTLs are enforced without the previous interleaving early-break.
+- Exec commands are bounded by `--exec-timeout` (default 30s) and 1 MiB of
+  captured stdout/stderr; replay templates shell-quote URLs.
+- The SSE event list is capped (500) in the browser; logout disconnects the
+  stream and clears buffered events.
+- Publish returns truthful errors (502/503) instead of an unconditional 202.
+- OIDC HTTP calls are bounded (10s timeout, 5s response-header, 1 MiB body cap,
+  no cross-origin redirects); issuers must be https (loopback/dev excepted) and
+  may be restricted with `allowed_endpoints`.
+
+### Supply chain and artifacts (F04, F15, F16, F17, F23, F27, F29, F30, F31, F33)
+- `helm package` excludes secrets/local values/docs via `.helmignore`;
+  `.dockerignore`/`.gitignore` exclude local-only configuration.
+- Bootstrap passwords are hashed before replication; the Raft log and snapshots
+  contain only bcrypt hashes.
+- Browser responses carry `X-Frame-Options: DENY`, `nosniff`, `no-referrer`,
+  a `frame-ancestors 'none'` CSP, `Cache-Control: no-store` on `/api/*`, and
+  HSTS on HTTPS. Mutating API requests validate `Origin`/`Referer`.
+- CI pins actions by SHA, verifies downloaded tool checksums, gates on
+  `npm audit --audit-level=high` with an expiring allowlist, generates SBOM and
+  SLSA provenance, and signs release artifacts with cosign
+  (`.github/workflows/audit.yml`, `scripts/verify-*.sh`).
+- Logs redact sensitive query parameters (`token`, `code`, `state`,
+  `client_secret`, `secret`, `password`) and headers (`Authorization`, `Cookie`,
+  `X-Api-Key`, signatures).

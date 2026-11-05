@@ -9,7 +9,6 @@ import (
 	"github.com/hashicorp/raft"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"go.etcd.io/bbolt"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type fsmCommand struct {
@@ -19,10 +18,19 @@ type fsmCommand struct {
 }
 
 type fsmBootstrapUser struct {
-	Username string   `json:"username"`
-	Password string   `json:"password"`
+	Username string `json:"username"`
+	// PasswordHash is the bcrypt hash computed before replication; plaintext
+	// passwords must never enter the Raft log (CWE-312).
+	PasswordHash string `json:"password_hash"`
+	// Password is rejected by the FSM if present (defense in depth).
+	Password string   `json:"password,omitempty"`
 	Roles    []string `json:"roles"`
 	Channels []string `json:"channels"`
+}
+
+// fsmMultiPayload carries the key mutations of a transactional "set-multi".
+type fsmMultiPayload struct {
+	Entries []fsmKV `json:"entries"`
 }
 
 type fsmBootstrapPayload struct {
@@ -47,7 +55,7 @@ func (f *FSM) Apply(log *raft.Log) interface{} {
 		return err
 	}
 
-	if cmd.Op != "bootstrap" {
+	if cmd.Op != "bootstrap" && cmd.Op != "set-multi" {
 		if err := validateKey(cmd.Key); err != nil {
 			return err
 		}
@@ -58,6 +66,8 @@ func (f *FSM) Apply(log *raft.Log) interface{} {
 		return f.applySet(cmd.Key, []byte(cmd.Value))
 	case "set-json":
 		return f.applySet(cmd.Key, []byte(cmd.Value))
+	case "set-multi":
+		return f.applySetMulti([]byte(cmd.Value))
 	case "delete":
 		return f.applyDelete(cmd.Key)
 	case "create-channel":
@@ -133,7 +143,51 @@ func (f *FSM) applyCreateUser(key string, value []byte) error {
 		if b.Get([]byte(key)) != nil {
 			return fmt.Errorf("%w: user %q", domain.ErrAlreadyExists, strings.TrimPrefix(strings.TrimSuffix(key, "/"), "/users/"))
 		}
-		return b.Put([]byte(key), value)
+		if err := b.Put([]byte(key), value); err != nil {
+			return err
+		}
+		// The username index is written in the same transaction as the user so
+		// a crash can never leave the index pointing at a missing user.
+		var u domain.User
+		if err := json.Unmarshal(value, &u); err != nil {
+			return err
+		}
+		if u.Username == "" {
+			return fmt.Errorf("create user: username required")
+		}
+		return b.Put([]byte(usernameIndexKey(u.Username)+"/"), usernameIndexValue(u.ID))
+	})
+}
+
+// applySetMulti applies a batch of key mutations in a single Bolt transaction,
+// so a failed/partial write cannot leave the FSM inconsistent.
+func (f *FSM) applySetMulti(value []byte) error {
+	var payload fsmMultiPayload
+	if err := json.Unmarshal(value, &payload); err != nil {
+		return err
+	}
+	for _, e := range payload.Entries {
+		if err := validateKey(e.Key); err != nil {
+			return err
+		}
+	}
+	return f.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(fsmDataBucketName))
+		if b == nil {
+			return fmt.Errorf("bucket %s not found", fsmDataBucketName)
+		}
+		for _, e := range payload.Entries {
+			if e.Delete {
+				if err := b.Delete([]byte(e.Key)); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := b.Put([]byte(e.Key), e.Value); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -184,14 +238,16 @@ func (f *FSM) applyBootstrap(value []byte) error {
 			if u.Username == "" {
 				return fmt.Errorf("username required")
 			}
-			hash, err := bcrypt.GenerateFromPassword([]byte(u.Password), bcrypt.DefaultCost)
-			if err != nil {
-				return fmt.Errorf("hash password for user %q: %w", u.Username, err)
+			if u.Password != "" {
+				return fmt.Errorf("bootstrap user %q: plaintext password must be hashed before replication", u.Username)
+			}
+			if u.PasswordHash == "" {
+				return fmt.Errorf("bootstrap user %q: password_hash required", u.Username)
 			}
 			user := domain.User{
 				ID:           u.Username,
 				Username:     u.Username,
-				PasswordHash: string(hash),
+				PasswordHash: u.PasswordHash,
 				Roles:        u.Roles,
 				Channels:     u.Channels,
 			}

@@ -7,6 +7,12 @@ export interface EncryptedEnvelope {
   epk: string
   nonce: string
   ciphertext: string
+  ctx?: string
+}
+
+// channelContext mirrors the server-side AEAD context binding.
+export function channelContext(channel: string): string {
+  return `gohookbridge.channel.${channel}`
 }
 
 export function isE2EEncrypted(data: unknown): boolean {
@@ -15,7 +21,18 @@ export function isE2EEncrypted(data: unknown): boolean {
   return d.encrypted === true && typeof d.epk === 'string' && typeof d.nonce === 'string' && typeof d.ciphertext === 'string'
 }
 
-export function decryptE2E(data: string | Record<string, unknown>, privateKeyBase64: string): string {
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
+// decryptE2E decrypts a NaCl envelope. Version 2 envelopes are bound to
+// channelContext; version 1 (legacy) envelopes are accepted during the
+// compatibility window.
+export function decryptE2E(data: string | Record<string, unknown>, privateKeyBase64: string, channelContextValue?: string): string {
   let envelope: EncryptedEnvelope
   if (typeof data === 'string') {
     envelope = JSON.parse(data)
@@ -43,6 +60,19 @@ export function decryptE2E(data: string | Record<string, unknown>, privateKeyBas
   const decrypted = nacl.box.open(ciphertext, fixedNonce, fixedEphemeral, fixedPrivate)
   if (!decrypted) {
     throw new Error('Decryption failed')
+  }
+
+  if (envelope.version === 2) {
+    const expected = new TextEncoder().encode(channelContextValue ?? '')
+    const envelopeContext = envelope.ctx ? decodeBase64(envelope.ctx) : new Uint8Array()
+    if (!bytesEqual(envelopeContext, expected)) {
+      throw new Error('Envelope context mismatch')
+    }
+    const prefixLength = expected.length + 1 // context || 0x00
+    if (decrypted.length < prefixLength || decrypted[expected.length] !== 0) {
+      throw new Error('Invalid envelope context prefix')
+    }
+    return encodeUTF8(decrypted.slice(prefixLength))
   }
 
   return encodeUTF8(decrypted)

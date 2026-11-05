@@ -220,7 +220,7 @@ func TestIPRestrictions(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.RemoteAddr = "192.168.0.1:12345"
 
-		ip, err := service.GetRealIP(req, false)
+		ip, err := service.GetRealIP(req, false, nil)
 		assert.NilError(t, err)
 		assert.Equal(t, ip.String(), "192.168.0.1")
 
@@ -228,18 +228,19 @@ func TestIPRestrictions(t *testing.T) {
 		req.RemoteAddr = "127.0.0.1:12345"
 		req.Header.Set("X-Forwarded-For", "10.0.0.1")
 
-		ip, err = service.GetRealIP(req, true)
+		trusted := service.ParseTrustedProxyCIDRs([]string{"127.0.0.0/8"})
+		ip, err = service.GetRealIP(req, true, trusted)
 		assert.NilError(t, err)
 		assert.Equal(t, ip.String(), "10.0.0.1")
 
-		ip, err = service.GetRealIP(req, false)
+		ip, err = service.GetRealIP(req, false, trusted)
 		assert.NilError(t, err)
 		assert.Equal(t, ip.String(), "127.0.0.1")
 
 		req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.RemoteAddr = "invalid"
 
-		_, err = service.GetRealIP(req, false)
+		_, err = service.GetRealIP(req, false, nil)
 		assert.Assert(t, err != nil)
 	})
 

@@ -23,6 +23,7 @@ type fakeRepository struct {
 	providers []domain.OIDCProvider
 	cursors   map[string]*domain.ClientCursor
 	setupEnd  time.Time
+	authEpoch int64
 
 	internalAuthEnabled *bool
 }
@@ -157,6 +158,20 @@ func (f *fakeRepository) GetUserByUsername(_ context.Context, username string) (
 	}
 	cp := *u
 	return &cp, nil
+}
+
+func (f *fakeRepository) GetUserByExternalIdentity(_ context.Context, providerID, issuer, subject string) (*domain.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.users {
+		for _, id := range u.ExternalIdentities {
+			if id.ProviderID == providerID && id.Issuer == issuer && id.Subject == subject {
+				cp := *u
+				return &cp, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%w: external identity %s/%s/%s", domain.ErrNotFound, providerID, issuer, subject)
 }
 
 func (f *fakeRepository) ListUsers(_ context.Context) ([]*domain.User, error) {
@@ -405,5 +420,18 @@ func (f *fakeRepository) SetSetupModeEndTime(_ context.Context, t time.Time) err
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.setupEnd = t
+	return nil
+}
+
+func (f *fakeRepository) GetAuthEpoch(_ context.Context) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.authEpoch, nil
+}
+
+func (f *fakeRepository) BumpAuthEpoch(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.authEpoch++
 	return nil
 }

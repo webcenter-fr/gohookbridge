@@ -255,3 +255,38 @@ func TestTLSFilesPermissions(t *testing.T) {
 		assert.Equal(t, info.Mode().Perm(), os.FileMode(0o600), "%s perm", name)
 	}
 }
+
+// F14: manual per-node mode must load a usable tls.Config for multi-node
+// without touching any CA private key (the CA key stays offline).
+func TestManualModeLoadsWithoutCAKey(t *testing.T) {
+	dir := t.TempDir()
+	caCertPEM, caKeyPEM, err := createRaftCAWithGoca("ca", "org")
+	assert.NilError(t, err)
+	ca, err := NewMintingCAFromPEM(caCertPEM, caKeyPEM, time.Hour)
+	assert.NilError(t, err)
+	leafCertPEM, leafKeyPEM, err := ca.IssuePeerCertificate("server-0", "org",
+		[]string{"server-0.headless.ns.svc.cluster.local"}, nil, time.Hour)
+	assert.NilError(t, err)
+
+	caPath := filepath.Join(dir, "ca.crt")
+	certPath := filepath.Join(dir, "tls.crt")
+	keyPath := filepath.Join(dir, "tls.key")
+	assert.NilError(t, os.WriteFile(caPath, caCertPEM, 0o600))
+	assert.NilError(t, os.WriteFile(certPath, leafCertPEM, 0o600))
+	assert.NilError(t, os.WriteFile(keyPath, leafKeyPEM, 0o600))
+	// Deliberately no ca.key anywhere in the mount directory.
+
+	tlsCfg, err := LoadOrBuildRaftTLS(&RaftTLSConfig{
+		Enabled:      true,
+		Organization: "org",
+		CACertPath:   caPath,
+		CertPath:     certPath,
+		KeyPath:      keyPath,
+		ClientAuth:   true,
+	}, true, nil, "", nil, nil, "server-0", testTLSLogger())
+	assert.NilError(t, err)
+	assert.Assert(t, tlsCfg != nil)
+	assert.Equal(t, len(tlsCfg.Certificates), 1)
+	_, statErr := os.Stat(filepath.Join(dir, "ca.key"))
+	assert.Assert(t, os.IsNotExist(statErr), "manual mode must not read or write a CA key")
+}

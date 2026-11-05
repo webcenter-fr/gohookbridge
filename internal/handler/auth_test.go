@@ -47,7 +47,7 @@ func TestRequireAuthMiddleware(t *testing.T) {
 	secret := service.DeriveSessionSecret("test-secret-for-middleware-tests-32")
 
 	r := chi.NewRouter()
-	r.Use(RequireAuth(secret, true))
+	r.Use(RequireAuth(nil, secret, true))
 	r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -691,7 +691,7 @@ func TestFullProtectedFlow(t *testing.T) {
 	})
 	r.Post("/logout", LogoutHandler(true))
 	r.Group(func(r chi.Router) {
-		r.Use(RequireAuth(secret, true))
+		r.Use(RequireAuth(nil, secret, true))
 		r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("home"))

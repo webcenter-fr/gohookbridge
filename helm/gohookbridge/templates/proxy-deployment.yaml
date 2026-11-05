@@ -18,6 +18,14 @@ spec:
         app.kubernetes.io/name: {{ include "gohookbridge.name" . }}
         app.kubernetes.io/component: proxy
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
       {{- range . }}
@@ -28,6 +36,13 @@ spec:
       - name: proxy
         image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}"
         imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+          seccompProfile:
+            type: RuntimeDefault
         args:
         - proxy
         - --listen
@@ -42,19 +57,25 @@ spec:
         - name: http
           containerPort: {{ .Values.proxy.listenPort }}
           protocol: TCP
-        {{- if .Values.encryption.createSecret }}
         volumeMounts:
-        - name: encryption-key
-          mountPath: /etc/gohookbridge
+        - name: tmp
+          mountPath: /tmp
+        {{- if .Values.encryption.createSecret }}
+        # The proxy needs only the recipient public key (it encrypts).
+        - name: encryption-public-key
+          mountPath: /etc/gohookbridge/public_key
+          subPath: public_key
           readOnly: true
         {{- end }}
         {{- with .Values.proxy.resources }}
         resources:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-      {{- if .Values.encryption.createSecret }}
       volumes:
-      - name: encryption-key
+      - name: tmp
+        emptyDir: {}
+      {{- if .Values.encryption.createSecret }}
+      - name: encryption-public-key
         secret:
           secretName: {{ include "gohookbridge.encryptionSecretName" . }}
       {{- end }}

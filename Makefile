@@ -50,6 +50,10 @@ test: web-build web-test
 test-integration:
 	@go test -tags integration ./tests/integration/...
 
+.PHONY: stress
+stress: ## deterministic retention/load proof (F11)
+	@go test -tags integration -run 'TestRetainedBytesUnderBudget' -count=1 ./tests/integration/...
+
 
 .PHONY: html-coverage
 html-coverage: ## generate html coverage

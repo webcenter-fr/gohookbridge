@@ -52,13 +52,24 @@ func ValidateStruct(s interface{}) error {
 	return validate.Struct(s)
 }
 
+// ExternalIdentity binds a local user to an external OIDC identity. The issuer
+// is normalized (no trailing slash) and the subject is the OIDC "sub" claim;
+// authorization never falls back to email or any other mutable claim.
+type ExternalIdentity struct {
+	ProviderID string `json:"provider_id"`
+	Issuer     string `json:"issuer"`
+	Subject    string `json:"subject"`
+}
+
 type User struct {
 	ID           string   `json:"id"                      validate:"required,min=1,max=128"`
 	Username     string   `json:"username"                validate:"required,min=1,max=128"`
 	PasswordHash string   `json:"password_hash,omitempty"`
-	OIDCSubjects []string `json:"oidc_subjects,omitempty"`
-	Roles        []string `json:"roles"`
-	Channels     []string `json:"channels"`
+	OIDCSubjects []string `json:"oidc_subjects,omitempty"` // legacy; no longer used for authorization
+	// ExternalIdentities is the authorization binding for OIDC logins.
+	ExternalIdentities []ExternalIdentity `json:"external_identities,omitempty"`
+	Roles              []string           `json:"roles"`
+	Channels           []string           `json:"channels"`
 }
 
 type Role struct {
@@ -95,6 +106,12 @@ type OIDCProvider struct {
 	IssuerURL    string   `json:"issuer_url"`
 	Scopes       []string `json:"scopes"`
 	GroupsClaim  string   `json:"groups_claim"`
+	// AllowedEndpoints restricts the discovery/token/userinfo endpoints the
+	// server will call (exact URL or host+path prefix). Empty = discovered
+	// endpoints only, validated against the issuer origin.
+	AllowedEndpoints []string `json:"allowed_endpoints,omitempty"`
+	// AllowInsecureIssuer permits a plain-http issuer other than loopback.
+	AllowInsecureIssuer bool `json:"allow_insecure_issuer,omitempty"`
 }
 
 type RoleMapping struct {

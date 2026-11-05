@@ -40,7 +40,8 @@ func TestHookBridgeGood(t *testing.T) {
 	}
 	m, err := p.parse(time.Now().UTC(), []byte(simpleJSON))
 	assert.NilError(t, err)
-	assert.Equal(t, m.headers["X-Foo"], "bar")
+	_, fooPresent := m.headers["X-Foo"]
+	assert.Assert(t, !fooPresent, "custom header X-Foo must be dropped by the forward allowlist (F10)")
 	assert.Equal(t, m.headers["User-Agent"], "gohookbridge")
 	assert.Assert(t, strings.Contains(string(m.body), "hello"))
 	assert.Equal(t, m.eventType, "push")
@@ -203,6 +204,10 @@ func TestSaveData(t *testing.T) {
 		assert.NilError(t, err)
 		assert.DeepEqual(t, jsonData, pm.body)
 
+		jsonStat, err := os.Stat(jsonFilePath)
+		assert.NilError(t, err)
+		assert.Equal(t, jsonStat.Mode().Perm(), os.FileMode(0o600))
+
 		shData, err := os.ReadFile(shFilePath)
 		assert.NilError(t, err)
 
@@ -230,12 +235,12 @@ func TestSaveData(t *testing.T) {
 			expectedHeader := fmt.Sprintf("-H '%s: %s'", k, v)
 			assert.Assert(t, strings.Contains(actualScript, expectedHeader), "Script missing expected header: %s. Got: %s", expectedHeader, actualScript)
 		}
-		assert.Assert(t, strings.Contains(actualScript, fmt.Sprintf("targetURL=\"%s\"", opts.targetURL)), "Script missing targetURL. Got: %s", actualScript)
+		assert.Assert(t, strings.Contains(actualScript, fmt.Sprintf("targetURL='%s'", opts.targetURL)), "Script missing targetURL. Got: %s", actualScript)
 		assert.Assert(t, strings.Contains(actualScript, fmt.Sprintf("-d @./%s.json", expectedFileBase)), "Script missing filebase. Got: %s", actualScript)
 
 		stat, err := os.Stat(shFilePath)
 		assert.NilError(t, err)
-		assert.Equal(t, stat.Mode().Perm(), os.FileMode(0o755))
+		assert.Equal(t, stat.Mode().Perm(), os.FileMode(0o700))
 	})
 
 	t.Run("without eventType", func(t *testing.T) {
@@ -283,12 +288,12 @@ func TestSaveData(t *testing.T) {
 			expectedHeader := fmt.Sprintf("-H '%s: %s'", k, v)
 			assert.Assert(t, strings.Contains(actualScript, expectedHeader), "Script missing expected header: %s. Got: %s", expectedHeader, actualScript)
 		}
-		assert.Assert(t, strings.Contains(actualScript, fmt.Sprintf("targetURL=\"%s\"", opts.targetURL)), "Script missing targetURL. Got: %s", actualScript)
+		assert.Assert(t, strings.Contains(actualScript, fmt.Sprintf("targetURL='%s'", opts.targetURL)), "Script missing targetURL. Got: %s", actualScript)
 		assert.Assert(t, strings.Contains(actualScript, fmt.Sprintf("-d @./%s.json", expectedFileBase)), "Script missing filebase. Got: %s", actualScript)
 
 		stat, err := os.Stat(shFilePath)
 		assert.NilError(t, err)
-		assert.Equal(t, stat.Mode().Perm(), os.FileMode(0o755))
+		assert.Equal(t, stat.Mode().Perm(), os.FileMode(0o700))
 	})
 
 	t.Run("directory creation", func(t *testing.T) {
@@ -317,7 +322,7 @@ func TestSaveData(t *testing.T) {
 
 		stat, err := os.Stat(shFilePath)
 		assert.NilError(t, err)
-		assert.Equal(t, stat.Mode().Perm(), os.FileMode(0o755))
+		assert.Equal(t, stat.Mode().Perm(), os.FileMode(0o700))
 	})
 
 	t.Run("error case - invalid saveDir", func(t *testing.T) {
@@ -1615,4 +1620,119 @@ func TestResumeFlagAppendsClientIDToURL(t *testing.T) {
 	assert.Assert(t, privateKey == nil)
 	assert.Equal(t, channel, "auto-channel")
 	assert.Assert(t, strings.Contains(sseURL, "client_id="))
+}
+
+// F26: exec output is bounded and commands are bounded by a timeout.
+func TestExecOutputAndTimeoutBounds(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	pm := payloadMsg{
+		body:        []byte(`{}`),
+		timestamp:   "2023-10-27T10.00.01.000",
+		contentType: "application/json",
+		eventType:   "push",
+	}
+
+	t.Run("large output is truncated without failing", func(t *testing.T) {
+		opts := &replayDataOpts{
+			execCommand: "head -c 2097152 /dev/zero | tr '\\0' 'a'",
+			decorate:    false,
+		}
+		err := runExecCommand(context.Background(), opts, logger, pm)
+		assert.NilError(t, err)
+	})
+
+	t.Run("timeout bounds long commands", func(t *testing.T) {
+		opts := &replayDataOpts{
+			execCommand: "sleep 5",
+			execTimeout: 100 * time.Millisecond,
+			decorate:    false,
+		}
+		start := time.Now()
+		err := runExecCommand(context.Background(), opts, logger, pm)
+		assert.Assert(t, err != nil)
+		assert.Assert(t, time.Since(start) < 3*time.Second, "timeout must bound the command")
+	})
+}
+
+// TestForwardHeaderAllowlist proves F10 on the client side: only allowlisted
+// provider metadata headers are reconstructed from the relay envelope and
+// forwarded to the internal target. Credentials, proxy/identity headers and
+// arbitrary custom headers are dropped, so a public producer can never make the
+// internal target inherit a forged identity/IP or a leaked credential.
+func TestForwardHeaderAllowlist(t *testing.T) {
+	p := hookBridge{
+		replayDataOpts: &replayDataOpts{},
+		logger:         slog.New(slog.DiscardHandler),
+	}
+
+	t.Run("parse drops credentials and proxy headers", func(t *testing.T) {
+		payload := `{
+			"content-type": "application/json",
+			"user-agent": "gohookbridge",
+			"x-github-event": "push",
+			"x-github-delivery": "d-123",
+			"x-hub-signature-256": "sha256=abc",
+			"authorization": "Bearer secret-token",
+			"cookie": "session=abc",
+			"x-gitlab-token": "gitlab-secret",
+			"x-api-key": "api-key-secret",
+			"x-forwarded-for": "1.2.3.4",
+			"x-real-ip": "1.2.3.4",
+			"x-foo": "bar",
+			"body": {"hello": "world"}
+		}`
+		pm, err := p.parse(time.Now().UTC(), []byte(payload))
+		assert.NilError(t, err)
+
+		// Allowlisted provider metadata is reconstructed.
+		assert.Equal(t, pm.headers["Content-Type"], "application/json")
+		assert.Equal(t, pm.headers["User-Agent"], "gohookbridge")
+		assert.Equal(t, pm.headers["X-Github-Event"], "push")
+		assert.Equal(t, pm.headers["X-Github-Delivery"], "d-123")
+		assert.Equal(t, pm.headers["X-Hub-Signature-256"], "sha256=abc")
+		assert.Equal(t, pm.eventType, "push")
+
+		// Credentials, proxy/identity and custom headers are dropped.
+		for _, dropped := range []string{
+			"Authorization", "Cookie", "X-Gitlab-Token", "X-Api-Key",
+			"X-Forwarded-For", "X-Real-Ip", "X-Foo",
+		} {
+			_, present := pm.headers[dropped]
+			assert.Assert(t, !present, "header %q must not be forwarded", dropped)
+		}
+	})
+
+	t.Run("internal target cannot inherit forged identity or credentials", func(t *testing.T) {
+		payload := `{
+			"content-type": "application/json",
+			"x-github-event": "push",
+			"authorization": "Bearer secret-token",
+			"cookie": "session=abc",
+			"x-gitlab-token": "gitlab-secret",
+			"x-forwarded-for": "1.2.3.4",
+			"body": {"hello": "world"}
+		}`
+		pm, err := p.parse(time.Now().UTC(), []byte(payload))
+		assert.NilError(t, err)
+
+		var gotAuth, gotCookie, gotGitlabToken, gotXFF, gotEvent string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			gotCookie = r.Header.Get("Cookie")
+			gotGitlabToken = r.Header.Get("X-Gitlab-Token")
+			gotXFF = r.Header.Get("X-Forwarded-For")
+			gotEvent = r.Header.Get("X-Github-Event")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		opts := replayDataOpts{targetURL: server.URL, targetCnxTimeout: 5}
+		assert.NilError(t, replayData(&opts, slog.New(slog.DiscardHandler), pm))
+
+		assert.Equal(t, gotAuth, "")
+		assert.Equal(t, gotCookie, "")
+		assert.Equal(t, gotGitlabToken, "")
+		assert.Equal(t, gotXFF, "")
+		assert.Equal(t, gotEvent, "push")
+	})
 }

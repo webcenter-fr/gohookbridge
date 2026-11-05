@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { generateKeyPair } from '~/utils/crypto'
-import { decodeBase64 } from 'tweetnacl-util'
+import nacl from 'tweetnacl'
+import { decodeBase64, encodeBase64 } from 'tweetnacl-util'
+import { generateKeyPair, decryptE2E, channelContext } from '~/utils/crypto'
 
 describe('generateKeyPair', () => {
   it('returns a valid keypair with all expected fields', () => {
@@ -54,6 +55,36 @@ describe('generateKeyPair', () => {
     expect(kp1.publicKey).not.toBe(kp2.publicKey)
     expect(kp1.privateKey).not.toBe(kp2.privateKey)
     expect(kp1.keyFile.public_key).not.toBe(kp2.keyFile.public_key)
+  })
+
+  it('v2Context decrypts a context-bound envelope and rejects a mismatched context', () => {
+    const recipient = generateKeyPair()
+    const recipientPub = decodeBase64(recipient.publicKeyStd)
+    const ephemeral = nacl.box.keyPair()
+
+    const channel = 'chan-a'
+    const ctx = channelContext(channel)
+    const ctxBytes = new TextEncoder().encode(ctx)
+    const plaintext = new TextEncoder().encode('{"hello":"world"}')
+    const payload = new Uint8Array(ctxBytes.length + 1 + plaintext.length)
+    payload.set(ctxBytes, 0)
+    payload[ctxBytes.length] = 0
+    payload.set(plaintext, ctxBytes.length + 1)
+
+    const nonce = nacl.randomBytes(24)
+    const ciphertext = nacl.box(payload, nonce, recipientPub, ephemeral.secretKey)
+
+    const envelope = {
+      encrypted: true,
+      version: 2,
+      epk: encodeBase64(ephemeral.publicKey),
+      nonce: encodeBase64(nonce),
+      ciphertext: encodeBase64(ciphertext),
+      ctx: encodeBase64(ctxBytes),
+    }
+
+    expect(decryptE2E(envelope, recipient.privateKey, ctx)).toBe('{"hello":"world"}')
+    expect(() => decryptE2E(envelope, recipient.privateKey, channelContext('chan-b'))).toThrow()
   })
 
   it('RawURL publicKey can be converted back to std base64', () => {

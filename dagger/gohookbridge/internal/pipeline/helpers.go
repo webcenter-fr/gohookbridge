@@ -180,6 +180,52 @@ func BuildReport(sections ...ReportSection) string {
 	return b.String()
 }
 
+// ForbiddenSourcePatterns are repository paths that must never enter a build
+// context, Helm package, or published artifact (F04).
+var ForbiddenSourcePatterns = []string{
+	".git/",
+	".env",
+	"SECURITY_AUDIT_REPORT.md",
+	"AGENTS.local.md",
+	"values-home.yaml",
+	"node_modules/",
+}
+
+// FilterSourcePaths returns only the paths that are safe to include in a build
+// context/package, dropping any forbidden entry (secrets, local-only values,
+// docs). It is the pure predicate behind the Dagger sanitizedSource.
+func FilterSourcePaths(paths []string) []string {
+	kept := make([]string, 0, len(paths))
+	for _, p := range paths {
+		forbidden := false
+		for _, f := range ForbiddenSourcePatterns {
+			if p == f || strings.HasSuffix(p, "/"+strings.TrimSuffix(f, "/")) || strings.Contains(p, f) {
+				forbidden = true
+				break
+			}
+		}
+		if !forbidden {
+			kept = append(kept, p)
+		}
+	}
+	return kept
+}
+
+// VerifyIngressScript is a POSIX sh ingress probe run against the ephemeral
+// k3s cluster. Keep in sync with scripts/verify-ingress.sh (F06).
+const VerifyIngressScript = `#!/bin/sh
+set -eu
+PUBLIC_URL="${PUBLIC_URL:?PUBLIC_URL is required}"
+INTERNAL_HOST="${INTERNAL_HOST:?INTERNAL_HOST is required}"
+code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_URL/health") || exit 1
+[ "$code" = "200" ] || { echo "public /health expected 200, got $code" >&2; exit 1; }
+code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_URL/api/auth/methods") || exit 1
+case "$code" in 404|000) ;; *) echo "public /api/auth/methods exposed ($code)" >&2; exit 1;; esac
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $INTERNAL_HOST" "$PUBLIC_URL/api/me") || exit 1
+[ "$code" != "200" ] || { echo "internal host reached /api/me on the public URL" >&2; exit 1; }
+echo "verify-ingress: OK"
+`
+
 // SmokeScript is a POSIX sh script run inside an alpine container bound to the
 // port-forward service. It checks /version, /health, / (UI), webhook POST
 // (202) and SSE relay (connected/ready + bodyB round-trip) against

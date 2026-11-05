@@ -21,13 +21,22 @@ type leaderInfo interface {
 	LeaderAddress() string
 }
 
-// leaderForwardMiddleware forwards mutating API requests to the Raft leader.
-// Every write goes through Raft, so only the leader can apply it; in an HA
-// deployment the Service load-balances requests over all replicas, and a
-// follower would otherwise answer "not the leader". The leader address is the
-// Raft transport address, so only its host is kept and the HTTP port is
-// substituted to reach the leader's API.
-func LeaderForwardMiddleware(rs leaderInfo, httpPort int) func(http.Handler) http.Handler {
+// StripForwardMarker removes any client-supplied leader-forward marker from an
+// inbound request so only the trusted forwarding path can set it.
+func StripForwardMarker(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Del(leaderForwardedHeader)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// LeaderForwardMiddleware forwards mutating API requests to the Raft leader
+// over an authenticated TLS transport. The leader address is the Raft
+// transport address, so only its host is kept and the API port is substituted.
+func LeaderForwardMiddleware(rs leaderInfo, httpPort int, transport *http.Transport, scheme string) func(http.Handler) http.Handler {
+	if scheme == "" {
+		scheme = "https"
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if isReadOnlyMethod(r.Method) || rs.IsLeader() || r.Header.Get(leaderForwardedHeader) != "" {
@@ -43,10 +52,13 @@ func LeaderForwardMiddleware(rs leaderInfo, httpPort int) func(http.Handler) htt
 			}
 
 			target := &url.URL{
-				Scheme: "http",
+				Scheme: scheme,
 				Host:   net.JoinHostPort(host, strconv.Itoa(httpPort)),
 			}
 			proxy := httputil.NewSingleHostReverseProxy(target)
+			if transport != nil {
+				proxy.Transport = transport
+			}
 			proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, proxyErr error) {
 				message := fmt.Sprintf(`{"error":%q}`, "forward to Raft leader failed: "+proxyErr.Error())
 				http.Error(w, message, http.StatusBadGateway)

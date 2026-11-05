@@ -30,6 +30,12 @@ func spaHandlerFrom(fsys fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(fsys))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+
 		p := strings.TrimPrefix(r.URL.Path, "/")
 		if p != "" {
 			if f, err := fsys.Open(p); err == nil {

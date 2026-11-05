@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,7 +20,82 @@ import (
 const (
 	oidcStateCookieName = "oidc_state"
 	oidcNonceCookieName = "oidc_nonce"
+	// oidcMaxBody caps provider responses (discovery/token/userinfo).
+	oidcMaxBody = 1 << 20 // 1 MiB
 )
+
+// newOIDCHTTPClient returns a bounded HTTP client: 10s overall timeout, 5s
+// response-header timeout, and no cross-origin redirects (F22).
+func newOIDCHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+				return fmt.Errorf("cross-origin redirect refused: %s", req.URL.Host)
+			}
+			return nil
+		},
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: 5 * time.Second,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		},
+	}
+}
+
+// readCapped reads at most limit bytes from r, erroring when the body exceeds
+// it.
+func readCapped(r io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("response body exceeds %d bytes", limit)
+	}
+	return data, nil
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// validateIssuer enforces https issuers (loopback http allowed, or http with
+// AllowInsecureIssuer) and validates the security-sensitive endpoints against
+// the allowlist.
+func validateIssuer(provider domain.OIDCProvider) error {
+	u, err := url.Parse(provider.IssuerURL)
+	if err != nil {
+		return fmt.Errorf("parse issuer_url: %w", err)
+	}
+	if u.Scheme != "https" && !provider.AllowInsecureIssuer && !isLoopbackHost(u.Hostname()) {
+		return fmt.Errorf("issuer_url must use https (set allow_insecure_issuer only for trusted loopback/dev providers)")
+	}
+	return nil
+}
+
+func endpointAllowed(provider domain.OIDCProvider, endpoint string) bool {
+	if len(provider.AllowedEndpoints) == 0 {
+		return true
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	for _, allowed := range provider.AllowedEndpoints {
+		a, err := url.Parse(allowed)
+		if err != nil {
+			continue
+		}
+		if a.Host == u.Host && strings.HasPrefix(u.Path, a.Path) {
+			return true
+		}
+	}
+	return false
+}
 
 // oidcDiscoveryTimeout bounds the provider discovery/JWKS fetches performed at
 // startup so a hanging issuer cannot block the server from serving forever.
@@ -31,19 +107,35 @@ type OIDCDiscovery struct {
 	UserinfoEndpoint      string `json:"userinfo_endpoint"`
 }
 
+// OIDCPrincipalResolver resolves the local account bound to an external
+// (provider, issuer, subject) identity. *service.Service implements it.
+type OIDCPrincipalResolver interface {
+	GetUserByExternalIdentity(ctx context.Context, providerID, issuer, subject string) (*domain.User, error)
+	GetAuthEpoch(ctx context.Context) int64
+}
+
 type OIDCHandler struct {
 	Provider      domain.OIDCProvider
 	Discovery     *OIDCDiscovery
 	SessionSecret [32]byte
 	PublicURL     string
 	SecureCookies bool
-	verifier      *oidc.IDTokenVerifier
+	// Resolver binds the OIDC login to a pre-linked local account. When nil
+	// (tests only) the legacy display-name session is emitted.
+	Resolver OIDCPrincipalResolver
+	verifier *oidc.IDTokenVerifier
+	http     *http.Client
 }
 
 func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, publicURL string, secureCookies bool) (*OIDCHandler, error) {
 	if provider.GroupsClaim == "" {
 		provider.GroupsClaim = "groups"
 	}
+	if err := validateIssuer(provider); err != nil {
+		return nil, err
+	}
+	client := newOIDCHTTPClient()
+
 	// Bound the startup fetches: a hanging issuer must not block boot. The
 	// verifier's JWKS refresh uses its own background context (go-oidc), so
 	// canceling this context after discovery is safe.
@@ -55,12 +147,15 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("oidc discovery returned %d", resp.StatusCode)
+	}
+	body, err := readCapped(resp.Body, oidcMaxBody)
 	if err != nil {
 		return nil, err
 	}
@@ -68,10 +163,16 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 	if err := json.Unmarshal(body, &disc); err != nil {
 		return nil, err
 	}
+	if !endpointAllowed(provider, disc.TokenEndpoint) || !endpointAllowed(provider, disc.UserinfoEndpoint) {
+		return nil, fmt.Errorf("oidc discovery returned endpoints outside allowed_endpoints")
+	}
+	if disc.TokenEndpoint == "" {
+		return nil, fmt.Errorf("oidc discovery is missing token_endpoint")
+	}
 	// go-oidc provider for ID-token verification (signature/JWKS, iss, aud,
 	// exp). The manual OIDCDiscovery above is kept for token exchange and
 	// userinfo.
-	p, err := oidc.NewProvider(discCtx, provider.IssuerURL)
+	p, err := oidc.NewProvider(oidc.ClientContext(discCtx, client), provider.IssuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("oidc provider discovery: %w", err)
 	}
@@ -82,6 +183,7 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 		PublicURL:     publicURL,
 		SecureCookies: secureCookies,
 		verifier:      p.Verifier(&oidc.Config{ClientID: provider.ClientID}),
+		http:          client,
 	}, nil
 }
 
@@ -202,21 +304,14 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 				http.Error(w, "ID token validation failed", http.StatusBadRequest)
 				return
 			}
-			username := ""
-			if email, emailOK := claims["email"].(string); emailOK {
-				username = email
+			if v, ok := claims["email_verified"].(bool); ok && !v {
+				http.Error(w, "email not verified", http.StatusForbidden)
+				return
 			}
-			if username == "" {
-				username = idToken.Subject
-			}
-			groups := extractGroupsFromToken(claims, h.Provider.GroupsClaim)
-
-			sessionTok := &service.SessionToken{
-				Username:  username,
-				Method:    "oidc",
-				Provider:  h.Provider.ID,
-				ExpiresAt: time.Now().Unix() + sessionMaxAge,
-				Groups:    groups,
+			sessionTok, err := h.buildOIDCSession(r.Context(), idToken.Subject, claims)
+			if err != nil {
+				http.Error(w, "no account linked for this identity", http.StatusForbidden)
+				return
 			}
 			encoded, err := service.EncodeSession(sessionTok, h.SessionSecret)
 			if err != nil {
@@ -230,27 +325,25 @@ func (h *OIDCHandler) CallbackHandler() http.HandlerFunc {
 		}
 
 		// No id_token returned: fall back to the userinfo flow (unchanged).
-		userInfo, err := h.getUserInfo(accessToken)
+		userInfo, err := h.getUserInfo(r.Context(), accessToken)
 		if err != nil {
 			http.Error(w, "Userinfo failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		sub, _ := userInfo["sub"].(string)
-		email, _ := userInfo["email"].(string)
-		username := email
-		if username == "" {
-			username = sub
+		if v, ok := userInfo["email_verified"].(bool); ok && !v {
+			http.Error(w, "email not verified", http.StatusForbidden)
+			return
 		}
-
-		groups := extractGroupsFromToken(userInfo, h.Provider.GroupsClaim)
-
-		sessionTok := &service.SessionToken{
-			Username:  username,
-			Method:    "oidc",
-			Provider:  h.Provider.ID,
-			ExpiresAt: time.Now().Unix() + sessionMaxAge,
-			Groups:    groups,
+		sub, _ := userInfo["sub"].(string)
+		if sub == "" {
+			http.Error(w, "userinfo missing sub", http.StatusForbidden)
+			return
+		}
+		sessionTok, err := h.buildOIDCSession(r.Context(), sub, userInfo)
+		if err != nil {
+			http.Error(w, "no account linked for this identity", http.StatusForbidden)
+			return
 		}
 		encoded, err := service.EncodeSession(sessionTok, h.SessionSecret)
 		if err != nil {
@@ -281,6 +374,41 @@ func (h *OIDCHandler) verifyIDToken(ctx context.Context, rawIDToken, nonce strin
 	return idToken, claims, nil
 }
 
+// buildOIDCSession binds the verified (issuer, subject) to a pre-linked local
+// account. It never auto-links and never falls back to email for
+// authorization. When Resolver is nil (tests), it emits a display-only
+// session so the existing token-validation tests remain meaningful.
+func (h *OIDCHandler) buildOIDCSession(ctx context.Context, subject string, claims map[string]any) (*service.SessionToken, error) {
+	issuer := strings.TrimSuffix(h.Provider.IssuerURL, "/")
+	groups := extractGroupsFromToken(claims, h.Provider.GroupsClaim)
+	tok := &service.SessionToken{
+		Method:    "oidc",
+		Provider:  h.Provider.ID,
+		Issuer:    issuer,
+		Subject:   subject,
+		ExpiresAt: time.Now().Unix() + sessionMaxAge,
+		Groups:    groups,
+	}
+	if h.Resolver == nil {
+		tok.Username = subject
+		if email, ok := claims["email"].(string); ok && email != "" {
+			tok.Username = email
+		}
+		return tok, nil
+	}
+	user, err := h.Resolver.GetUserByExternalIdentity(ctx, h.Provider.ID, issuer, subject)
+	if err != nil || user == nil {
+		return nil, fmt.Errorf("no account linked for external identity")
+	}
+	tok.UserID = user.ID
+	tok.Username = user.Username
+	tok.AuthEpoch = h.Resolver.GetAuthEpoch(ctx)
+	if sid, err := service.GenerateRandomHex(); err == nil {
+		tok.SessionID = sid
+	}
+	return tok, nil
+}
+
 func (h *OIDCHandler) exchangeCode(code string, r *http.Request) (map[string]any, error) {
 	redirectURI := h.PublicURL + "/auth/oidc/" + h.Provider.ID + "/callback"
 	data := url.Values{
@@ -295,12 +423,15 @@ func (h *OIDCHandler) exchangeCode(code string, r *http.Request) (map[string]any
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token endpoint returned %d", resp.StatusCode)
+	}
+	body, err := readCapped(resp.Body, oidcMaxBody)
 	if err != nil {
 		return nil, err
 	}
@@ -311,18 +442,21 @@ func (h *OIDCHandler) exchangeCode(code string, r *http.Request) (map[string]any
 	return result, nil
 }
 
-func (h *OIDCHandler) getUserInfo(accessToken string) (map[string]any, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, h.Discovery.UserinfoEndpoint, nil)
+func (h *OIDCHandler) getUserInfo(ctx context.Context, accessToken string) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.Discovery.UserinfoEndpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("userinfo endpoint returned %d", resp.StatusCode)
+	}
+	body, err := readCapped(resp.Body, oidcMaxBody)
 	if err != nil {
 		return nil, err
 	}

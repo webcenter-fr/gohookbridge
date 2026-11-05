@@ -1,13 +1,27 @@
 {{- if and .Values.server.enabled .Values.server.ingress.enabled }}
+{{- $allowlist := .Values.server.ingress.allowlistSourceRange | default list }}
+{{- $backendHTTPS := and .Values.server.raft.tls.enabled (gt (int .Values.server.replicas) 1) }}
+{{- if and .Values.server.ingress.private (not .Values.server.ingress.internalLoadBalancer) (eq (len $allowlist) 0) }}
+{{- fail "server.ingress.private=true requires server.ingress.internalLoadBalancer=true or a non-empty server.ingress.allowlistSourceRange (fail-closed internal ingress)" }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ include "gohookbridge.fullname" . }}-server
   labels:
     {{- include "gohookbridge.labels" . | nindent 4 }}
-  {{- with .Values.server.ingress.annotations }}
+  {{- if or .Values.server.ingress.annotations $allowlist $backendHTTPS }}
   annotations:
+    {{- with .Values.server.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if $allowlist }}
+    nginx.ingress.kubernetes.io/whitelist-source-range: {{ join "," $allowlist | quote }}
+    {{- end }}
+    {{- if $backendHTTPS }}
+    # The internal listener serves HTTPS in multi-node TLS mode (F13).
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    {{- end }}
   {{- end }}
 spec:
   {{- if .Values.server.ingress.className }}

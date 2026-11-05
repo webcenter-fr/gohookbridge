@@ -35,13 +35,32 @@ server:
     # keyed off the StatefulSet's spec.replicas) and does not need this.
     recoveryMode: false
     tls:
-      # mTLS for the Raft transport (multi-node default).
+      # mTLS for the Raft transport, NATS cluster routes, and leader forwarding
+      # (multi-node default). Production multi-node uses pre-provisioned
+      # per-node certificates created by scripts/generate-raft-certs.sh — the
+      # shared auto-CA was removed.
       enabled: true
-      # K8s Secret used to share the internal CA. Empty defaults to
-      # "<fullname>-raft-ca".
+      # Name of the pre-created CA Secret (ca.crt only; public). Empty defaults
+      # to "<fullname>-server-tls-ca".
       caSecret: ""
+      # Name of the pre-created node-set Secret containing ca.crt plus
+      # "<ordinal>.crt"/"<ordinal>.key". Empty defaults to
+      # "<fullname>-server-tls-nodes". Each pod projects only its own files via
+      # subPathExpr. See .opencode/plans §3.3.5 (open decision A).
+      nodesSecret: ""
+      # Informational: certificate validity/renewal windows used by the
+      # generator and rotation script.
+      validityDays: 365
+      renewalDays: 30
       # Require and verify peer client certificates.
       clientAuth: true
+  nats:
+    # Cluster route authentication (multi-node). The password is read from an
+    # existing Secret; it is never set inline.
+    clusterAuth:
+      username: ""
+      existingSecret: ""
+      passwordKey: "password"
   resources:
     requests:
       cpu: 100m
@@ -81,6 +100,11 @@ server:
     annotations: {}                 # e.g. cert-manager.io/cluster-issuer: letsencrypt-prod
     hosts: []
     tls: []
+    # Fail-closed internal ingress: when private=true the render REQUIRES
+    # either an internal load balancer or a non-empty source allowlist (F06).
+    private: true
+    internalLoadBalancer: false
+    allowlistSourceRange: []
   publicIngress:
     # Internet-facing Ingress for the public webhook-only listener (POST /{channel}
     # + health only). Requires publicPort > 0 — the render FAILS otherwise. The
@@ -146,6 +170,25 @@ encryption:
   publicKey: ""
   privateKey: ""
   existingSecret: ""
+  # kek.existingSecret names a pre-created Secret holding the at-rest key file
+  # (key.json) mounted at /etc/gohookbridge/kek and passed via
+  # --at-rest-key-file. Empty disables at-rest encryption configuration.
+  kek:
+    existingSecret: ""
+    key: key.json
+
+# NetworkPolicy: default-deny ingress for the release's pods with explicit
+# allow rules. Requires a CNI that enforces NetworkPolicy. Disabled by default
+# so the render stays compatible with clusters that do not support it (F05).
+networkPolicy:
+  enabled: false
+  # DNS egress is always allowed when enabled.
+  dnsPort: 53
+  # CIDRs the server may reach for OIDC discovery/token and webhook targets.
+  serverEgressCIDRs: []
+  # Namespace/pod selectors for the public/internal edge controllers.
+  edgeNamespaceSelector: {}
+  edgePodSelector: {}
 
 serviceAccount:
   # Required for the raft CA Secret RBAC (and the StatefulSet read used by

@@ -26,6 +26,13 @@ func GenerateAESKey() (string, error) {
 }
 
 func AESEncrypt(plaintext []byte, keyBase64 string) ([]byte, error) {
+	return AESEncryptWithContext(plaintext, keyBase64, nil)
+}
+
+// AESEncryptWithContext encrypts plaintext with AES-256-GCM binding aad as
+// additional authenticated data, so ciphertexts are not interchangeable across
+// channels.
+func AESEncryptWithContext(plaintext []byte, keyBase64 string, aad []byte) ([]byte, error) {
 	key, err := base64.StdEncoding.DecodeString(keyBase64)
 	if err != nil {
 		return nil, fmt.Errorf("decode AES key: %w", err)
@@ -49,7 +56,7 @@ func AESEncrypt(plaintext []byte, keyBase64 string) ([]byte, error) {
 		return nil, fmt.Errorf("create GCM: %w", err)
 	}
 
-	ciphertext := aesgcm.Seal(nil, nonce, plaintext, nil)
+	ciphertext := aesgcm.Seal(nil, nonce, plaintext, aad)
 
 	payload := aesEncryptedPayload{
 		Encrypted:  true,
@@ -63,6 +70,12 @@ func AESEncrypt(plaintext []byte, keyBase64 string) ([]byte, error) {
 }
 
 func AESDecrypt(data []byte, keyBase64 string) ([]byte, error) {
+	return AESDecryptWithContext(data, keyBase64, nil)
+}
+
+// AESDecryptWithContext decrypts an AES-256-GCM payload produced with the same
+// aad.
+func AESDecryptWithContext(data []byte, keyBase64 string, aad []byte) ([]byte, error) {
 	key, err := base64.StdEncoding.DecodeString(keyBase64)
 	if err != nil {
 		return nil, fmt.Errorf("decode AES key: %w", err)
@@ -109,7 +122,7 @@ func AESDecrypt(data []byte, keyBase64 string) ([]byte, error) {
 		return nil, fmt.Errorf("create GCM: %w", err)
 	}
 
-	plaintext, err := aesgcm.Open(nil, nonce, ciphertext, nil)
+	plaintext, err := aesgcm.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt payload: %w", err)
 	}

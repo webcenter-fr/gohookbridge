@@ -72,7 +72,10 @@ func produce(c *cli.Context) error {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read server response: %w", err)
+	}
 	fmt.Fprintf(os.Stdout, "%s\n", body)
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("server returned %d", resp.StatusCode)

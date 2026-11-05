@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/sha256"
 	"strings"
 	"testing"
@@ -119,4 +120,16 @@ func TestGenerateRandomHex(t *testing.T) {
 	assert.Assert(t, s1 != "")
 	assert.Assert(t, s1 != s2)
 	assert.Equal(t, len(s1), 32)
+}
+
+// F21: bumping the auth epoch invalidates previously-minted sessions.
+func TestSessionEpochRevocation(t *testing.T) {
+	svc := NewService(newFakeRepository(), nil)
+	ctx := context.Background()
+
+	tok := &SessionToken{UserID: "u1", Username: "u1", Method: "internal", AuthEpoch: svc.GetAuthEpoch(ctx)}
+	assert.Assert(t, svc.SessionEpochValid(ctx, tok))
+
+	assert.NilError(t, svc.BumpAuthEpoch(ctx))
+	assert.Assert(t, !svc.SessionEpochValid(ctx, tok), "stale epoch must be rejected")
 }

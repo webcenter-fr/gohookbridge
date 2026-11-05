@@ -1,0 +1,15 @@
+title = "gohookbridge gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures, smoke-test dummy values, and archived plan docs"
+paths = [
+  '''.*_test\.go$''',
+  '''^dagger/gohookbridge/internal/pipeline/helpers\.go$''',
+  '''^\.opencode/''',
+  '''^AGENTS\.local\.md$''',
+  '''^helm/gohookbridge/values-home\.yaml$''',
+  '''^tmp/''',
+]
