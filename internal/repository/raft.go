@@ -2,278 +2,275 @@ package repository
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
-	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/hashicorp/go-hclog"
-	"github.com/hashicorp/raft"
+	goraft "github.com/disaster37/go-raft"
+	"github.com/disaster37/go-raft/config"
+	"github.com/disaster37/go-raft/discovery"
+	goraftfsm "github.com/disaster37/go-raft/fsm"
+	raftk8s "github.com/disaster37/go-raft/k8s"
+	"github.com/disaster37/go-raft/pki"
+	"github.com/disaster37/go-raft/storage"
+	"github.com/disaster37/go-raft/transport"
+	hraft "github.com/hashicorp/raft"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"github.com/webcenter-fr/gohookbridge/pkg/uuid"
-	"go.etcd.io/bbolt"
+	bolt "go.etcd.io/bbolt"
+	"k8s.io/client-go/kubernetes"
 )
 
 // RaftStore is the Raft+BoltDB implementation of domain.Repository.
 var _ domain.Repository = (*RaftStore)(nil)
 
+// AtRestAAD is the additional authenticated data bound to every at-rest
+// ciphertext (F27).
+const AtRestAAD = "gohookbridge.at-rest.v1"
+
+// RaftPeer and PeerResolver are re-exported so callers do not need to import
+// go-raft/discovery directly.
+type RaftPeer = discovery.Peer
+type PeerResolver = discovery.PeerResolver
+
 type RaftStore struct {
-	raft      *raft.Raft
-	fsm       *FSM
-	db        *bbolt.DB
-	transport raft.Transport
-	resolver  PeerResolver
-	nodeID    string
-	keeper    *CryptoKeeper
-	closeOnce sync.Once
-	closeErr  error
+	node   *goraft.Node
+	fsm    *compatFSM
+	sealer storage.Sealer
 }
 
 type RaftConfig struct {
-	Dir             string
-	NodeID          string
-	BindAddr        string
-	AdvertiseAddr   string // "" = derive from hostname+headless+port / bind host
-	Peers           []string
-	BootstrapPath   string
-	Replicas        int
-	StatefulSetName string
-	HeadlessService string
-	Namespace       string
-	ClusterDomain   string
-	RecoveryMode    bool
-	// SingleNodeRecovery collapses an existing multi-voter configuration to
-	// this node when the StatefulSet is intentionally scaled to one replica.
-	// Raft cannot commit the configuration change that removes the missing
-	// voters without their quorum, so the surviving node must force the new
-	// configuration with RecoverCluster. Set by the server from the
-	// StatefulSet's spec.replicas; never active for steady-state replicas > 1.
-	SingleNodeRecovery    bool
-	NoSnapshotRestore     bool // default false (snapshot restore on restart)
-	PerformanceMultiplier float64
-	ApplyTimeout          time.Duration
-	Resolver              PeerResolver // nil = legacy resolver from Peers/AdvertiseAddr/BindAddr
-	TLS                   *tls.Config  // nil = plaintext
-	// AtRest, when set, encrypts sensitive fields before persistence.
-	AtRest *CryptoKeeper
+	Dir                      string
+	NodeID                   string
+	BindAddr                 string
+	AdvertiseAddr            string
+	Peers                    []string // legacy "id=addr" entries
+	BootstrapPath            string
+	Replicas                 int
+	StatefulSetName          string
+	HeadlessService          string
+	Namespace                string
+	ClusterDomain            string
+	RecoveryMode             bool
+	SingleNodeRecovery       bool
+	NoSnapshotRestore        bool
+	PerformanceMultiplier    float64
+	ApplyTimeout             time.Duration
+	Resolver                 discovery.PeerResolver
+	CustomListener           net.Listener // optional pre-bound listener for race-free tests
+	TLSEnabled               bool
+	TLSDir                   string
+	TLSValidity              time.Duration // 0 -> 8760h (365d) via config.ApplyDefaults
+	TLSSafetyMargin          time.Duration // 0 -> 7d (pki.DefaultSafetyMargin) via config.ApplyDefaults
+	TLSCACertPath            string
+	TLSCertPath              string
+	TLSKeyPath               string
+	TLSCASecret              string
+	TLSCABootstrap           bool
+	TLSClientAuth            bool // used when TLSClientAuthSet is true; otherwise defaults to true
+	TLSClientAuthSet         bool
+	TLSSecretPollTimeout     time.Duration
+	TLSKeyringRotation       *bool         // nil = auto per mode (true when TLSEnabled && !manualTLS; false for manual certs)
+	TLSRotationPeriod        time.Duration // 0 -> 24h via config.ApplyDefaults
+	TLSRotationCheckInterval time.Duration // 0 -> 30s via config.ApplyDefaults
+	TLSReloadPollInterval    time.Duration // 0 -> 5s via config.ApplyDefaults
+	BootstrapProvider        pki.BootstrapProvider
+	GenerationFencer         goraft.GenerationFencer
+	ReplicaCountAuthorizer   goraft.ReplicaCountAuthorizer
+	Clientset                kubernetes.Interface // optional K8s client for single-node Secret CA bootstrap
+	AtRest                   storage.Sealer
+	AtRestKeyFile            string
+	AutopilotEnabled         *bool // nil = auto (enabled when multi-node, disabled when single-node)
 }
 
-// withDefaults fills unset config fields with production defaults. NodeID is
-// intentionally left empty so resolveBootstrapState can derive it from the
-// resolver (e.g. the StatefulSet pod name) before falling back to "node1".
-func withDefaults(cfg *RaftConfig) {
+// NewRaftStore constructs and starts a go-raft Node wrapped as a
+// domain.Repository. It resolves this node's stable ID and whether it seeds the
+// initial cluster configuration, opens the shared BoltDB store, creates the
+// transport (plaintext or mTLS), and bootstraps the cluster with ONLY itself
+// when it is the bootstrap node. Other nodes start empty and join via the
+// leader's membership loop. The caller must call WaitForLeader before issuing
+// writes.
+func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
+	// Fill defaults matching gohookbridge.
 	if cfg.Dir == "" {
 		cfg.Dir = "./raft-data"
 	}
 	if cfg.BindAddr == "" {
 		cfg.BindAddr = "127.0.0.1:6001"
 	}
-	if cfg.ApplyTimeout == 0 {
+	if cfg.ApplyTimeout <= 0 {
 		cfg.ApplyTimeout = 5 * time.Second
 	}
-	if cfg.PerformanceMultiplier == 0 {
+	// CRITICAL: config.DefaultConfig() in go-raft defaults PerformanceMultiplier
+	// to 5.0; setting 1.0 when <= 0 preserves the CLI default while Helm
+	// explicitly passes 5.0.
+	if cfg.PerformanceMultiplier <= 0 {
 		cfg.PerformanceMultiplier = 1.0
 	}
-}
 
-// legacyResolver builds a resolver from the legacy Peers/AdvertiseAddr/BindAddr
-// fields when no explicit resolver is supplied.
-func legacyResolver(cfg *RaftConfig) PeerResolver {
-	return NewPeerResolver(&RaftDiscoveryConfig{
-		NodeID:        cfg.NodeID,
-		AdvertiseAddr: cfg.AdvertiseAddr,
-		BindAddr:      cfg.BindAddr,
-		Peers:         parsePeers(cfg.Peers),
+	peerConfigs := make([]config.PeerConfig, 0, len(cfg.Peers))
+	for _, p := range discovery.ParseLegacyPeers(cfg.Peers) {
+		peerConfigs = append(peerConfigs, config.PeerConfig{ID: p.ID, Address: p.Address})
+	}
+
+	multiNode := cfg.Replicas > 1 || len(peerConfigs) > 1
+	if cfg.Resolver != nil {
+		if resolved, err := cfg.Resolver.Resolve(); err == nil && len(resolved) > 1 {
+			multiNode = true
+		}
+	}
+
+	if cfg.NodeID == "" && cfg.StatefulSetName == "" && len(peerConfigs) == 0 && cfg.Resolver == nil {
+		cfg.NodeID = "node1"
+	}
+
+	clientAuth := true
+	if cfg.TLSClientAuthSet {
+		clientAuth = cfg.TLSClientAuth
+	}
+
+	manualTLS := cfg.TLSCACertPath != "" || cfg.TLSCertPath != "" || cfg.TLSKeyPath != ""
+	keyringRotation := cfg.TLSEnabled && !manualTLS
+	if cfg.TLSKeyringRotation != nil {
+		keyringRotation = *cfg.TLSKeyringRotation
+	}
+
+	goraftCfg := config.FromGohookbridgeFlags(config.GohookbridgeFlags{
+		Dir:                   cfg.Dir,
+		NodeID:                cfg.NodeID,
+		BindAddr:              cfg.BindAddr,
+		AdvertiseAddr:         cfg.AdvertiseAddr,
+		Peers:                 peerConfigs,
+		Replicas:              cfg.Replicas,
+		StatefulSetName:       cfg.StatefulSetName,
+		HeadlessService:       cfg.HeadlessService,
+		Namespace:             cfg.Namespace,
+		ClusterDomain:         cfg.ClusterDomain,
+		ApplyTimeout:          cfg.ApplyTimeout,
+		PerformanceMultiplier: cfg.PerformanceMultiplier,
+		TLSEnabled:            cfg.TLSEnabled,
+		TLSDir:                cfg.TLSDir,
+		TLSValidity:           cfg.TLSValidity, // 0 -> 8760h via ApplyDefaults
+		TLSOrganization:       "gohookbridge-raft",
+		CACertPath:            cfg.TLSCACertPath,
+		CertPath:              cfg.TLSCertPath,
+		KeyPath:               cfg.TLSKeyPath,
+		ClientAuth:            clientAuth,
+		AtRestKeyFile:         cfg.AtRestKeyFile,
+		KeyringRotation:       keyringRotation,
+		RotationPeriod:        cfg.TLSRotationPeriod, // 0 -> 24h via ApplyDefaults
 	})
-}
+	goraftCfg.Storage.Backend = config.StorageBackendSharedBolt
+	goraftCfg.Storage.AtRestKeyInfo = AtRestAAD
+	goraftCfg.RecoveryMode = cfg.RecoveryMode
+	goraftCfg.SingleNodeRecovery = cfg.SingleNodeRecovery
+	goraftCfg.NoSnapshotRestoreOnStart = cfg.NoSnapshotRestore
+	goraftCfg.TLS.CASecret = cfg.TLSCASecret
+	goraftCfg.TLS.CABootstrap = cfg.TLSCABootstrap
+	if cfg.TLSSecretPollTimeout > 0 {
+		goraftCfg.TLS.SecretPollTimeout = cfg.TLSSecretPollTimeout
+	}
+	if cfg.TLSSafetyMargin > 0 {
+		goraftCfg.TLS.SafetyMargin = cfg.TLSSafetyMargin // else 7d (pki.DefaultSafetyMargin)
+	}
+	if cfg.TLSRotationCheckInterval > 0 {
+		goraftCfg.TLS.RotationCheckInterval = cfg.TLSRotationCheckInterval // else 30s
+	}
+	if cfg.TLSReloadPollInterval > 0 {
+		goraftCfg.TLS.ReloadPollInterval = cfg.TLSReloadPollInterval // else 5s
+	}
+	if !cfg.TLSEnabled && multiNode {
+		goraftCfg.AllowInsecureMultiNode = true
+	}
+	if cfg.CustomListener != nil {
+		// Loopback multi-node tests pass config.Validate's isUnroutable check.
+		goraftCfg.AllowInsecureMultiNode = true
+	}
+	if cfg.AutopilotEnabled != nil {
+		goraftCfg.Autopilot.Enabled = *cfg.AutopilotEnabled
+	} else {
+		goraftCfg.Autopilot.Enabled = multiNode
+	}
 
-// parsePeers parses legacy "id=addr" peer entries, skipping malformed ones.
-func parsePeers(entries []string) []RaftPeer {
-	peers := make([]RaftPeer, 0, len(entries))
-	for _, e := range entries {
-		parts := strings.SplitN(e, "=", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			continue
+	// Wire the K8s Secret CA bootstrap provider for single-node Secret CA mode.
+	if cfg.TLSEnabled && !multiNode && cfg.BootstrapProvider == nil && cfg.TLSCACertPath == "" && cfg.TLSCASecret != "" && cfg.Clientset != nil && cfg.Namespace != "" {
+		tlsDir := cfg.TLSDir
+		if tlsDir == "" {
+			tlsDir = filepath.Join(cfg.Dir, "tls")
 		}
-		peers = append(peers, RaftPeer{ID: parts[0], Address: parts[1]})
-	}
-	return peers
-}
-
-// NewRaftStore constructs and starts a Raft node. It resolves this node's
-// stable ID and whether it seeds the initial cluster configuration, opens the
-// BoltDB log+stable store and file snapshot store, creates the transport
-// (plaintext or mTLS), and bootstraps the cluster with ONLY itself when it is
-// the bootstrap node. Other nodes start empty and join via the leader's
-// ReconcileMembership/AddVoter (StartJoinLoop). The caller must call
-// WaitForLeader before issuing writes.
-func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
-	withDefaults(&cfg)
-
-	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create raft dir: %w", err)
-	}
-	// Tighten an existing directory (e.g. a temp dir created with looser
-	// permissions). Ignore ErrPermission for root-owned PVC mountpoints where
-	// Kubernetes fsGroup manages directory access and the container runs as a
-	// non-root UID (F27/F28).
-	// #nosec G302 -- directory; 0700 is more restrictive than the 0750 threshold.
-	if err := os.Chmod(cfg.Dir, 0o700); err != nil && !errors.Is(err, os.ErrPermission) {
-		return nil, fmt.Errorf("chmod raft dir: %w", err)
+		cfg.BootstrapProvider = raftk8s.NewSecretBootstrapProvider(raftk8s.SecretBootstrapConfig{
+			Clientset:    cfg.Clientset,
+			Namespace:    cfg.Namespace,
+			SecretName:   cfg.TLSCASecret,
+			CABootstrap:  cfg.TLSCABootstrap,
+			CACommonName: "raft-ca",
+			Organization: "gohookbridge-raft",
+			PollTimeout:  cfg.TLSSecretPollTimeout,
+			CacheDir:     tlsDir,
+		})
 	}
 
-	resolver := cfg.Resolver
-	if resolver == nil {
-		resolver = legacyResolver(&cfg)
-	}
-
-	nodeID, shouldBootstrap, err := resolveBootstrapState(&cfg, resolver)
+	cfsm := newCompatFSM(nil)
+	node, err := goraft.NewNode(context.Background(), &goraftCfg, goraft.NodeOptions{
+		FSM:                    cfsm,
+		Resolver:               cfg.Resolver,
+		BootstrapProvider:      cfg.BootstrapProvider,
+		GenerationFencer:       cfg.GenerationFencer,
+		ReplicaCountAuthorizer: cfg.ReplicaCountAuthorizer,
+		Sealer:                 cfg.AtRest,
+		CustomListener:         cfg.CustomListener,
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	clearStaleRaftState(&cfg, cfg.Dir, nodeID)
-
-	db, err := newBoltDB(cfg.Dir, nodeID)
-	if err != nil {
-		return nil, fmt.Errorf("create bolt db: %w", err)
-	}
-
-	fsm := NewFSM(db)
-
-	logStore := newBoltLogStore(db)
-	stableStore := newBoltStableStore(db)
-
-	snapStore, err := raft.NewFileSnapshotStore(cfg.Dir, 2, os.Stderr)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create snapshot store: %w", err)
-	}
-
-	transport, advertise, err := newStreamTransport(&cfg, os.Stderr)
-	if err != nil {
-		db.Close()
+	cfsm.bindDB(func() *bolt.DB {
+		if node.Storage() == nil {
+			return nil
+		}
+		return node.Storage().BoltDB()
+	})
+	if err := node.Start(context.Background()); err != nil {
 		return nil, err
 	}
 
-	raftCfg := &raft.Config{
-		LocalID:            raft.ServerID(nodeID),
-		ProtocolVersion:    raft.ProtocolVersionMax,
-		HeartbeatTimeout:   1 * time.Second,
-		ElectionTimeout:    1 * time.Second,
-		LeaderLeaseTimeout: 500 * time.Millisecond,
-		CommitTimeout:      50 * time.Millisecond,
-		MaxAppendEntries:   64,
-		TrailingLogs:       10240,
-		SnapshotInterval:   120 * time.Second,
-		SnapshotThreshold:  8192,
-		LogOutput:          os.Stderr,
-		LogLevel:           "WARN",
-	}
-	// NoSnapshotRestoreOnStart defaults to false so Raft restores from the
-	// latest snapshot on restart (required for correct data recovery after
-	// log compaction). Only disable it when explicitly configured.
-	if cfg.NoSnapshotRestore {
-		raftCfg.NoSnapshotRestoreOnStart = true
-	}
-	ApplyPerformanceMultiplier(raftCfg, cfg.PerformanceMultiplier)
-
-	singleVoterConfig := raftConfigurationFromPeers([]RaftPeer{{ID: nodeID, Address: advertise}})
-	recovered := false
-	if cfg.SingleNodeRecovery && shouldBootstrap && !cfg.RecoveryMode {
-		hasState, stateErr := raft.HasExistingState(logStore, stableStore, snapStore)
-		if stateErr != nil {
-			_ = closeRaftTransport(transport)
-			_ = db.Close()
-			return nil, fmt.Errorf("check existing raft state: %w", stateErr)
+	sealer := cfg.AtRest
+	if sealer == nil && cfg.AtRestKeyFile != "" {
+		keeper, err := storage.LoadAESGCMKeeper(cfg.AtRestKeyFile, AtRestAAD)
+		if err != nil {
+			_ = node.Close()
+			return nil, fmt.Errorf("load at-rest keeper: %w", err)
 		}
-		if hasState {
-			// The StatefulSet is scaled to one replica, so the other voters are
-			// gone and their removal can never reach quorum. Force the
-			// configuration to this single voter; RecoverCluster replays the
-			// existing log into the FSM and snapshots it, so replicated config
-			// survives.
-			if err := raft.RecoverCluster(raftCfg, fsm, logStore, stableStore, snapStore, transport, singleVoterConfig); err != nil {
-				_ = closeRaftTransport(transport)
-				_ = db.Close()
-				return nil, fmt.Errorf("single-node raft recovery: %w", err)
-			}
-			fmt.Fprintf(os.Stderr, "WARNING: single-node recovery: forced Raft configuration to %q (StatefulSet scaled to 1 replica)\n", nodeID)
-			recovered = true
-		}
+		sealer = keeper
 	}
 
-	if shouldBootstrap && !recovered {
-		if err := raft.BootstrapCluster(raftCfg, logStore, stableStore, snapStore, transport, singleVoterConfig); err != nil && !errors.Is(err, raft.ErrCantBootstrap) {
-			_ = closeRaftTransport(transport)
-			_ = db.Close()
-			return nil, fmt.Errorf("bootstrap raft cluster: %w", err)
-		}
-	}
-
-	r, err := raft.NewRaft(raftCfg, fsm, logStore, stableStore, snapStore, transport)
-	if err != nil {
-		_ = closeRaftTransport(transport)
-		_ = db.Close()
-		return nil, fmt.Errorf("new raft: %w", err)
-	}
-
-	return &RaftStore{
-		raft:      r,
-		fsm:       fsm,
-		db:        db,
-		transport: transport,
-		resolver:  resolver,
-		nodeID:    nodeID,
-		keeper:    cfg.AtRest,
-	}, nil
+	return &RaftStore{node: node, fsm: cfsm, sealer: sealer}, nil
 }
 
 // sealString encrypts a sensitive string for persistence (no-op for the empty
 // string or when at-rest encryption is disabled).
 func (rs *RaftStore) sealString(plain string) (string, error) {
-	if rs.keeper == nil || plain == "" {
+	if rs.sealer == nil || plain == "" {
 		return plain, nil
 	}
-	ev, err := rs.keeper.Encrypt([]byte(plain))
-	if err != nil {
-		return "", err
-	}
-	data, err := json.Marshal(ev)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
+	return rs.sealer.SealString(plain)
 }
 
 // openString decrypts a persisted sensitive string. A value that is not an
 // EncryptedValue envelope is treated as legacy plaintext and returned as-is
 // (lazy migration).
 func (rs *RaftStore) openString(stored string) (string, error) {
-	if rs.keeper == nil || stored == "" {
+	if rs.sealer == nil || stored == "" {
 		return stored, nil
 	}
-	var ev EncryptedValue
-	if err := json.Unmarshal([]byte(stored), &ev); err != nil || ev.Alg == "" || ev.Ct == "" {
-		//nolint:nilerr // non-JSON stored values are legacy plaintext and returned as-is for lazy migration
-		return stored, nil
-	}
-	plain, err := rs.keeper.Decrypt(ev)
-	if err != nil {
-		return "", err
-	}
-	return string(plain), nil
+	return rs.sealer.OpenString(stored)
 }
 
 func (rs *RaftStore) sealChannel(p *domain.Channel) error {
-	if rs.keeper == nil {
+	if rs.sealer == nil {
 		return nil
 	}
 	var err error
@@ -295,7 +292,7 @@ func (rs *RaftStore) sealChannel(p *domain.Channel) error {
 }
 
 func (rs *RaftStore) openChannel(p *domain.Channel) error {
-	if rs.keeper == nil {
+	if rs.sealer == nil {
 		return nil
 	}
 	var err error
@@ -317,7 +314,7 @@ func (rs *RaftStore) openChannel(p *domain.Channel) error {
 }
 
 func (rs *RaftStore) sealConfig(cfg *domain.GlobalConfig) error {
-	if rs.keeper == nil {
+	if rs.sealer == nil {
 		return nil
 	}
 	var err error
@@ -329,7 +326,7 @@ func (rs *RaftStore) sealConfig(cfg *domain.GlobalConfig) error {
 }
 
 func (rs *RaftStore) openConfig(cfg *domain.GlobalConfig) error {
-	if rs.keeper == nil {
+	if rs.sealer == nil {
 		return nil
 	}
 	var err error
@@ -338,563 +335,6 @@ func (rs *RaftStore) openConfig(cfg *domain.GlobalConfig) error {
 	}
 	cfg.Defaults.WebhookSecret, err = rs.openString(cfg.Defaults.WebhookSecret)
 	return err
-}
-
-// resolveBootstrapState computes this node's stable ID and whether it seeds
-// the initial cluster configuration.
-//
-// shouldBootstrap is true only for the bootstrap node (the first peer in the
-// resolved voter list — ordinal 0 for DNS discovery, the first explicit peer
-// for static discovery, self for single-node). Other nodes start with no
-// config and join via the leader's AddVoter (joinLoop).
-//
-// The bootstrap node seeds the cluster with ONLY itself as the initial voter
-// (single-node quorum). Once it becomes leader, the joinLoop adds the
-// remaining peers via AddVoter. Including all peers in the initial
-// configuration would require a majority (2 of 3) to elect a leader, but
-// non-bootstrap peers have no config and may not be ready to vote when the
-// election fires — this creates a deadlock where no leader is ever elected
-// (CWE-693).
-func resolveBootstrapState(cfg *RaftConfig, resolver PeerResolver) (nodeID string, shouldBootstrap bool, err error) {
-	shouldBootstrap = true
-	if resolver != nil {
-		resolved, err := resolver.Resolve()
-		if err != nil {
-			return "", false, fmt.Errorf("resolve raft peers: %w", err)
-		}
-		if self, errSelf := resolver.Self(); errSelf == nil && len(resolved) > 0 {
-			shouldBootstrap = self.ID == resolved[0].ID
-		}
-	}
-
-	nodeID = cfg.NodeID
-	if nodeID == "" && resolver != nil {
-		if self, err := resolver.Self(); err == nil {
-			nodeID = self.ID
-		}
-	}
-	if nodeID == "" {
-		nodeID = "node1"
-	}
-	return nodeID, shouldBootstrap, nil
-}
-
-// clearStaleRaftState implements recovery mode: when RecoveryMode is set the
-// persisted raft state (BoltDB, snapshots, peers.json) is wiped so the node
-// bootstraps a fresh cluster. Use only for manual recovery when quorum is
-// lost.
-func clearStaleRaftState(cfg *RaftConfig, dir, nodeID string) {
-	if !cfg.RecoveryMode {
-		return
-	}
-	if cleared := clearRaftState(dir, nodeID); cleared {
-		fmt.Fprintf(os.Stderr, "WARNING: recovery mode: cleared stale raft state in %s\n", dir)
-	}
-}
-
-// clearRaftState removes the BoltDB, snapshots, and peers.json from the data
-// directory. Returns true if any files were removed.
-func clearRaftState(dir, nodeID string) bool {
-	cleared := false
-	for _, p := range []string{
-		filepath.Join(dir, nodeID+".db"),
-		filepath.Join(dir, "peers.json"),
-	} {
-		if err := os.Remove(p); err == nil {
-			cleared = true
-		}
-	}
-	if err := os.RemoveAll(filepath.Join(dir, "snapshots")); err == nil {
-		cleared = true
-	}
-	return cleared
-}
-
-// newStreamTransport binds a transport on cfg.BindAddr. When cfg.TLS != nil it
-// wraps the listener in a tlsStreamLayer (mTLS); otherwise it uses a plaintext
-// stream layer. Both paths preserve the DNS name in the advertise address via
-// a custom raft.StreamLayer: raft.NewTCPTransport type-asserts its advertise
-// address to *net.TCPAddr, so a DNS hostAddr would fail. Returns
-// (transport, advertiseAddr, error).
-func newStreamTransport(cfg *RaftConfig, logOutput io.Writer) (raft.Transport, string, error) {
-	host, port, err := net.SplitHostPort(cfg.BindAddr)
-	if err != nil {
-		return nil, "", fmt.Errorf("parse raft bind_addr %s: %w", cfg.BindAddr, err)
-	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-
-	advertiseAddr := cfg.AdvertiseAddr
-	if advertiseAddr == "" {
-		advertiseAddr = net.JoinHostPort(host, port)
-	}
-
-	// Startup gate: retry-resolution (1s interval, 2min budget) so a fresh
-	// cluster's DNS warmup delays this pod instead of CrashLooping it.
-	if _, err := resolveAdvertiseAddr(advertiseAddr, defaultAdvertiseResolveTimeout, logOutput); err != nil {
-		return nil, "", fmt.Errorf("resolve raft advertise addr %s: %w", advertiseAddr, err)
-	}
-
-	advertise, err := newHostAddr(advertiseAddr)
-	if err != nil {
-		return nil, "", fmt.Errorf("parse advertise addr %s: %w", advertiseAddr, err)
-	}
-
-	var layer raft.StreamLayer
-	if cfg.TLS != nil {
-		l, err := newTLSStreamLayer(cfg.BindAddr, advertise, cfg.TLS)
-		if err != nil {
-			return nil, "", err
-		}
-		layer = l
-	} else {
-		l, err := newPlainStreamLayer(cfg.BindAddr, advertise)
-		if err != nil {
-			return nil, "", err
-		}
-		layer = l
-	}
-
-	// MaxPool: 1 forces a fresh connection (and thus fresh DNS resolution)
-	// per peer.
-	stream := newRetryingStreamLayer(layer, 10*time.Second, cfg.TLS)
-	transport := raft.NewNetworkTransportWithConfig(&raft.NetworkTransportConfig{
-		Stream:  stream,
-		Logger:  hclog.New(&hclog.LoggerOptions{Output: logOutput, Name: "transport"}),
-		MaxPool: 1,
-		Timeout: 10 * time.Second,
-	})
-	return transport, advertise.String(), nil
-}
-
-// resolveAdvertiseAddr resolves advertiseAddr, retrying every second within
-// the timeout budget so a cluster whose DNS is still warming up delays this
-// pod instead of failing it out of the boot sequence (CrashLoopBackOff).
-// The last resolution error is returned once the budget expires.
-func resolveAdvertiseAddr(advertiseAddr string, timeout time.Duration, logOutput io.Writer) (*net.TCPAddr, error) {
-	if timeout <= 0 {
-		timeout = defaultAdvertiseResolveTimeout
-	}
-	deadline := time.Now().Add(timeout)
-	for {
-		advertise, err := net.ResolveTCPAddr("tcp", advertiseAddr)
-		if err == nil {
-			return advertise, nil
-		}
-		if !time.Now().Add(advertiseResolveRetryInterval).Before(deadline) {
-			return nil, err
-		}
-		if logOutput != nil {
-			_, _ = fmt.Fprintf(logOutput, "[WARN] raft: unable to resolve advertise addr %s yet (cluster DNS may still be starting), retrying: %v\n", advertiseAddr, err)
-		}
-		time.Sleep(advertiseResolveRetryInterval)
-	}
-}
-
-// raftConfigurationFromPeers maps the resolved voter list to a raft
-// Configuration, skipping empty entries and deduplicating IDs.
-func raftConfigurationFromPeers(peers []RaftPeer) raft.Configuration {
-	servers := make([]raft.Server, 0, len(peers))
-	seen := make(map[raft.ServerID]bool, len(peers))
-	for _, p := range peers {
-		id := raft.ServerID(p.ID)
-		if id == "" || p.Address == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		servers = append(servers, raft.Server{Suffrage: raft.Voter, ID: id, Address: raft.ServerAddress(p.Address)})
-	}
-	return raft.Configuration{Servers: servers}
-}
-
-const (
-	// defaultAdvertiseResolveTimeout bounds startup resolution of the
-	// advertise address. A fresh cluster's DNS may not be serving yet (the
-	// CoreDNS pods of a brand-new cluster take time to become ready);
-	// failing out immediately would push this pod into a CrashLoopBackOff,
-	// which delays the whole raft bootstrap sequence.
-	defaultAdvertiseResolveTimeout = 2 * time.Minute
-	advertiseResolveRetryInterval  = time.Second
-)
-
-// leaderPollInterval is how often WaitForLeader / WaitForSelfLeadership
-// re-check leadership.
-const leaderPollInterval = 50 * time.Millisecond
-
-// WaitForLeader blocks until A leader exists in the cluster (not necessarily
-// this node) or ctx expires. Use WaitForSelfLeadership to wait until this
-// node is the leader (required before issuing writes).
-func (rs *RaftStore) WaitForLeader(ctx context.Context) error {
-	return rs.waitForLeaderCondition(ctx, "wait for raft leader", func() bool {
-		return rs.raft.Leader() != ""
-	})
-}
-
-// WaitForSelfLeadership blocks until this node is the leader or ctx expires.
-func (rs *RaftStore) WaitForSelfLeadership(ctx context.Context) error {
-	return rs.waitForLeaderCondition(ctx, "wait for self leadership", rs.IsLeader)
-}
-
-// WaitForCleanState blocks until IsCleanState reports true or ctx expires.
-// The server uses it as a startup barrier: the control/data plane must not
-// serve until the Raft layer is a settled Leader/Follower with no un-applied
-// committed entries and no pending FSM mutations.
-func (rs *RaftStore) WaitForCleanState(ctx context.Context) error {
-	return rs.waitForLeaderCondition(ctx, "wait for raft clean state", rs.IsCleanState)
-}
-
-// waitForLeaderCondition polls ready until it returns true, ctx expires, or the
-// raft node shuts down. Raft's LeaderCh only fires when THIS node gains/loses
-// leadership, so a leader-exists wait must also poll on a ticker.
-func (rs *RaftStore) waitForLeaderCondition(ctx context.Context, label string, ready func() bool) error {
-	ticker := time.NewTicker(leaderPollInterval)
-	defer ticker.Stop()
-	for {
-		if ready() {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("%s: %w", label, ctx.Err())
-		case _, ok := <-rs.raft.LeaderCh():
-			if !ok {
-				return fmt.Errorf("%s: %w", label, raft.ErrRaftShutdown)
-			}
-		case <-ticker.C:
-		}
-	}
-}
-
-// GetConfiguration returns the current raft cluster configuration.
-func (rs *RaftStore) GetConfiguration() (raft.Configuration, error) {
-	future := rs.raft.GetConfiguration()
-	if err := future.Error(); err != nil {
-		return raft.Configuration{}, fmt.Errorf("get raft configuration: %w", err)
-	}
-	return future.Configuration(), nil
-}
-
-// AddVoter adds a new voter to the running cluster (idempotent: re-adding an
-// existing voter is a no-op). Leader-only.
-func (rs *RaftStore) AddVoter(id, address string, timeout time.Duration) error {
-	if err := rs.raft.AddVoter(raft.ServerID(id), raft.ServerAddress(address), 0, timeout).Error(); err != nil {
-		return fmt.Errorf("raft add voter %s: %w", id, err)
-	}
-	return nil
-}
-
-// RemoveServer removes a server from the running cluster. Leader-only.
-func (rs *RaftStore) RemoveServer(id string, timeout time.Duration) error {
-	if err := rs.raft.RemoveServer(raft.ServerID(id), 0, timeout).Error(); err != nil {
-		return fmt.Errorf("raft remove server %s: %w", id, err)
-	}
-	return nil
-}
-
-// ReconcileMembership ensures the cluster configuration matches the desired
-// voter list: missing voters are added, stale addresses are updated, and extra
-// voters removed (idempotent). Leader-only. Returns the IDs added, updated,
-// and removed.
-func (rs *RaftStore) ReconcileMembership(desired []RaftPeer, timeout time.Duration) (added, updated, removed []string, err error) {
-	current, err := rs.GetConfiguration()
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	currentByID := make(map[string]raft.Server, len(current.Servers))
-	for _, srv := range current.Servers {
-		currentByID[string(srv.ID)] = srv
-	}
-	desiredByID := make(map[string]RaftPeer, len(desired))
-	for _, p := range desired {
-		if p.ID != "" {
-			desiredByID[p.ID] = p
-		}
-	}
-
-	// Add missing voters. A voter whose pod does not exist must not be added:
-	// adding a voter to a small cluster can commit through the current
-	// configuration even when the new peer is unreachable, which raises the
-	// quorum requirement and stalls the cluster (e.g. the join loop re-adding
-	// the two deleted pods right after a single-replica recovery).
-	for id, p := range desiredByID {
-		if _, ok := currentByID[id]; !ok {
-			if !peerResolvable(p) {
-				continue
-			}
-			if err := rs.AddVoter(id, p.Address, timeout); err != nil {
-				return added, updated, removed, err
-			}
-			added = append(added, id)
-		}
-	}
-
-	// Update addresses for existing voters whose address changed (e.g. after a
-	// pod restart assigned a new IP while the Raft config still stores the old
-	// one). The resolver returns DNS names (not IPs) for StatefulSet pods, so
-	// the desired address is a stable FQDN. The current address may be a stale
-	// IP from a previous bootstrap. Resolve the desired DNS name to compare.
-	for id, p := range desiredByID {
-		srv, ok := currentByID[id]
-		if !ok {
-			continue
-		}
-		if addrChanged(string(srv.Address), p.Address) {
-			// Skip a peer that is currently down: removing it would drop the
-			// quorum, and its address only needs updating once its pod exists
-			// again (the stream layer re-resolves DNS on every dial).
-			if !peerResolvable(p) {
-				continue
-			}
-			// Remove and re-add to update the address: raft.AddVoter is a no-op
-			// for existing voters with unchanged addresses.
-			if err := rs.RemoveServer(id, timeout); err != nil {
-				return added, updated, removed, err
-			}
-			if err := rs.AddVoter(id, p.Address, timeout); err != nil {
-				return added, updated, removed, err
-			}
-			updated = append(updated, id)
-		}
-	}
-
-	// Remove extra voters.
-	for id := range currentByID {
-		if _, ok := desiredByID[id]; !ok {
-			if err := rs.RemoveServer(id, timeout); err != nil {
-				return added, updated, removed, err
-			}
-			removed = append(removed, id)
-		}
-	}
-	return added, updated, removed, nil
-}
-
-// peerResolvable reports whether a desired peer currently exists, i.e. its
-// address resolves. StatefulSet peers use pod FQDNs that return NXDOMAIN once
-// the pod is deleted; those must never be added to the Raft configuration
-// while absent. IP addresses cannot be probed and are always accepted (the
-// caller's AddVoter then fails or times out exactly as before).
-func peerResolvable(p RaftPeer) bool {
-	host, _, err := net.SplitHostPort(p.Address)
-	if err != nil {
-		return true
-	}
-	if host == "" || net.ParseIP(host) != nil {
-		return true
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
-	return err == nil && len(addrs) > 0
-}
-
-// addrChanged reports whether two server addresses differ. When the desired
-// address is a DNS name (contains non-numeric characters in the host part),
-// it is resolved to an IP for comparison with the current address (which may
-// be a stale IP from a previous bootstrap). Direct string comparison is used
-// when both are IPs or both are DNS names.
-func addrChanged(current, desired string) bool {
-	if current == desired {
-		return false
-	}
-	host, _, err := net.SplitHostPort(desired)
-	if err != nil || net.ParseIP(host) != nil {
-		// Desired is an IP (or unparseable) — direct string comparison.
-		return true
-	}
-	// Desired is a DNS name; resolve and compare with the current address.
-	resolved, err := net.ResolveTCPAddr("tcp", desired)
-	if err != nil {
-		// Can't resolve — assume changed (will retry on next reconciliation).
-		return true
-	}
-	return current != resolved.String()
-}
-
-// StartJoinLoop periodically reconciles the cluster membership with the
-// resolver's desired voter list while this node is the leader. It covers
-// scale-up, scale-down, and pod restarts with a new IP (the desired FQDN
-// re-resolves to the new IP; addrChanged removes+re-adds).
-func (rs *RaftStore) StartJoinLoop(ctx context.Context) {
-	if rs.resolver == nil {
-		return
-	}
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if !rs.IsLeader() {
-				continue
-			}
-			desired, err := rs.resolver.Resolve()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "WARNING: joinLoop: resolve peers failed: %v\n", err)
-				continue
-			}
-			added, updated, removed, err := rs.ReconcileMembership(desired, 10*time.Second)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "WARNING: joinLoop: reconcile membership failed: %v\n", err)
-				continue
-			}
-			if len(added)+len(updated)+len(removed) > 0 {
-				fmt.Fprintf(os.Stdout, "joinLoop: raft membership reconciled added=%v updated=%v removed=%v\n", added, updated, removed)
-			}
-		}
-	}
-}
-
-// followerLastContactThreshold is how long a follower may go without hearing
-// from the leader before IsCleanState reports false. Set to 3 × the default
-// election timeout (5 s with multiplier 5) to avoid false positives while
-// still rejecting followers that are disconnected from the cluster.
-const followerLastContactThreshold = 15 * time.Second
-
-// IsCleanState reports whether the Raft consensus layer is in a clean state:
-//   - the node is a Leader or Follower (not Candidate or Shutdown)
-//   - all committed log entries have been applied (commit_index == applied_index)
-//   - there are no pending FSM mutations (fsm_pending == 0)
-//   - followers must have recent contact with the leader (last_contact ≤ 15 s);
-//     a follower whose local commit_index == applied_index but that has not
-//     received heartbeats since restarting is behind the leader's log and its
-//     FSM is stale.
-func (rs *RaftStore) IsCleanState() bool {
-	return cleanStateFromStats(rs.raft.Stats())
-}
-
-// cleanStateFromStats is the pure predicate behind IsCleanState, extracted so
-// unit tests can drive it table-style without a live node.
-func cleanStateFromStats(stats map[string]string) bool {
-	state := stats["state"]
-	if state != "Leader" && state != "Follower" {
-		return false
-	}
-	if stats["commit_index"] != stats["applied_index"] {
-		return false
-	}
-	if stats["fsm_pending"] != "0" {
-		return false
-	}
-	// A follower whose commit_index is still 0 has not received any data
-	// (snapshot or log entries) from the leader yet — the local FSM is
-	// empty. The leader may legitimately have commit_index == 0 before
-	// writing the first log entry.
-	if state == "Follower" && stats["commit_index"] == "0" {
-		return false
-	}
-	if state == "Follower" {
-		lastContact := stats["last_contact"]
-		if lastContact == "never" || lastContact == "" {
-			return false
-		}
-		d, err := time.ParseDuration(lastContact)
-		if err != nil || d > followerLastContactThreshold {
-			return false
-		}
-	}
-	return true
-}
-
-// IsStarted returns true when the Raft node has joined the cluster (voter or
-// leader). Used by the Kubernetes startupProbe (/startup endpoint).
-func (rs *RaftStore) IsStarted() bool {
-	return rs.IsLeader() || rs.IsVoter()
-}
-
-// IsVoter returns true if this node is a voting member of the cluster.
-func (rs *RaftStore) IsVoter() bool {
-	cfg, err := rs.GetConfiguration()
-	if err != nil {
-		return false
-	}
-	for _, srv := range cfg.Servers {
-		if string(srv.ID) == rs.nodeID && srv.Suffrage == raft.Voter {
-			return true
-		}
-	}
-	return false
-}
-
-// StepDown causes the leader to step down to follower status by transferring
-// leadership to another voter. On a single-node cluster where no transfer
-// target exists, this is a no-op (the node will simply shut down). Used during
-// graceful shutdown to allow a clean leadership transfer.
-func (rs *RaftStore) StepDown(_ context.Context) error {
-	cfg, err := rs.GetConfiguration()
-	if err != nil {
-		return fmt.Errorf("get configuration: %w", err)
-	}
-	otherVoters := 0
-	for _, srv := range cfg.Servers {
-		if srv.Suffrage == raft.Voter && string(srv.ID) != rs.nodeID {
-			otherVoters++
-		}
-	}
-	if otherVoters == 0 {
-		// Single-node cluster: no one to transfer to, just proceed.
-		return nil
-	}
-
-	future := rs.raft.LeadershipTransfer()
-	if err := future.Error(); err != nil {
-		if errors.Is(err, raft.ErrNotLeader) {
-			return nil // already not leader
-		}
-		return fmt.Errorf("step down: %w", err)
-	}
-	return nil
-}
-
-// ApplyPerformanceMultiplier applies the multiplier to a Raft config's
-// election/heartbeat/lease timeouts. Values below 1.0 are clamped to 1.0.
-func ApplyPerformanceMultiplier(cfg *raft.Config, multiplier float64) {
-	if multiplier < 1.0 {
-		multiplier = 1.0
-	}
-	cfg.ElectionTimeout = time.Duration(float64(cfg.ElectionTimeout) * multiplier)
-	cfg.HeartbeatTimeout = time.Duration(float64(cfg.HeartbeatTimeout) * multiplier)
-	cfg.LeaderLeaseTimeout = time.Duration(float64(cfg.LeaderLeaseTimeout) * multiplier)
-}
-
-// closeRaftTransport closes a raft transport when it exposes Close.
-func closeRaftTransport(t raft.Transport) error {
-	if c, ok := t.(interface{ Close() error }); ok {
-		return c.Close()
-	}
-	return nil
-}
-
-func (rs *RaftStore) IsLeader() bool {
-	return rs.raft.State() == raft.Leader
-}
-
-// LeaderAddress returns the Raft transport address of the current cluster
-// leader, or an empty string when no leader has been elected yet. The address
-// is the one advertised in the Raft configuration (e.g. a pod DNS name).
-func (rs *RaftStore) LeaderAddress() string {
-	address, _ := rs.raft.LeaderWithID()
-	return string(address)
-}
-
-func (rs *RaftStore) Apply(cmd []byte) (interface{}, error) {
-	if !rs.IsLeader() {
-		return nil, fmt.Errorf("not the leader")
-	}
-	future := rs.raft.Apply(cmd, 10*time.Second)
-	if err := future.Error(); err != nil {
-		return nil, err
-	}
-	return future.Response(), nil
-}
-
-// fsmKV is one key mutation in a transactional "set-multi" command.
-type fsmKV struct {
-	Key    string `json:"key"`
-	Value  []byte `json:"value,omitempty"`
-	Delete bool   `json:"delete,omitempty"`
 }
 
 // applyResponse converts the FSM's Apply response into an error. The FSM
@@ -910,80 +350,130 @@ func applyResponse(resp interface{}) error {
 	return nil
 }
 
+// putValue writes a key via a replicated set command. The request context is
+// detached from cancellation: the legacy repository never honored ctx
+// cancellation for writes (e.g. the SSE handler persists a client cursor after
+// the client disconnects), so preserving that behavior avoids a regression.
+func (rs *RaftStore) putValue(ctx context.Context, key string, val []byte) error {
+	resp, err := rs.node.ApplyCommand(context.WithoutCancel(ctx), goraftfsm.KindSet, goraftfsm.KVEntry{Key: key, Value: val})
+	if err != nil {
+		return err
+	}
+	return applyResponse(resp)
+}
+
+// createValue writes a key only when absent, mapping the FSM conflict to
+// domain.ErrAlreadyExists.
+func (rs *RaftStore) createValue(ctx context.Context, key string, val []byte, entity, id string) error {
+	resp, err := rs.node.ApplyCommand(context.WithoutCancel(ctx), goraftfsm.KindCreate, goraftfsm.KVEntry{Key: key, Value: val})
+	if err != nil {
+		return err
+	}
+	if respErr, ok := resp.(error); ok && errors.Is(respErr, goraftfsm.ErrConflict) {
+		return fmt.Errorf("%w: %s %q", domain.ErrAlreadyExists, entity, id)
+	}
+	return applyResponse(resp)
+}
+
+// deleteValue removes a key via a replicated delete command.
+func (rs *RaftStore) deleteValue(ctx context.Context, key string) error {
+	resp, err := rs.node.ApplyCommand(context.WithoutCancel(ctx), goraftfsm.KindDelete, goraftfsm.KVEntry{Key: key})
+	if err != nil {
+		return err
+	}
+	return applyResponse(resp)
+}
+
 // applyMulti applies several key mutations as a single Raft entry (one FSM
 // transaction), so multi-record writes are atomic across the cluster.
-func (rs *RaftStore) applyMulti(entries []fsmKV) error {
-	payload, err := json.Marshal(fsmMultiPayload{Entries: entries})
-	if err != nil {
-		return err
-	}
-	cmd := fsmCommand{Op: "set-multi", Value: payload}
-	data, err := json.Marshal(cmd)
-	if err != nil {
-		return err
-	}
-	resp, err := rs.Apply(data)
+func (rs *RaftStore) applyMulti(ctx context.Context, entries []goraftfsm.KVEntry) error {
+	return rs.node.ApplyMulti(context.WithoutCancel(ctx), entries)
+}
+
+// applyRaw submits a raw FSM command (e.g. the legacy bootstrap payload).
+func (rs *RaftStore) applyRaw(ctx context.Context, data []byte) error {
+	resp, err := rs.node.Apply(context.WithoutCancel(ctx), data)
 	if err != nil {
 		return err
 	}
 	return applyResponse(resp)
 }
 
-func (rs *RaftStore) applyCommand(op, key string, value []byte) error {
-	cmd := fsmCommand{
-		Op:  op,
-		Key: key,
-	}
-	if value != nil {
-		cmd.Value = value
-	}
-	data, err := json.Marshal(cmd)
-	if err != nil {
-		return err
-	}
-	resp, err := rs.Apply(data)
-	if err != nil {
-		return err
-	}
-	return applyResponse(resp)
+// getValue reads a key from the FSM (nil when absent).
+func (rs *RaftStore) getValue(key string) ([]byte, error) {
+	return rs.fsm.Get(key)
 }
 
-func (rs *RaftStore) HasData() (bool, error) {
-	keys, err := listFSMKeys(rs.db, "/")
+// listKeys returns the keys under prefix.
+func (rs *RaftStore) listKeys(prefix string) ([]string, error) {
+	entries, err := rs.fsm.ListPrefix(prefix)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	return len(keys) > 0, nil
+	keys := make([]string, 0, len(entries))
+	for k := range entries {
+		keys = append(keys, k)
+	}
+	return keys, nil
 }
 
-// Close shuts the raft node and closes the transport and BoltDB. Idempotent.
-func (rs *RaftStore) Close() error {
-	rs.closeOnce.Do(func() {
-		if rs.raft != nil {
-			if err := rs.raft.Shutdown().Error(); err != nil && !errors.Is(err, raft.ErrRaftShutdown) {
-				rs.closeErr = err
-			}
-		}
-		if rs.transport != nil {
-			_ = closeRaftTransport(rs.transport)
-		}
-		if rs.db != nil {
-			_ = rs.db.Close()
-		}
-	})
-	return rs.closeErr
+// Lifecycle and health delegates.
+
+func (rs *RaftStore) WaitForLeader(ctx context.Context) error {
+	return rs.node.WaitForLeader(ctx)
 }
 
-// Shutdown is the final teardown alias for Close (idempotent).
-func (rs *RaftStore) Shutdown() error {
-	return rs.Close()
+func (rs *RaftStore) WaitForSelfLeadership(ctx context.Context) error {
+	return rs.node.WaitForSelfLeadership(ctx)
 }
+
+func (rs *RaftStore) WaitForCleanState(ctx context.Context) error {
+	return rs.node.WaitForCleanState(ctx)
+}
+
+func (rs *RaftStore) IsLeader() bool { return rs.node.IsLeader() }
+
+func (rs *RaftStore) IsCleanState() bool { return rs.node.IsCleanState() }
+
+func (rs *RaftStore) IsStarted() bool { return rs.node.IsStarted() }
+
+func (rs *RaftStore) IsVoter() bool { return rs.node.IsVoter() }
+
+func (rs *RaftStore) LeaderAddress() string { return rs.node.LeaderAddress() }
+
+func (rs *RaftStore) GetConfiguration() (hraft.Configuration, error) {
+	return rs.node.GetConfiguration()
+}
+
+func (rs *RaftStore) AddVoter(id, address string, timeout time.Duration) error {
+	return rs.node.AddVoter(id, address, timeout)
+}
+
+func (rs *RaftStore) RemoveServer(id string, timeout time.Duration) error {
+	return rs.node.RemoveServer(id, timeout)
+}
+
+func (rs *RaftStore) ReconcileMembership(desired []RaftPeer, timeout time.Duration) (added, updated, removed []string, err error) {
+	return rs.node.ReconcileMembership(desired, timeout)
+}
+
+func (rs *RaftStore) StepDown(ctx context.Context) error { return rs.node.StepDown(ctx) }
+
+func (rs *RaftStore) TLSProvider() *transport.DynamicTLSProvider { return rs.node.TLSProvider() }
+
+func (rs *RaftStore) HasData() (bool, error) { return rs.fsm.HasData() }
+
+func (rs *RaftStore) Close() error { return rs.node.Close() }
+
+func (rs *RaftStore) Shutdown() error { return rs.node.Shutdown() }
+
+// CRUD methods (domain.Repository).
 
 func (rs *RaftStore) GetChannel(ctx context.Context, id string) (*domain.Channel, error) {
 	if id == "" {
 		return nil, fmt.Errorf("%w: channel ID required", domain.ErrInvalidArgument)
 	}
-	val, err := getFSMValue(rs.db, "/channels/"+id+"/")
+	val, err := rs.getValue("/channels/" + id + "/")
 	if err != nil {
 		return nil, err
 	}
@@ -1001,7 +491,7 @@ func (rs *RaftStore) GetChannel(ctx context.Context, id string) (*domain.Channel
 }
 
 func (rs *RaftStore) ListChannels(ctx context.Context) ([]*domain.Channel, error) {
-	keys, err := listFSMKeys(rs.db, "/channels/")
+	keys, err := rs.listKeys("/channels/")
 	if err != nil {
 		return nil, err
 	}
@@ -1017,7 +507,7 @@ func (rs *RaftStore) ListChannels(ctx context.Context) ([]*domain.Channel, error
 			continue
 		}
 		seen[id] = true
-		val, err := getFSMValue(rs.db, "/channels/"+id+"/")
+		val, err := rs.getValue("/channels/" + id + "/")
 		if err != nil {
 			return nil, err
 		}
@@ -1049,24 +539,7 @@ func (rs *RaftStore) CreateChannel(ctx context.Context, p *domain.Channel) error
 	if err != nil {
 		return err
 	}
-	cmd := fsmCommand{
-		Op:    "create-channel",
-		Key:   "/channels/" + p.ID + "/",
-		Value: val,
-	}
-	data, err := json.Marshal(cmd)
-	if err != nil {
-		return err
-	}
-	resp, err := rs.Apply(data)
-	if err != nil {
-		return err
-	}
-	if resp != nil {
-		//nolint:forcetypeassert // the FSM applies an error value; preserve it for errors.Is
-		return resp.(error)
-	}
-	return nil
+	return rs.createValue(ctx, "/channels/"+p.ID+"/", val, "channel", p.ID)
 }
 
 func (rs *RaftStore) UpdateChannel(ctx context.Context, p *domain.Channel) error {
@@ -1081,17 +554,17 @@ func (rs *RaftStore) UpdateChannel(ctx context.Context, p *domain.Channel) error
 	if err != nil {
 		return err
 	}
-	return rs.applyCommand("set", "/channels/"+p.ID+"/", val)
+	return rs.putValue(ctx, "/channels/"+p.ID+"/", val)
 }
 
 func (rs *RaftStore) DeleteChannel(ctx context.Context, id string) error {
-	return rs.applyCommand("delete", "/channels/"+id+"/", nil)
+	return rs.deleteValue(ctx, "/channels/"+id+"/")
 }
 
 func (rs *RaftStore) GetGlobalConfig(ctx context.Context) (*domain.GlobalConfig, error) {
 	cfg := domain.DefaultGlobalConfig()
 
-	val, err := getFSMValue(rs.db, "/global/server/")
+	val, err := rs.getValue("/global/server/")
 	if err != nil {
 		return nil, err
 	}
@@ -1103,7 +576,7 @@ func (rs *RaftStore) GetGlobalConfig(ctx context.Context) (*domain.GlobalConfig,
 		cfg.Server = sc
 	}
 
-	val, err = getFSMValue(rs.db, "/global/defaults/")
+	val, err = rs.getValue("/global/defaults/")
 	if err != nil {
 		return nil, err
 	}
@@ -1140,14 +613,14 @@ func (rs *RaftStore) UpdateGlobalConfig(ctx context.Context, cfg *domain.GlobalC
 	}
 	// Both records are written in a single transaction so the server and
 	// defaults can never diverge.
-	return rs.applyMulti([]fsmKV{
+	return rs.applyMulti(ctx, []goraftfsm.KVEntry{
 		{Key: "/global/server/", Value: scVal},
 		{Key: "/global/defaults/", Value: dcVal},
 	})
 }
 
 func (rs *RaftStore) GetUser(ctx context.Context, id string) (*domain.User, error) {
-	val, err := getFSMValue(rs.db, "/users/"+id+"/")
+	val, err := rs.getValue("/users/" + id + "/")
 	if err != nil {
 		return nil, err
 	}
@@ -1179,7 +652,7 @@ func usernameIndexValue(userID string) []byte {
 }
 
 func (rs *RaftStore) GetUserByUsername(ctx context.Context, username string) (*domain.User, error) {
-	idxVal, err := getFSMValue(rs.db, "/users/by-username/"+username+"/")
+	idxVal, err := rs.getValue("/users/by-username/" + username + "/")
 	if err != nil || idxVal == nil {
 		return nil, fmt.Errorf("%w: user %q", domain.ErrNotFound, username)
 	}
@@ -1212,7 +685,7 @@ func (rs *RaftStore) GetUserByExternalIdentity(ctx context.Context, providerID, 
 }
 
 func (rs *RaftStore) ListUsers(ctx context.Context) ([]*domain.User, error) {
-	keys, err := listFSMKeys(rs.db, "/users/")
+	keys, err := rs.listKeys("/users/")
 	if err != nil {
 		return nil, err
 	}
@@ -1228,7 +701,7 @@ func (rs *RaftStore) ListUsers(ctx context.Context) ([]*domain.User, error) {
 			continue
 		}
 		seen[id] = true
-		val, err := getFSMValue(rs.db, "/users/"+id+"/")
+		val, err := rs.getValue("/users/" + id + "/")
 		if err != nil || val == nil {
 			continue
 		}
@@ -1252,17 +725,14 @@ func (rs *RaftStore) CreateUser(ctx context.Context, u *domain.User) error {
 	if err != nil {
 		return err
 	}
-	cmd := fsmCommand{Op: "create-user", Key: "/users/" + u.ID + "/", Value: val}
-	data, err := json.Marshal(cmd)
-	if err != nil {
-		return err
+	err = rs.applyMulti(ctx, []goraftfsm.KVEntry{
+		{Key: "/users/" + u.ID + "/", Value: val, Create: true},
+		{Key: usernameIndexKey(u.Username) + "/", Value: usernameIndexValue(u.ID)},
+	})
+	if err != nil && errors.Is(err, goraftfsm.ErrConflict) {
+		return fmt.Errorf("%w: user %q", domain.ErrAlreadyExists, u.ID)
 	}
-	resp, err := rs.Apply(data)
-	if err != nil {
-		return err
-	}
-	// The FSM writes the user and its username index in one transaction.
-	return applyResponse(resp)
+	return err
 }
 
 func (rs *RaftStore) UpdateUser(ctx context.Context, u *domain.User) error {
@@ -1275,14 +745,14 @@ func (rs *RaftStore) UpdateUser(ctx context.Context, u *domain.User) error {
 	if err != nil {
 		return err
 	}
-	entries := []fsmKV{
+	entries := []goraftfsm.KVEntry{
 		{Key: "/users/" + u.ID + "/", Value: val},
 		{Key: usernameIndexKey(u.Username) + "/", Value: usernameIndexValue(u.ID)},
 	}
 	if oldUsername != "" {
-		entries = append(entries, fsmKV{Key: "/users/by-username/" + oldUsername + "/", Delete: true})
+		entries = append(entries, goraftfsm.KVEntry{Key: "/users/by-username/" + oldUsername + "/", Delete: true})
 	}
-	return rs.applyMulti(entries)
+	return rs.applyMulti(ctx, entries)
 }
 
 func (rs *RaftStore) DeleteUser(ctx context.Context, id string) error {
@@ -1290,14 +760,14 @@ func (rs *RaftStore) DeleteUser(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	return rs.applyMulti([]fsmKV{
+	return rs.applyMulti(ctx, []goraftfsm.KVEntry{
 		{Key: "/users/" + id + "/", Delete: true},
 		{Key: "/users/by-username/" + u.Username + "/", Delete: true},
 	})
 }
 
 func (rs *RaftStore) GetSetupModeEndTime(ctx context.Context) time.Time {
-	val, err := getFSMValue(rs.db, "/meta/setup_end")
+	val, err := rs.getValue("/meta/setup_end")
 	if err != nil || val == nil {
 		return time.Time{}
 	}
@@ -1313,14 +783,14 @@ func (rs *RaftStore) SetSetupModeEndTime(ctx context.Context, t time.Time) error
 	if err != nil {
 		return err
 	}
-	return rs.applyCommand("set", "/meta/setup_end", val)
+	return rs.putValue(ctx, "/meta/setup_end", val)
 }
 
 // MigrateAtRest re-writes every sensitive record through the configured
-// CryptoKeeper, sealing any legacy plaintext values and re-sealing under the
-// current primary key (lazy migration + key rotation).
+// sealer, sealing any legacy plaintext values and re-sealing under the current
+// primary key (lazy migration + key rotation).
 func (rs *RaftStore) MigrateAtRest(ctx context.Context) error {
-	if rs.keeper == nil {
+	if rs.sealer == nil {
 		return fmt.Errorf("at-rest encryption is not configured")
 	}
 	channels, err := rs.ListChannels(ctx)
@@ -1353,7 +823,7 @@ func (rs *RaftStore) MigrateAtRest(ctx context.Context) error {
 
 // GetAuthEpoch returns the persisted session/auth epoch (0 when unset).
 func (rs *RaftStore) GetAuthEpoch(ctx context.Context) (int64, error) {
-	val, err := getFSMValue(rs.db, "/meta/auth_epoch")
+	val, err := rs.getValue("/meta/auth_epoch")
 	if err != nil {
 		return 0, err
 	}
@@ -1378,11 +848,11 @@ func (rs *RaftStore) BumpAuthEpoch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return rs.applyCommand("set", "/meta/auth_epoch", val)
+	return rs.putValue(ctx, "/meta/auth_epoch", val)
 }
 
 func (rs *RaftStore) OIDCProviders(ctx context.Context) ([]domain.OIDCProvider, error) {
-	val, err := getFSMValue(rs.db, "/global/auth/oidc_providers")
+	val, err := rs.getValue("/global/auth/oidc_providers")
 	if err != nil || val == nil {
 		return nil, err
 	}
@@ -1415,11 +885,11 @@ func (rs *RaftStore) SetOIDCProviders(ctx context.Context, providers []domain.OI
 	if err != nil {
 		return err
 	}
-	return rs.applyCommand("set-json", "/global/auth/oidc_providers", val)
+	return rs.putValue(ctx, "/global/auth/oidc_providers", val)
 }
 
 func (rs *RaftStore) InternalAuthEnabled(ctx context.Context) (*bool, error) {
-	val, err := getFSMValue(rs.db, "/global/auth/internal_enabled")
+	val, err := rs.getValue("/global/auth/internal_enabled")
 	if err != nil {
 		return nil, err
 	}
@@ -1438,11 +908,11 @@ func (rs *RaftStore) SetInternalAuthEnabled(ctx context.Context, enabled bool) e
 	if err != nil {
 		return err
 	}
-	return rs.applyCommand("set-json", "/global/auth/internal_enabled", val)
+	return rs.putValue(ctx, "/global/auth/internal_enabled", val)
 }
 
 func (rs *RaftStore) GetRole(ctx context.Context, name string) (*domain.Role, error) {
-	val, err := getFSMValue(rs.db, "/rbac/roles/"+name+"/")
+	val, err := rs.getValue("/rbac/roles/" + name + "/")
 	if err != nil {
 		return nil, err
 	}
@@ -1465,7 +935,7 @@ func (rs *RaftStore) ListRoles(ctx context.Context) ([]domain.Role, error) {
 	roles := make([]domain.Role, 0, len(domain.DefaultRoles))
 	roles = append(roles, domain.DefaultRoles...)
 
-	keys, err := listFSMKeys(rs.db, "/rbac/roles/")
+	keys, err := rs.listKeys("/rbac/roles/")
 	if err != nil {
 		return nil, err
 	}
@@ -1478,7 +948,7 @@ func (rs *RaftStore) ListRoles(ctx context.Context) ([]domain.Role, error) {
 		if isDefaultRole(name) {
 			continue
 		}
-		val, err := getFSMValue(rs.db, key)
+		val, err := rs.getValue(key)
 		if err != nil || val == nil {
 			continue
 		}
@@ -1499,7 +969,7 @@ func (rs *RaftStore) CreateRole(ctx context.Context, r domain.Role) error {
 	if err != nil {
 		return err
 	}
-	return rs.applyCommand("set", "/rbac/roles/"+r.Name+"/", val)
+	return rs.putValue(ctx, "/rbac/roles/"+r.Name+"/", val)
 }
 
 func isDefaultRole(name string) bool {
@@ -1513,7 +983,7 @@ func isDefaultRole(name string) bool {
 
 func (rs *RaftStore) GetClientCursor(ctx context.Context, channel, clientID string) (*domain.ClientCursor, error) {
 	key := "/cursors/" + channel + "/" + clientID + "/"
-	val, err := getFSMValue(rs.db, key)
+	val, err := rs.getValue(key)
 	if err != nil || val == nil {
 		return nil, fmt.Errorf("%w: client cursor %s/%s", domain.ErrNotFound, channel, clientID)
 	}
@@ -1530,7 +1000,7 @@ func (rs *RaftStore) SetClientCursor(ctx context.Context, cursor *domain.ClientC
 	if err != nil {
 		return err
 	}
-	return rs.applyCommand("set", key, val)
+	return rs.putValue(ctx, key, val)
 }
 
 func (rs *RaftStore) CreateRoleMapping(ctx context.Context, m *domain.RoleMapping) error {
@@ -1550,11 +1020,11 @@ func (rs *RaftStore) CreateRoleMapping(ctx context.Context, m *domain.RoleMappin
 	if err != nil {
 		return err
 	}
-	return rs.applyCommand("set", "/rbac/mappings/"+m.ID+"/", val)
+	return rs.putValue(ctx, "/rbac/mappings/"+m.ID+"/", val)
 }
 
 func (rs *RaftStore) ListRoleMappings(ctx context.Context) ([]domain.RoleMapping, error) {
-	keys, err := listFSMKeys(rs.db, "/rbac/mappings/")
+	keys, err := rs.listKeys("/rbac/mappings/")
 	if err != nil {
 		return nil, err
 	}
@@ -1564,7 +1034,7 @@ func (rs *RaftStore) ListRoleMappings(ctx context.Context) ([]domain.RoleMapping
 		if len(parts) < 1 || parts[0] == "" {
 			continue
 		}
-		val, err := getFSMValue(rs.db, key)
+		val, err := rs.getValue(key)
 		if err != nil || val == nil {
 			continue
 		}
@@ -1578,7 +1048,7 @@ func (rs *RaftStore) ListRoleMappings(ctx context.Context) ([]domain.RoleMapping
 }
 
 func (rs *RaftStore) DeleteRoleMapping(ctx context.Context, id string) error {
-	return rs.applyCommand("delete", "/rbac/mappings/"+id+"/", nil)
+	return rs.deleteValue(ctx, "/rbac/mappings/"+id+"/")
 }
 
 func (rs *RaftStore) GetUserRoleMappings(ctx context.Context, userID string) ([]domain.RoleMapping, error) {
@@ -1629,17 +1099,17 @@ func (rs *RaftStore) CreateChannelRoleMapping(ctx context.Context, m *domain.Cha
 	if err != nil {
 		return err
 	}
-	return rs.applyCommand("set", "/channels/"+m.ChannelID+"/acl/"+m.ID+"/", val)
+	return rs.putValue(ctx, "/channels/"+m.ChannelID+"/acl/"+m.ID+"/", val)
 }
 
 func (rs *RaftStore) ListChannelRoleMappings(ctx context.Context, channelID string) ([]domain.ChannelRoleMapping, error) {
-	keys, err := listFSMKeys(rs.db, "/channels/"+channelID+"/acl/")
+	keys, err := rs.listKeys("/channels/" + channelID + "/acl/")
 	if err != nil {
 		return nil, err
 	}
 	var mappings []domain.ChannelRoleMapping
 	for _, key := range keys {
-		val, err := getFSMValue(rs.db, key)
+		val, err := rs.getValue(key)
 		if err != nil || val == nil {
 			continue
 		}
@@ -1656,7 +1126,7 @@ func (rs *RaftStore) ListChannelRoleMappings(ctx context.Context, channelID stri
 }
 
 func (rs *RaftStore) DeleteChannelRoleMapping(ctx context.Context, channelID, entryID string) error {
-	return rs.applyCommand("delete", "/channels/"+channelID+"/acl/"+entryID+"/", nil)
+	return rs.deleteValue(ctx, "/channels/"+channelID+"/acl/"+entryID+"/")
 }
 
 func (rs *RaftStore) GetUserChannelRoleMappings(ctx context.Context, userID string) ([]domain.ChannelRoleMapping, error) {

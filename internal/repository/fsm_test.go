@@ -8,18 +8,20 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hashicorp/raft"
+	goraftfsm "github.com/disaster37/go-raft/fsm"
+	hraft "github.com/hashicorp/raft"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
+	bolt "go.etcd.io/bbolt"
 	"golang.org/x/crypto/bcrypt"
 	"gotest.tools/v3/assert"
 )
 
-func newTestFSM(t *testing.T) *FSM {
+func newTestFSM(t *testing.T) *compatFSM {
 	t.Helper()
-	db, err := newBoltDB(t.TempDir(), "test-fsm")
+	db, err := bolt.Open(t.TempDir()+"/test-fsm.db", 0o600, nil)
 	assert.NilError(t, err)
-	t.Cleanup(func() { db.Close() })
-	return NewFSM(db)
+	t.Cleanup(func() { _ = db.Close() })
+	return newCompatFSM(db)
 }
 
 type mockSnapshotSink struct {
@@ -42,7 +44,7 @@ func (m *mockSnapshotSink) Close() error {
 
 func marshalCmd(t *testing.T, op, key string, value interface{}) []byte {
 	t.Helper()
-	cmd := fsmCommand{Op: op, Key: key}
+	cmd := legacyFSMCommand{Op: op, Key: key}
 	if value != nil {
 		raw, err := json.Marshal(value)
 		assert.NilError(t, err)
@@ -53,16 +55,16 @@ func marshalCmd(t *testing.T, op, key string, value interface{}) []byte {
 	return b
 }
 
-func mustGetValue(t *testing.T, fsm *FSM, key string) []byte {
+func mustGetValue(t *testing.T, fsm *compatFSM, key string) []byte {
 	t.Helper()
-	val, err := getFSMValue(fsm.db, key)
+	val, err := fsm.Get(key)
 	assert.NilError(t, err)
 	return val
 }
 
-func applyOK(t *testing.T, fsm *FSM, cmdBytes []byte) {
+func applyOK(t *testing.T, fsm *compatFSM, cmdBytes []byte) {
 	t.Helper()
-	result := fsm.Apply(&raft.Log{Data: cmdBytes})
+	result := fsm.Apply(&hraft.Log{Data: cmdBytes})
 	if result != nil {
 		err, ok := result.(error)
 		assert.Assert(t, ok, "Apply returned non-error: %v", result)
@@ -106,7 +108,7 @@ func TestFSM_ApplyDelete(t *testing.T) {
 	delBytes := marshalCmd(t, "delete", "/key", nil)
 	applyOK(t, fsm, delBytes)
 
-	val, err := getFSMValue(fsm.db, "/key")
+	val, err := fsm.Get("/key")
 	assert.NilError(t, err)
 	assert.Assert(t, val == nil)
 }
@@ -118,7 +120,7 @@ func TestFSM_CreateUser_Duplicate(t *testing.T) {
 	cmdBytes := marshalCmd(t, "create-user", "/users/user1/", user)
 	applyOK(t, fsm, cmdBytes)
 
-	result := fsm.Apply(&raft.Log{Data: cmdBytes})
+	result := fsm.Apply(&hraft.Log{Data: cmdBytes})
 	assert.Assert(t, result != nil)
 	appliedErr, ok := result.(error)
 	assert.Assert(t, ok, "Apply returned non-error: %v", result)
@@ -146,11 +148,10 @@ func TestFSM_Snapshot(t *testing.T) {
 	assert.Assert(t, sink.closed)
 	assert.Assert(t, sink.Len() > 0)
 
-	var decoded struct {
-		Data map[string]json.RawMessage `json:"data"`
-	}
+	// go-raft BoltKVFSM snapshots are a flat map (not wrapped in {"data": ...}).
+	var decoded map[string]json.RawMessage
 	assert.NilError(t, json.Unmarshal(sink.Bytes(), &decoded))
-	assert.Equal(t, len(decoded.Data), 3)
+	assert.Equal(t, len(decoded), 3)
 }
 
 func TestFSM_Restore(t *testing.T) {
@@ -168,11 +169,11 @@ func TestFSM_Restore(t *testing.T) {
 	rc := io.NopCloser(bytes.NewReader(payload))
 	assert.NilError(t, fsm.Restore(rc))
 
-	val, err := getFSMValue(fsm.db, "/alpha")
+	val, err := fsm.Get("/alpha")
 	assert.NilError(t, err)
 	assert.Equal(t, string(val), `"1"`)
 
-	val, err = getFSMValue(fsm.db, "/beta")
+	val, err = fsm.Get("/beta")
 	assert.NilError(t, err)
 	assert.Equal(t, string(val), `"2"`)
 }
@@ -205,7 +206,7 @@ func TestFSM_SnapshotRestore_Roundtrip(t *testing.T) {
 		if i > 0 {
 			key += string(rune('a' + i))
 		}
-		val, err := getFSMValue(restored.db, key)
+		val, err := restored.Get(key)
 		assert.NilError(t, err)
 		assert.Assert(t, val != nil, "key %s not found after restore", key)
 	}
@@ -230,7 +231,7 @@ func TestFSM_KeyValidation(t *testing.T) {
 
 	for _, tc := range tests {
 		cmdBytes := marshalCmd(t, "set", tc.key, "x")
-		result := fsm.Apply(&raft.Log{Data: cmdBytes})
+		result := fsm.Apply(&hraft.Log{Data: cmdBytes})
 		if tc.wantErr == "" {
 			assert.Assert(t, result == nil, "expected no error for key %q, got %v", tc.key, result)
 		} else {
@@ -253,7 +254,7 @@ func TestFSM_Restore_Empty(t *testing.T) {
 	rc := io.NopCloser(bytes.NewReader([]byte{}))
 	assert.NilError(t, fsm.Restore(rc))
 
-	val, err := getFSMValue(fsm.db, "/foo")
+	val, err := fsm.Get("/foo")
 	assert.NilError(t, err)
 	assert.Assert(t, val == nil, "expected all data to be cleared")
 }
@@ -291,8 +292,47 @@ func TestBootstrapCommandContainsNoPlaintextPassword(t *testing.T) {
 	cmd2 := marshalCmd(t, "bootstrap", "", fsmBootstrapPayload{Users: []fsmBootstrapUser{{
 		Username: "x", Password: "plain", PasswordHash: "h",
 	}}})
-	result := fsm2.Apply(&raft.Log{Data: cmd2})
+	result := fsm2.Apply(&hraft.Log{Data: cmd2})
 	applyErr, ok := result.(error)
 	assert.Assert(t, ok && applyErr != nil, "plaintext password must be rejected")
 	assert.Assert(t, strings.Contains(applyErr.Error(), "plaintext"), "got %v", applyErr)
+}
+
+// TestCompatFSM_CodecAndLegacySnapshotParity proves that go-raft
+// CommandCodec-encoded commands and legacy {"data": ...} snapshots both work.
+func TestCompatFSM_CodecAndLegacySnapshotParity(t *testing.T) {
+	fsm := newTestFSM(t)
+
+	codec := goraftfsm.CommandCodec{}
+	setData, err := codec.Encode(goraftfsm.KindSet, goraftfsm.KVEntry{Key: "/codec/set", Value: []byte(`"v"`)})
+	assert.NilError(t, err)
+	applyOK(t, fsm, setData)
+
+	createData, err := codec.Encode(goraftfsm.KindCreate, goraftfsm.KVEntry{Key: "/codec/create", Value: []byte(`"c"`)})
+	assert.NilError(t, err)
+	applyOK(t, fsm, createData)
+
+	multiData, err := codec.Encode(goraftfsm.KindSetMulti, goraftfsm.SetMultiPayload{Entries: []goraftfsm.KVEntry{
+		{Key: "/codec/multi1", Value: []byte(`"m1"`)},
+		{Key: "/codec/multi2", Value: []byte(`"m2"`)},
+	}})
+	assert.NilError(t, err)
+	applyOK(t, fsm, multiData)
+
+	for key, want := range map[string]string{
+		"/codec/set":    `"v"`,
+		"/codec/create": `"c"`,
+		"/codec/multi1": `"m1"`,
+		"/codec/multi2": `"m2"`,
+	} {
+		val := mustGetValue(t, fsm, key)
+		assert.Equal(t, string(val), want)
+	}
+
+	// Legacy {"data": ...} snapshot restore.
+	legacy := map[string]map[string][]byte{"data": {"/legacy": []byte(`"l"`)}}
+	payload, err := json.Marshal(legacy)
+	assert.NilError(t, err)
+	assert.NilError(t, fsm.Restore(io.NopCloser(bytes.NewReader(payload))))
+	assert.Equal(t, string(mustGetValue(t, fsm, "/legacy")), `"l"`)
 }

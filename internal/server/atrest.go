@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/disaster37/go-raft/storage"
 	"github.com/webcenter-fr/gohookbridge/internal/repository"
 )
 
@@ -12,7 +13,7 @@ import (
 // must supply --at-rest-key-file. A single-node dev deployment with no key file
 // auto-generates one under the Raft directory (with a warning); production
 // records are always encrypted.
-func loadAtRestKeeper(keyFile string, replicas int, raftDir string) (*repository.CryptoKeeper, error) {
+func loadAtRestKeeper(keyFile string, replicas int, raftDir string) (*storage.AESGCMKeeper, error) {
 	if keyFile == "" {
 		if replicas > 1 {
 			fmt.Fprintf(os.Stderr, "WARNING: at-rest encryption disabled on a multi-node deployment (set --at-rest-key-file)\n")
@@ -20,13 +21,13 @@ func loadAtRestKeeper(keyFile string, replicas int, raftDir string) (*repository
 		}
 		keyFile = filepath.Join(raftDir, "at-rest-key.json")
 		if _, err := os.Stat(keyFile); os.IsNotExist(err) {
-			if err := repository.GenerateKeyFile(keyFile); err != nil {
+			if err := storage.GenerateKeyFile(keyFile); err != nil {
 				return nil, fmt.Errorf("generate dev at-rest key: %w", err)
 			}
 			fmt.Fprintf(os.Stderr, "WARNING: generated a dev at-rest encryption key at %s; provision a real KEK in production\n", keyFile)
 		}
 	}
-	keeper, err := repository.LoadCryptoKeeper(keyFile)
+	keeper, err := storage.LoadAESGCMKeeper(keyFile, repository.AtRestAAD)
 	if err != nil {
 		return nil, fmt.Errorf("at-rest key file: %w", err)
 	}

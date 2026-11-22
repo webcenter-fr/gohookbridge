@@ -12,7 +12,7 @@ import (
 // RBAC role-mapping and channel-ACL model. It runs exactly once, guarded by
 // the /meta/rbac_migrated flag in the FSM.
 func (rs *RaftStore) MigrateRBAC(ctx context.Context) error {
-	migrated, err := getFSMValue(rs.db, "/meta/rbac_migrated")
+	migrated, err := rs.getValue("/meta/rbac_migrated")
 	if err == nil && migrated != nil {
 		return nil
 	}
@@ -53,7 +53,7 @@ func (rs *RaftStore) MigrateRBAC(ctx context.Context) error {
 		}
 	}
 
-	if err := rs.applyCommand("set", "/meta/rbac_migrated", []byte("true")); err != nil {
+	if err := rs.putValue(ctx, "/meta/rbac_migrated", []byte("true")); err != nil {
 		return fmt.Errorf("mark migration complete: %w", err)
 	}
 
