@@ -486,20 +486,22 @@ func NewServer(c *cli.Context) (*Server, error) {
 
 	mainRouter.Get(handler.EventsPath, handler.ChannelAccessMiddleware(svc, "consume", banTrackerInst)(handler.HandleEventsGet(broker, svc, c.Int("max-sse-connections"))).ServeHTTP)
 
-	// OIDC routes (registered dynamically from Raft config)
+	// OIDC routes: validate every configured provider at startup (fail fast on
+	// invalid config), then register generic routes that resolve the provider
+	// at request time so providers added/changed through the UI after boot get
+	// working /login and /callback routes without a restart.
 	providers, _ := svc.OIDCProviders(ctx)
 	for _, provider := range providers {
-		oidcHandler, err := handler.NewOIDCHandler(provider, sessionSecret, publicURL, cookieSecure)
-		if err != nil {
+		if _, err := handler.NewOIDCHandler(provider, sessionSecret, publicURL, cookieSecure); err != nil {
 			cancelStartup()
 			broker.Shutdown()
 			_ = rs.Shutdown()
 			return nil, fmt.Errorf("init OIDC handler for %s: %w", provider.ID, err)
 		}
-		oidcHandler.Resolver = svc
-		mainRouter.Get("/auth/oidc/"+provider.ID+"/login", oidcHandler.LoginHandler())
-		mainRouter.Get("/auth/oidc/"+provider.ID+"/callback", oidcHandler.CallbackHandler())
 	}
+	oidcResolver := newOIDCRouteResolver(svc, sessionSecret, publicURL, cookieSecure)
+	mainRouter.Get("/auth/oidc/{provider}/login", oidcResolver.LoginHandler())
+	mainRouter.Get("/auth/oidc/{provider}/callback", oidcResolver.CallbackHandler())
 
 	// SPA handler — all unmatched GET routes serve the SPA
 	mainRouter.NotFound(web.SPAHandler().ServeHTTP)

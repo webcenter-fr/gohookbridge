@@ -23,8 +23,13 @@
           <UFormField label="Username">
             <UInput v-model="form.username" :disabled="!!editingId" class="w-full" />
           </UFormField>
-          <UFormField v-if="!editingId || form.password" label="Password">
-            <UInput v-model="form.password" type="password" class="w-full" />
+          <UFormField label="Password">
+            <UInput
+              v-model="form.password"
+              type="password"
+              class="w-full"
+              :placeholder="editingId ? 'Leave empty to keep the current password' : 'Required'"
+            />
           </UFormField>
           <UFormField label="Roles">
             <USelectMenu v-model="form.roles" :items="roleOptions" value-key="value" multiple class="w-full" />

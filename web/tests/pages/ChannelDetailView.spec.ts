@@ -136,4 +136,22 @@ describe('ChannelDetailView', () => {
     expect(result.access_mode).toBe('token')
     expect(mockUpdateAccessMode).toHaveBeenCalledWith('test-chan', 'token')
   })
+
+  it('reverts the access-mode select when the update is rejected', async () => {
+    mockUpdateAccessMode.mockRejectedValue(new Error('cannot enable token access without tokens'))
+
+    const wrapper = await mountSuspended(ChannelDetailView, { route: '/channels/test-chan' })
+    await flushPromises()
+
+    const select = wrapper.findComponent({ name: 'USelect' })
+    expect(select.exists()).toBe(true)
+
+    // The user picks "token"; the server rejects it.
+    select.vm.$emit('update:model-value', 'token')
+    await flushPromises()
+
+    expect(mockUpdateAccessMode).toHaveBeenCalledWith('test-chan', 'token')
+    // The select must fall back to the last confirmed value (public).
+    expect(select.props('modelValue')).toBe('public')
+  })
 })

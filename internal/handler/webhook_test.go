@@ -434,6 +434,32 @@ func TestHandleEventReplay(t *testing.T) {
 		}
 		assert.Equal(t, 0, len(historical))
 	})
+
+	t.Run("server_side refusal returns a JSON error body", func(t *testing.T) {
+		// A server_side channel with an encryption key refuses API replay.
+		rs := storetest.NewRaftStore(t)
+		svc := service.NewService(rs, nil)
+		assert.NilError(t, rs.CreateChannel(context.Background(), &domain.Channel{
+			ID:             "test-channel",
+			EncryptionMode: "server_side",
+			EncryptionKey:  "some-key",
+		}))
+
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/channels/test-channel/events/00112233-4455-6677-8899-aabbccddeeff/replay", nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("channel", "test-channel")
+		rctx.URLParams.Add("eventId", "00112233-4455-6677-8899-aabbccddeeff")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+		w := httptest.NewRecorder()
+		HandleEventReplay(broker, svc)(w, req)
+
+		assert.Equal(t, w.Code, http.StatusBadRequest)
+		assert.Equal(t, w.Header().Get("Content-Type"), "application/json")
+		var body map[string]string
+		assert.NilError(t, json.Unmarshal(w.Body.Bytes(), &body))
+		assert.Equal(t, body["error"], "cannot replay events for server-side encrypted channels via API")
+	})
 }
 
 func TestSensitiveHeaderForLogs(t *testing.T) {

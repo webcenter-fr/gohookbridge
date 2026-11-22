@@ -342,36 +342,36 @@ func HandleEventReplay(broker *nats.Broker, svc *service.Service) http.HandlerFu
 		channel := chi.URLParam(r, "channel")
 		eventID := chi.URLParam(r, "eventId")
 		if channel == "" || eventID == "" {
-			http.Error(w, "channel and eventId required", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "channel and eventId required")
 			return
 		}
 		if !eventIDPatternRe.MatchString(eventID) {
-			http.Error(w, "invalid eventId", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "invalid eventId")
 			return
 		}
 
 		ch, err := svc.ResolveChannelConfig(ctx, channel)
 		if err != nil {
 			if errors.Is(err, domain.ErrNotFound) {
-				http.Error(w, "channel not found", http.StatusNotFound)
+				writeError(w, http.StatusNotFound, "channel not found")
 				return
 			}
-			http.Error(w, "channel configuration unavailable", http.StatusServiceUnavailable)
+			writeError(w, http.StatusServiceUnavailable, "channel configuration unavailable")
 			return
 		}
 		if ch.EncryptionMode == "server_side" && ch.EncryptionKey != "" {
-			http.Error(w, "cannot replay events for server-side encrypted channels via API", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "cannot replay events for server-side encrypted channels via API")
 			return
 		}
 
 		replayBody, err := json.Marshal(map[string]any{"replayed": true, "original_event_id": eventID})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		encryptedBody, err := svc.EncryptForChannel(ctx, channel, replayBody)
 		if err != nil {
-			http.Error(w, "encryption unavailable", http.StatusServiceUnavailable)
+			writeError(w, http.StatusServiceUnavailable, "encryption unavailable")
 			return
 		}
 
@@ -383,7 +383,7 @@ func HandleEventReplay(broker *nats.Broker, svc *service.Service) http.HandlerFu
 		}
 		reencoded, _ := json.Marshal(payload)
 		if err := broker.Publish(channel, reencoded); err != nil {
-			http.Error(w, "publish failed", http.StatusBadGateway)
+			writeError(w, http.StatusBadGateway, "publish failed")
 			return
 		}
 
