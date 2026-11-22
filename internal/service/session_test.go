@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/hkdf"
 	"crypto/sha256"
 	"strings"
 	"testing"
@@ -88,6 +89,17 @@ func TestDeriveSessionSecret(t *testing.T) {
 	assert.Assert(t, secret1 != raw, "derived key must differ from raw SHA-256")
 }
 
+// TestDeriveSessionSecret_BackwardCompatibleVector pins the exact HKDF info
+// string so existing session cookies on live clusters are never invalidated.
+func TestDeriveSessionSecret_BackwardCompatibleVector(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	want, err := hkdf.Key(sha256.New, []byte(secret), nil, "gohookbridge.session.signing.v1", 32)
+	assert.NilError(t, err)
+
+	got := DeriveSessionSecret(secret)
+	assert.Equal(t, string(got[:]), string(want))
+}
+
 func TestValidateSessionSecret(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -104,7 +116,7 @@ func TestValidateSessionSecret(t *testing.T) {
 			err := ValidateSessionSecret(tt.secret)
 			if tt.wantErr {
 				assert.Assert(t, err != nil)
-				assert.Assert(t, strings.Contains(err.Error(), "session_secret must be at least"))
+				assert.Assert(t, strings.Contains(err.Error(), "must be at least"))
 			} else {
 				assert.NilError(t, err)
 			}

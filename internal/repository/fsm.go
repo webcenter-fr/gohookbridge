@@ -1,36 +1,47 @@
 package repository
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
-	"github.com/hashicorp/raft"
+	goraftfsm "github.com/disaster37/go-raft/fsm"
+	hraft "github.com/hashicorp/raft"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
-	"go.etcd.io/bbolt"
+	bolt "go.etcd.io/bbolt"
+	bberrors "go.etcd.io/bbolt/errors"
 )
 
-type fsmCommand struct {
+const fsmDataBucketName = "fsm_data"
+
+// Legacy command payloads retained so pre-migration Raft logs replay cleanly
+// and ApplyBootstrap remains atomic in a single bbolt transaction.
+type legacyFSMCommand struct {
 	Op    string          `json:"op"`
 	Key   string          `json:"key"`
 	Value json.RawMessage `json:"value,omitempty"`
 }
 
-type fsmBootstrapUser struct {
-	Username string `json:"username"`
-	// PasswordHash is the bcrypt hash computed before replication; plaintext
-	// passwords must never enter the Raft log (CWE-312).
-	PasswordHash string `json:"password_hash"`
-	// Password is rejected by the FSM if present (defense in depth).
-	Password string   `json:"password,omitempty"`
-	Roles    []string `json:"roles"`
-	Channels []string `json:"channels"`
+type fsmKV struct {
+	Key    string `json:"key"`
+	Value  []byte `json:"value,omitempty"`
+	Delete bool   `json:"delete,omitempty"`
 }
 
-// fsmMultiPayload carries the key mutations of a transactional "set-multi".
 type fsmMultiPayload struct {
 	Entries []fsmKV `json:"entries"`
+}
+
+type fsmBootstrapUser struct {
+	Username     string   `json:"username"`
+	PasswordHash string   `json:"password_hash"`
+	Password     string   `json:"password,omitempty"`
+	Roles        []string `json:"roles"`
+	Channels     []string `json:"channels"`
 }
 
 type fsmBootstrapPayload struct {
@@ -41,171 +52,257 @@ type fsmBootstrapPayload struct {
 	OIDCProviders       []domain.OIDCProvider `json:"oidc_providers,omitempty"`
 }
 
-type FSM struct {
-	db *bbolt.DB
+// compatFSM delegates KV operations and snapshots to go-raft's BoltKVFSM while
+// enforcing key path validation, atomic bootstrap, and backward-compatible
+// replay of pre-migration log entries and snapshots.
+type compatFSM struct {
+	mu   sync.Mutex
+	dbFn func() *bolt.DB
+	kv   *goraftfsm.BoltKVFSM
 }
 
-func NewFSM(db *bbolt.DB) *FSM {
-	return &FSM{db: db}
+var _ hraft.FSM = (*compatFSM)(nil)
+
+func newCompatFSM(db *bolt.DB) *compatFSM {
+	f := &compatFSM{}
+	if db != nil {
+		f.dbFn = func() *bolt.DB { return db }
+		f.kv = goraftfsm.NewBoltKVFSM(db)
+	}
+	return f
 }
 
-func (f *FSM) Apply(log *raft.Log) interface{} {
-	var cmd fsmCommand
-	if err := json.Unmarshal(log.Data, &cmd); err != nil {
+func (f *compatFSM) bindDB(fn func() *bolt.DB) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dbFn = fn
+	f.kv = nil
+}
+
+func (f *compatFSM) ensureKV() (*goraftfsm.BoltKVFSM, *bolt.DB, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var db *bolt.DB
+	if f.dbFn != nil {
+		db = f.dbFn()
+	}
+	if db == nil {
+		return nil, nil, fmt.Errorf("bolt FSM: nil database")
+	}
+	if f.kv == nil {
+		f.kv = goraftfsm.NewBoltKVFSM(db)
+	}
+	return f.kv, db, nil
+}
+
+func (f *compatFSM) Get(key string) ([]byte, error) {
+	kv, _, err := f.ensureKV()
+	if err != nil {
+		return nil, err
+	}
+	val, ok, err := kv.Get("", key)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return val, nil
+}
+
+func (f *compatFSM) ListPrefix(prefix string) (map[string][]byte, error) {
+	kv, _, err := f.ensureKV()
+	if err != nil {
+		return nil, err
+	}
+	return kv.ListPrefix("", prefix)
+}
+
+func (f *compatFSM) HasData() (bool, error) {
+	kv, _, err := f.ensureKV()
+	if err != nil {
+		return false, err
+	}
+	return kv.HasData()
+}
+
+func (f *compatFSM) Apply(log *hraft.Log) interface{} {
+	kv, db, err := f.ensureKV()
+	if err != nil {
 		return err
 	}
 
+	// Probe whether this entry uses go-raft's CommandCodec ("kind" > 0) or a
+	// legacy/bootstrap command ("op" != "").
+	var probe struct {
+		Kind uint8  `json:"kind"`
+		Op   string `json:"op"`
+	}
+	if err := json.Unmarshal(log.Data, &probe); err != nil {
+		return err
+	}
+	if probe.Kind != 0 {
+		if err := validateCodecKeys(log.Data); err != nil {
+			return err
+		}
+		return kv.Apply(log)
+	}
+	return f.applyLegacyOrBootstrap(kv, db, log.Data)
+}
+
+func validateCodecKeys(raw []byte) error {
+	cmd, err := (goraftfsm.CommandCodec{}).Decode(raw)
+	if err != nil {
+		return err
+	}
+	switch cmd.Kind {
+	case goraftfsm.KindSet, goraftfsm.KindSetJSON, goraftfsm.KindDelete, goraftfsm.KindCreate:
+		var entry goraftfsm.KVEntry
+		if err := json.Unmarshal(cmd.Payload, &entry); err != nil {
+			return err
+		}
+		return validateKey(entry.Key)
+	case goraftfsm.KindSetMulti:
+		var payload goraftfsm.SetMultiPayload
+		if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+			return err
+		}
+		for _, e := range payload.Entries {
+			if err := validateKey(e.Key); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (f *compatFSM) applyLegacyOrBootstrap(kv *goraftfsm.BoltKVFSM, db *bolt.DB, raw []byte) interface{} {
+	var cmd legacyFSMCommand
+	if err := json.Unmarshal(raw, &cmd); err != nil {
+		return err
+	}
 	if cmd.Op != "bootstrap" && cmd.Op != "set-multi" {
 		if err := validateKey(cmd.Key); err != nil {
 			return err
 		}
 	}
-
-	switch cmd.Op {
-	case "set":
-		return f.applySet(cmd.Key, []byte(cmd.Value))
-	case "set-json":
-		return f.applySet(cmd.Key, []byte(cmd.Value))
-	case "set-multi":
-		return f.applySetMulti([]byte(cmd.Value))
-	case "delete":
-		return f.applyDelete(cmd.Key)
-	case "create-channel":
-		return f.applyCreateChannel(cmd.Key, []byte(cmd.Value))
-	case "create-user":
-		return f.applyCreateUser(cmd.Key, []byte(cmd.Value))
-	case "bootstrap":
-		return f.applyBootstrap([]byte(cmd.Value))
-	default:
-		return fmt.Errorf("unknown operation: %s", cmd.Op)
-	}
-}
-
-func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
-	return &Snapshot{db: f.db}, nil
-}
-
-func (f *FSM) Restore(rc io.ReadCloser) error {
-	defer rc.Close()
-	data, err := io.ReadAll(rc)
-	if err != nil {
-		return err
-	}
-	if len(data) == 0 {
-		return f.clearAll()
-	}
-
-	var snapshot struct {
-		Data map[string][]byte `json:"data"`
-	}
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return fmt.Errorf("invalid snapshot data: %w", err)
-	}
-
-	return f.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(fsmDataBucketName))
-		if b == nil {
-			return fmt.Errorf("bucket %s not found", fsmDataBucketName)
-		}
-		// Clear existing data
-		if err := clearBucket(b); err != nil {
+	encodeAndApply := func(kind uint8, payload any) interface{} {
+		data, err := (goraftfsm.CommandCodec{}).Encode(kind, payload)
+		if err != nil {
 			return err
 		}
-		for k, v := range snapshot.Data {
-			if err := b.Put([]byte(k), v); err != nil {
+		return kv.Apply(&hraft.Log{Data: data})
+	}
+	switch cmd.Op {
+	case "set", "set-json":
+		return encodeAndApply(goraftfsm.KindSet, goraftfsm.KVEntry{Key: cmd.Key, Value: []byte(cmd.Value)})
+	case "delete":
+		return encodeAndApply(goraftfsm.KindDelete, goraftfsm.KVEntry{Key: cmd.Key})
+	case "set-multi":
+		var p fsmMultiPayload
+		if err := json.Unmarshal(cmd.Value, &p); err != nil {
+			return err
+		}
+		entries := make([]goraftfsm.KVEntry, 0, len(p.Entries))
+		for _, e := range p.Entries {
+			if err := validateKey(e.Key); err != nil {
 				return err
 			}
+			entries = append(entries, goraftfsm.KVEntry{Key: e.Key, Value: e.Value, Delete: e.Delete})
 		}
-		return nil
-	})
-}
-
-func (f *FSM) applyCreateChannel(key string, value []byte) error {
-	return f.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(fsmDataBucketName))
-		if b == nil {
-			return fmt.Errorf("bucket %s not found", fsmDataBucketName)
+		return encodeAndApply(goraftfsm.KindSetMulti, goraftfsm.SetMultiPayload{Entries: entries})
+	case "create-channel":
+		resp := encodeAndApply(goraftfsm.KindCreate, goraftfsm.KVEntry{Key: cmd.Key, Value: []byte(cmd.Value)})
+		if respErr, ok := resp.(error); ok && errors.Is(respErr, goraftfsm.ErrConflict) {
+			return fmt.Errorf("%w: channel %q", domain.ErrAlreadyExists, strings.TrimPrefix(strings.TrimSuffix(cmd.Key, "/"), "/channels/"))
 		}
-		existing := b.Get([]byte(key))
-		if existing != nil {
-			return fmt.Errorf("%w: channel %q", domain.ErrAlreadyExists, strings.TrimPrefix(strings.TrimSuffix(key, "/"), "/channels/"))
-		}
-		return b.Put([]byte(key), value)
-	})
-}
-
-func (f *FSM) applyCreateUser(key string, value []byte) error {
-	return f.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(fsmDataBucketName))
-		if b == nil {
-			return fmt.Errorf("bucket %s not found", fsmDataBucketName)
-		}
-		if b.Get([]byte(key)) != nil {
-			return fmt.Errorf("%w: user %q", domain.ErrAlreadyExists, strings.TrimPrefix(strings.TrimSuffix(key, "/"), "/users/"))
-		}
-		if err := b.Put([]byte(key), value); err != nil {
-			return err
-		}
-		// The username index is written in the same transaction as the user so
-		// a crash can never leave the index pointing at a missing user.
+		return resp
+	case "create-user":
 		var u domain.User
-		if err := json.Unmarshal(value, &u); err != nil {
+		if err := json.Unmarshal(cmd.Value, &u); err != nil {
 			return err
 		}
 		if u.Username == "" {
 			return fmt.Errorf("create user: username required")
 		}
-		return b.Put([]byte(usernameIndexKey(u.Username)+"/"), usernameIndexValue(u.ID))
-	})
+		resp := encodeAndApply(goraftfsm.KindSetMulti, goraftfsm.SetMultiPayload{Entries: []goraftfsm.KVEntry{
+			{Key: cmd.Key, Value: []byte(cmd.Value), Create: true},
+			{Key: usernameIndexKey(u.Username) + "/", Value: usernameIndexValue(u.ID)},
+		}})
+		if respErr, ok := resp.(error); ok && errors.Is(respErr, goraftfsm.ErrConflict) {
+			return fmt.Errorf("%w: user %q", domain.ErrAlreadyExists, strings.TrimPrefix(strings.TrimSuffix(cmd.Key, "/"), "/users/"))
+		}
+		return resp
+	case "bootstrap":
+		return applyBootstrapTx(db, cmd.Value)
+	default:
+		return fmt.Errorf("unknown operation: %s", cmd.Op)
+	}
 }
 
-// applySetMulti applies a batch of key mutations in a single Bolt transaction,
-// so a failed/partial write cannot leave the FSM inconsistent.
-func (f *FSM) applySetMulti(value []byte) error {
-	var payload fsmMultiPayload
-	if err := json.Unmarshal(value, &payload); err != nil {
+func (f *compatFSM) Snapshot() (hraft.FSMSnapshot, error) {
+	kv, _, err := f.ensureKV()
+	if err != nil {
+		return nil, err
+	}
+	return kv.Snapshot()
+}
+
+func (f *compatFSM) Restore(rc io.ReadCloser) error {
+	defer func() { _ = rc.Close() }()
+	kv, db, err := f.ensureKV()
+	if err != nil {
 		return err
 	}
-	for _, e := range payload.Entries {
-		if err := validateKey(e.Key); err != nil {
-			return err
-		}
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return err
 	}
-	return f.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(fsmDataBucketName))
-		if b == nil {
-			return fmt.Errorf("bucket %s not found", fsmDataBucketName)
-		}
-		for _, e := range payload.Entries {
-			if e.Delete {
-				if err := b.Delete([]byte(e.Key)); err != nil {
-					return err
-				}
-				continue
-			}
-			if err := b.Put([]byte(e.Key), e.Value); err != nil {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return db.Update(func(tx *bolt.Tx) error {
+			if err := tx.DeleteBucket([]byte(fsmDataBucketName)); err != nil && !errors.Is(err, bberrors.ErrBucketNotFound) {
 				return err
 			}
-		}
-		return nil
-	})
+			_, err := tx.CreateBucket([]byte(fsmDataBucketName))
+			return err
+		})
+	}
+	// Detect legacy gohookbridge snapshot {"data": {"/k": "<b64>"}} vs
+	// go-raft BoltKVFSM flat map {"/k": "<b64>"}.
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(data, &rawMap); err != nil {
+		return fmt.Errorf("invalid snapshot data: %w", err)
+	}
+	restoreBytes := data
+	if nested, ok := rawMap["data"]; ok && len(rawMap) == 1 && len(bytes.TrimSpace(nested)) > 0 && bytes.TrimSpace(nested)[0] == '{' {
+		restoreBytes = nested
+	}
+	if err := kv.Restore(io.NopCloser(bytes.NewReader(restoreBytes))); err != nil {
+		return fmt.Errorf("invalid snapshot data: %w", err)
+	}
+	return nil
 }
 
-func (f *FSM) applyBootstrap(value []byte) error {
+func validateKey(key string) error {
+	if strings.Contains(key, "..") {
+		return fmt.Errorf("invalid key: contains '..'")
+	}
+	if strings.HasPrefix(key, "/") {
+		return nil
+	}
+	return fmt.Errorf("invalid key: must start with '/'")
+}
+
+// applyBootstrapTx applies a bootstrap payload inside one Bolt transaction,
+// rejecting plaintext passwords (F15) and refusing to run when the FSM already
+// holds data.
+func applyBootstrapTx(db *bolt.DB, value []byte) error {
 	var payload fsmBootstrapPayload
 	if err := json.Unmarshal(value, &payload); err != nil {
 		return err
 	}
 
-	return f.db.Update(func(tx *bbolt.Tx) error {
+	return db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(fsmDataBucketName))
 		if b == nil {
 			return fmt.Errorf("bucket %s not found", fsmDataBucketName)
-		}
-		if err := b.ForEach(func(_, _ []byte) error {
-			return nil // just check if data exists
-		}); err != nil {
-			return err
 		}
 		c := b.Cursor()
 		if k, _ := c.First(); k != nil {
@@ -298,58 +395,4 @@ func (f *FSM) applyBootstrap(value []byte) error {
 
 		return nil
 	})
-}
-
-func (f *FSM) applySet(key string, value []byte) error {
-	return f.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(fsmDataBucketName))
-		if b == nil {
-			return fmt.Errorf("bucket %s not found", fsmDataBucketName)
-		}
-		return b.Put([]byte(key), value)
-	})
-}
-
-func (f *FSM) applyDelete(key string) error {
-	return f.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(fsmDataBucketName))
-		if b == nil {
-			return nil
-		}
-		return b.Delete([]byte(key))
-	})
-}
-
-func (f *FSM) clearAll() error {
-	return f.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(fsmDataBucketName))
-		if b == nil {
-			return nil
-		}
-		return clearBucket(b)
-	})
-}
-
-func clearBucket(b *bbolt.Bucket) error {
-	keys := make([][]byte, 0)
-	c := b.Cursor()
-	for k, _ := c.First(); k != nil; k, _ = c.Next() {
-		keys = append(keys, k)
-	}
-	for _, k := range keys {
-		if err := b.Delete(k); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateKey(key string) error {
-	if strings.Contains(key, "..") {
-		return fmt.Errorf("invalid key: contains '..'")
-	}
-	if strings.HasPrefix(key, "/") {
-		return nil
-	}
-	return fmt.Errorf("invalid key: must start with '/'")
 }

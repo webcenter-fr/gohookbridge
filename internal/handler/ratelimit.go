@@ -1,11 +1,10 @@
 package handler
 
 import (
-	"encoding/json"
-	"fmt"
-	"net"
 	"net/http"
 
+	sgdomain "github.com/disaster37/go-secguard/domain"
+	sgnethttp "github.com/disaster37/go-secguard/nethttp"
 	"github.com/go-chi/chi/v5"
 	"github.com/webcenter-fr/gohookbridge/internal/service"
 )
@@ -27,11 +26,7 @@ func BanMiddleware(tracker *service.BanTracker, svc *service.Service) func(http.
 			}
 
 			if tracker.IsBanned(ip.String()) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
-				_ = json.NewEncoder(w).Encode(map[string]string{
-					"error": "IP address is banned due to suspicious activity",
-				})
+				sgnethttp.WriteError(w, sgdomain.ErrIPBanned)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -56,11 +51,7 @@ func RateLimitMiddleware(limiter *service.RateLimiter, svc *service.Service) fun
 			}
 
 			if !limiter.Allow(ip.String(), cfg.Server.RateLimitRequests, cfg.Server.RateLimitWindowSeconds) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusTooManyRequests)
-				_ = json.NewEncoder(w).Encode(map[string]string{
-					"error": "rate limit exceeded",
-				})
+				sgnethttp.WriteError(w, sgdomain.ErrRateLimited)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -69,28 +60,11 @@ func RateLimitMiddleware(limiter *service.RateLimiter, svc *service.Service) fun
 }
 
 func APIBansHandler(tracker *service.BanTracker) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(tracker.ListBans())
-	}
+	return sgnethttp.APIBansHandler(tracker)
 }
 
 func APIUnbanHandler(tracker *service.BanTracker) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ip := chi.URLParam(r, "ip")
-		if ip == "" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "IP address required"})
-			return
-		}
-		if net.ParseIP(ip) == nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("invalid IP address %q", ip)})
-			return
-		}
-		tracker.Unban(ip)
-		w.WriteHeader(http.StatusNoContent)
-	}
+	return sgnethttp.APIUnbanHandler(tracker, func(r *http.Request) string {
+		return chi.URLParam(r, "ip")
+	})
 }

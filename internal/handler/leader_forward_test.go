@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/disaster37/go-raft/transport"
 	"gotest.tools/v3/assert"
 )
 
@@ -155,10 +156,10 @@ func TestLeaderForwardUsesTLSAndRejectsWrongCert(t *testing.T) {
 	assert.NilError(t, err)
 
 	t.Run("trusted CA forwards", func(t *testing.T) {
-		baseTransport, ok := leader.Client().Transport.(*http.Transport)
-		assert.Assert(t, ok)
-		tr := baseTransport.Clone()
-		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "127.0.0.1:6001"}, leaderPort, tr, "https")(
+		trustedPool := x509.NewCertPool()
+		trustedPool.AddCert(leader.Certificate())
+		provider := transport.NewDynamicTLSProvider(tls.Certificate{}, trustedPool, trustedPool, false)
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "127.0.0.1:6001"}, leaderPort, provider, "https")(
 			http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("must not be called") }),
 		)
 		rec := httptest.NewRecorder()
@@ -167,8 +168,8 @@ func TestLeaderForwardUsesTLSAndRejectsWrongCert(t *testing.T) {
 	})
 
 	t.Run("untrusted CA is rejected", func(t *testing.T) {
-		tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS12}}
-		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "127.0.0.1:6001"}, leaderPort, tr, "https")(
+		provider := transport.NewDynamicTLSProvider(tls.Certificate{}, x509.NewCertPool(), x509.NewCertPool(), false)
+		handler := LeaderForwardMiddleware(&fakeLeaderInfo{leader: false, addr: "127.0.0.1:6001"}, leaderPort, provider, "https")(
 			http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("must not be called") }),
 		)
 		rec := httptest.NewRecorder()

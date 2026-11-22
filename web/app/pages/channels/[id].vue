@@ -375,6 +375,10 @@ const form = reactive({
 
 const accessTokens = ref<{ id: string; name: string; scope: string; created_at: string }[]>([])
 
+// confirmedAccessMode is the last server-confirmed access mode. A rejected
+// change is reverted to it so the combobox never shows an unsaved value.
+const confirmedAccessMode = ref('public')
+
 const aclEntries = ref<{ id: string; channel_id: string; type: string; subject: string; role: string }[]>([])
 const aclLoading = ref(false)
 const showAclModal = ref(false)
@@ -649,8 +653,10 @@ async function handleDeleteToken(tokenId: string) {
 async function handleAccessModeChange(value: string | number) {
   try {
     await api.updateAccessMode(channelId, String(value))
+    confirmedAccessMode.value = String(value)
     toast.add({ title: `Access mode set to ${value}`, color: 'success' })
   } catch (e: any) {
+    form.access_mode = confirmedAccessMode.value
     toast.add({ title: e.message || 'Failed to update access mode', color: 'error' })
   }
 }
@@ -660,6 +666,7 @@ async function loadAccessTokens() {
     const result = await api.listAccessTokens(channelId)
     accessTokens.value = result.tokens
     form.access_mode = result.access_mode
+    confirmedAccessMode.value = result.access_mode
   } catch (e: any) {
     toast.add({ title: e.message || 'Failed to load access tokens', color: 'error' })
     accessTokens.value = []
@@ -732,6 +739,7 @@ onMounted(async () => {
     form.encryption_key_configured = !!channel.value.encryption_key_configured
     form.encryption_public_key = channel.value.encryption_public_key || ''
     form.access_mode = channel.value.access_mode || 'public'
+    confirmedAccessMode.value = form.access_mode
 
     await Promise.all([loadAccessTokens(), loadAcl()])
 

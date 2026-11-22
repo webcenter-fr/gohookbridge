@@ -490,7 +490,7 @@ func TestApplyBootstrapHashesBeforeApply(t *testing.T) {
 	}
 	assert.NilError(t, rs.ApplyBootstrap(context.Background(), cfg))
 
-	logStore := newBoltLogStore(rs.db)
+	logStore := rs.node.Storage().LogStore()
 	first, err := logStore.FirstIndex()
 	assert.NilError(t, err)
 	last, err := logStore.LastIndex()

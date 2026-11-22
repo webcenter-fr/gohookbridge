@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/disaster37/go-auth/httpcookie"
+	goauthpassword "github.com/disaster37/go-auth/password"
 	"github.com/webcenter-fr/gohookbridge/internal/service"
 )
 
@@ -14,44 +17,34 @@ const (
 	sessionMaxAge     = 86400
 )
 
-// dummyPasswordHash is a valid bcrypt hash of an unguessable placeholder
-// password. It is compared against the submitted password when the username is
-// unknown so that login response timing does not reveal whether an account
-// exists (CWE-204).
-//
-//nolint:gosec // this is a dummy hash used for timing equalization, not a credential
-const dummyPasswordHash = "$2a$10$GB/spbww7shMhAoZAdOXKOcdUaA/W1gnFjKLZpLdW.xe6U0FUNBfe"
+func sessionCookieConfig(secure bool) httpcookie.Config {
+	cfg := httpcookie.DefaultConfig()
+	cfg.SessionName = sessionCookieName
+	cfg.Path = "/"
+	cfg.Secure = secure
+	cfg.SameSite = http.SameSiteLaxMode
+	return cfg
+}
 
 func setSessionCookie(w http.ResponseWriter, token string, secure bool) {
-	//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   sessionMaxAge,
-	})
+	spec := httpcookie.IssueSessionSpec(sessionCookieConfig(secure), false, token, sessionMaxAge)
+	http.SetCookie(w, spec.ToStdlib())
 }
 
 func clearSessionCookie(w http.ResponseWriter, secure bool) {
-	//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   -1,
-	})
+	spec := httpcookie.ClearSessionSpec(sessionCookieConfig(secure), false)
+	http.SetCookie(w, spec.ToStdlib())
 }
 
-// unauthorizedResponse clears the session cookie and answers GETs with a
-// redirect to the login page and other methods with 401.
+// unauthorizedResponse clears the session cookie. API requests always receive
+// a JSON 401 (so the UI never parses the SPA HTML fallback as JSON); non-API
+// GETs redirect to the login page and other methods return a plain 401.
 func unauthorizedResponse(w http.ResponseWriter, r *http.Request, secure bool) {
 	clearSessionCookie(w, secure)
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	if r.Method == http.MethodGet {
 		redirectURL := r.URL.String()
 		//nolint:gosec
@@ -179,7 +172,7 @@ func APILoginHandler(svc *service.Service, secret [32]byte, banTracker *service.
 		if !valid {
 			// Equalize the response time for unknown usernames with a dummy
 			// bcrypt comparison so timing does not leak account existence.
-			_ = service.ValidatePassword(dummyPasswordHash, body.Password)
+			goauthpassword.EqualizeTiming(body.Password)
 			svc.RecordCredentialFailure(ctx, banTracker, r, throttleKey)
 			http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 			return

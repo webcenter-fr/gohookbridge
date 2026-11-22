@@ -2,14 +2,13 @@ package repository
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 
+	"github.com/disaster37/go-auth/apitoken"
+	goauthpassword "github.com/disaster37/go-auth/password"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
-	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
 
@@ -108,8 +107,7 @@ func LoadBootstrap(path string) (*BootstrapConfig, error) {
 // service.HashToken does (SHA-256 hex). Duplicated here because the repository
 // layer must not import service.
 func hashBootstrapToken(raw string) string {
-	h := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(h[:])
+	return apitoken.Hash(raw)
 }
 
 func (rs *RaftStore) ApplyBootstrap(ctx context.Context, cfg *BootstrapConfig) error {
@@ -128,13 +126,13 @@ func (rs *RaftStore) ApplyBootstrap(ctx context.Context, cfg *BootstrapConfig) e
 	for _, u := range cfg.Users {
 		// Hash once, before replication: the plaintext password must never
 		// enter the Raft log or any snapshot (CWE-312).
-		hash, err := bcrypt.GenerateFromPassword([]byte(u.Password), bcrypt.DefaultCost)
+		hash, err := goauthpassword.Hash(u.Password)
 		if err != nil {
 			return fmt.Errorf("hash bootstrap password for user %q: %w", u.Username, err)
 		}
 		payload.Users = append(payload.Users, fsmBootstrapUser{
 			Username:     u.Username,
-			PasswordHash: string(hash),
+			PasswordHash: hash,
 			Roles:        u.Roles,
 			Channels:     u.Channels,
 		})
@@ -244,10 +242,9 @@ func (rs *RaftStore) ApplyBootstrap(ctx context.Context, cfg *BootstrapConfig) e
 	if err != nil {
 		return fmt.Errorf("marshal bootstrap payload: %w", err)
 	}
-	cmd, err := json.Marshal(fsmCommand{Op: "bootstrap", Value: val})
+	cmd, err := json.Marshal(legacyFSMCommand{Op: "bootstrap", Value: val})
 	if err != nil {
 		return fmt.Errorf("marshal bootstrap command: %w", err)
 	}
-	_, err = rs.Apply(cmd)
-	return err
+	return rs.applyRaw(ctx, cmd)
 }

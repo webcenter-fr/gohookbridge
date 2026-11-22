@@ -21,6 +21,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/disaster37/go-raft/discovery"
+	"github.com/disaster37/go-raft/pki"
+	"github.com/disaster37/go-raft/transport"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/urfave/cli/v2"
@@ -31,8 +34,8 @@ import (
 	"github.com/webcenter-fr/gohookbridge/internal/service"
 	"github.com/webcenter-fr/gohookbridge/internal/web"
 	"github.com/webcenter-fr/gohookbridge/pkg/nats"
-	"github.com/webcenter-fr/gohookbridge/pkg/tlsreload"
 	"golang.org/x/crypto/acme/autocert"
+	"k8s.io/client-go/kubernetes"
 )
 
 //go:embed templates/favicon.svg
@@ -186,28 +189,36 @@ func NewServer(c *cli.Context) (*Server, error) {
 	explicitPublicURL := c.String("public-url")
 
 	hostname, _ := os.Hostname()
-	discovery := repository.RaftDiscoveryConfig{
+	discCfg := discovery.Config{
 		NodeID:          c.String("raft-node-id"),
 		AdvertiseAddr:   c.String("raft-advertise-addr"),
 		BindAddr:        c.String("raft-bind-addr"),
-		Peers:           toRaftPeers(c.StringSlice("raft-peers")),
+		Peers:           discovery.ParseLegacyPeers(c.StringSlice("raft-peers")),
 		Replicas:        c.Int("raft-replicas"),
 		StatefulSetName: c.String("raft-statefulset-name"),
 		HeadlessService: c.String("raft-headless-service"),
 		Namespace:       effectiveNamespace(c),
 		ClusterDomain:   c.String("raft-cluster-domain"),
 	}
-	resolver := repository.NewPeerResolver(&discovery)
-	advertise, err := repository.DeriveAdvertiseAddr(&discovery, hostname)
+	resolver := discovery.NewPeerResolver(&discCfg)
+	advertise, err := discovery.DeriveAdvertiseAddr(&discCfg, hostname)
 	if err != nil {
 		return nil, fmt.Errorf("derive raft advertise addr: %w", err)
 	}
-	raftTLS, err := buildRaftTLSConfig(c, discovery, hostname)
-	if err != nil {
-		return nil, fmt.Errorf("build raft TLS config: %w", err)
+
+	isMultiNode := c.Int("raft-replicas") > 1 || len(discCfg.Peers) > 1
+	if isMultiNode && !c.Bool("raft-tls-enabled") {
+		log.Printf("WARNING: raft TLS is disabled on a multi-node deployment; Raft traffic (password hashes, session secret, encryption keys) is sent in cleartext (CWE-319/311)")
 	}
 
 	leaderWaitTimeout := c.Duration("raft-leader-wait-timeout")
+
+	// Optional Kubernetes clientset for Secret-based CA bootstrap and
+	// generation fencing.
+	var clientset kubernetes.Interface
+	if discCfg.Namespace != "" || c.String("raft-tls-ca-secret") != "" {
+		clientset, _ = newK8sClientset()
+	}
 
 	// Automatic single-node collapse: when the operator scales the StatefulSet
 	// down to one replica, Raft cannot commit the membership change that
@@ -216,39 +227,16 @@ func NewServer(c *cli.Context) (*Server, error) {
 	// spec.replicas == 1 on the StatefulSet. Multi-voter deployments are
 	// unaffected and still require --raft-recovery-mode for manual quorum loss.
 	singleNodeRecovery := false
-	var replicaReader *statefulSetReplicaReader
-	if discovery.StatefulSetName != "" && discovery.Namespace != "" && c.Int("raft-replicas") > 1 {
-		replicaReader = newStatefulSetReplicaReader(discovery.Namespace, discovery.StatefulSetName)
-		if replicas, ok := replicaReader.replicas(ctx); ok && replicas == 1 {
+	var replicaReader *replicaReaderAdapter
+	if discCfg.StatefulSetName != "" && discCfg.Namespace != "" && c.Int("raft-replicas") > 1 {
+		replicaReader = newStatefulSetReplicaReader(discCfg.Namespace, discCfg.StatefulSetName)
+		if replicas, ok := replicaReader.Replicas(ctx); ok && replicas == 1 {
 			singleNodeRecovery = true
-			log.Printf("WARNING: StatefulSet %s/%s has 1 replica; enabling single-node Raft recovery", discovery.Namespace, discovery.StatefulSetName)
+			log.Printf("WARNING: StatefulSet %s/%s has 1 replica; enabling single-node Raft recovery", discCfg.Namespace, discCfg.StatefulSetName)
 		}
 	}
 
-	// Generation fencing: a recovery bumps the cluster generation shared
-	// through the CA Secret (bootstrap node only). A node that starts with an
-	// older generation still holds a pre-recovery configuration and could form
-	// a separate quorum with other stale nodes; it clears its Raft state and
-	// rejoins the bootstrap node instead.
-	generationStore := newRaftGenerationStore(effectiveNamespace(c), c.String("raft-tls-ca-secret"))
-	bootstrapNode := strings.HasSuffix(hostname, "-0") || c.Int("raft-replicas") <= 1
-	var clusterGeneration uint64
-	if generationStore != nil {
-		clusterGeneration, _ = generationStore.read(ctx)
-	}
-	localGeneration, _ := readLocalGeneration(c.String("raft-dir"))
-	if generationStore != nil && bootstrapNode && (singleNodeRecovery || c.Bool("raft-recovery-mode")) {
-		if next, genErr := generationStore.bump(ctx); genErr != nil {
-			log.Printf("WARNING: raft generation bump failed (%v); stale nodes may not rejoin cleanly", genErr)
-		} else {
-			clusterGeneration = next
-			localGeneration = next
-		}
-	}
-	staleGeneration := !bootstrapNode && clusterGeneration > localGeneration
-	if staleGeneration {
-		log.Printf("WARNING: raft generation %d supersedes local %d; clearing stale Raft state to rejoin", clusterGeneration, localGeneration)
-	}
+	genFencer := newSoftGenerationFencer(clientset, discCfg.Namespace, c.String("raft-tls-ca-secret"))
 
 	atRestKeeper, err := loadAtRestKeeper(c.String("at-rest-key-file"), c.Int("raft-replicas"), c.String("raft-dir"))
 	if err != nil {
@@ -256,38 +244,46 @@ func NewServer(c *cli.Context) (*Server, error) {
 	}
 
 	rs, err := repository.NewRaftStore(repository.RaftConfig{
-		Dir:                   c.String("raft-dir"),
-		NodeID:                c.String("raft-node-id"),
-		BindAddr:              c.String("raft-bind-addr"),
-		AdvertiseAddr:         advertise,
-		Peers:                 c.StringSlice("raft-peers"),
-		BootstrapPath:         c.String("bootstrap-config-file"),
-		Replicas:              c.Int("raft-replicas"),
-		StatefulSetName:       c.String("raft-statefulset-name"),
-		HeadlessService:       c.String("raft-headless-service"),
-		Namespace:             effectiveNamespace(c),
-		ClusterDomain:         c.String("raft-cluster-domain"),
-		RecoveryMode:          c.Bool("raft-recovery-mode") || staleGeneration,
-		SingleNodeRecovery:    singleNodeRecovery,
-		NoSnapshotRestore:     c.Bool("raft-no-snapshot-restore"),
-		PerformanceMultiplier: c.Float64("raft-performance-multiplier"),
-		ApplyTimeout:          10 * time.Second,
-		Resolver:              resolver,
-		TLS:                   raftTLS,
-		AtRest:                atRestKeeper,
+		Dir:                    c.String("raft-dir"),
+		NodeID:                 c.String("raft-node-id"),
+		BindAddr:               c.String("raft-bind-addr"),
+		AdvertiseAddr:          advertise,
+		Peers:                  c.StringSlice("raft-peers"),
+		BootstrapPath:          c.String("bootstrap-config-file"),
+		Replicas:               c.Int("raft-replicas"),
+		StatefulSetName:        c.String("raft-statefulset-name"),
+		HeadlessService:        c.String("raft-headless-service"),
+		Namespace:              effectiveNamespace(c),
+		ClusterDomain:          c.String("raft-cluster-domain"),
+		RecoveryMode:           c.Bool("raft-recovery-mode"),
+		SingleNodeRecovery:     singleNodeRecovery,
+		NoSnapshotRestore:      c.Bool("raft-no-snapshot-restore"),
+		PerformanceMultiplier:  c.Float64("raft-performance-multiplier"),
+		ApplyTimeout:           10 * time.Second,
+		Resolver:               resolver,
+		TLSEnabled:             c.Bool("raft-tls-enabled"),
+		TLSDir:                 c.String("raft-tls-dir"),
+		TLSValidity:            c.Duration("raft-tls-validity"),
+		TLSCACertPath:          c.String("raft-tls-ca-cert"),
+		TLSCertPath:            c.String("raft-tls-cert"),
+		TLSKeyPath:             c.String("raft-tls-key"),
+		TLSCASecret:            c.String("raft-tls-ca-secret"),
+		TLSCABootstrap:         discovery.ShouldCABootstrap(c.Bool("raft-tls-ca-bootstrap"), isMultiNode, hostname),
+		TLSClientAuth:          c.Bool("raft-tls-client-auth"),
+		TLSClientAuthSet:       true,
+		TLSSecretPollTimeout:   leaderWaitTimeout,
+		GenerationFencer:       genFencer,
+		ReplicaCountAuthorizer: replicaReader,
+		Clientset:              clientset,
+		AtRest:                 atRestKeeper,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("init raft store: %w", err)
 	}
 	startupCtx, cancelStartup := context.WithCancel(context.Background())
-	if generationStore != nil {
-		if err := writeLocalGeneration(c.String("raft-dir"), clusterGeneration); err != nil {
-			log.Printf("WARNING: persist raft generation: %v", err)
-		}
-	}
 
 	// Wait for ANY leader (followers must not CrashLoop waiting for self
-	// leadership), then start the leader-only membership join loop.
+	// leadership); go-raft's Node.Start runs the membership join loop itself.
 	leaderCtx, cancelLeader := context.WithTimeout(startupCtx, leaderWaitTimeout)
 	defer cancelLeader()
 	if err := rs.WaitForLeader(leaderCtx); err != nil {
@@ -295,7 +291,6 @@ func NewServer(c *cli.Context) (*Server, error) {
 		_ = rs.Shutdown()
 		return nil, fmt.Errorf("wait for raft leader: %w", err)
 	}
-	go rs.StartJoinLoop(startupCtx)
 	if replicaReader != nil && strings.HasSuffix(hostname, "-0") {
 		go watchSingleNodeRecovery(startupCtx, replicaReader, rs, leaderWaitTimeout)
 	}
@@ -334,23 +329,41 @@ func NewServer(c *cli.Context) (*Server, error) {
 		SubQueueDepth:   c.Int("sse-queue-depth"),
 		SubQueueBytes:   c.Int("sse-queue-bytes"),
 	}
+	// Advertise the pod's stable DNS name (the same host Raft advertises) with
+	// the NATS cluster port so gossiped route INFOs match the DNS-name routes
+	// and the certificate's DNS SANs. Without this, peers gossip the observed
+	// pod IP, which fails route-TLS verification and triggers an endless
+	// implicit-reconnect storm.
+	if host, _, err := net.SplitHostPort(advertise); err == nil {
+		natsCfg.ClusterAdvertise = net.JoinHostPort(host, strconv.Itoa(c.Int("nats-cluster-port")))
+	}
 	if caFile, certFile, keyFile := c.String("nats-cluster-tls-ca"), c.String("nats-cluster-tls-cert"), c.String("nats-cluster-tls-key"); caFile != "" || certFile != "" || keyFile != "" {
 		if caFile == "" || certFile == "" || keyFile == "" {
 			cancelStartup()
 			_ = rs.Shutdown()
 			return nil, fmt.Errorf("nats cluster TLS: ca/cert/key must all be set together")
 		}
-		provider := tlsreload.NewProvider(certFile, keyFile, caFile, 5*time.Second)
-		if err := provider.Load(); err != nil {
+		watcher, err := transport.NewFileWatcher(certFile, keyFile, caFile, 5*time.Second, pki.DefaultSafetyMargin, true, nil)
+		if err != nil {
 			cancelStartup()
 			_ = rs.Shutdown()
 			return nil, fmt.Errorf("nats cluster TLS: %w", err)
 		}
-		go provider.Start(ctx)
-		natsCfg.ClusterTLS = provider.TLSConfig(&tls.Config{
-			MinVersion: tls.VersionTLS12,
-			ClientAuth: tls.RequireAndVerifyClientCert,
-		})
+		go watcher.Start(startupCtx)
+		p := watcher.Provider()
+		pool := p.CurrentCertPool()
+		// nats-server/v2 uses ClusterTLS for BOTH inbound accepts and outbound
+		// peer route dials; wiring every hook ensures mutual TLS works in both
+		// directions.
+		natsCfg.ClusterTLS = &tls.Config{
+			MinVersion:           tls.VersionTLS12,
+			ClientAuth:           tls.RequireAndVerifyClientCert,
+			GetCertificate:       p.GetCertificate,
+			GetClientCertificate: p.GetClientCertificate,
+			GetConfigForClient:   p.GetConfigForClient,
+			RootCAs:              pool,
+			ClientCAs:            pool,
+		}
 	}
 	broker, natsErr := nats.New(natsCfg)
 	if natsErr != nil {
@@ -481,20 +494,22 @@ func NewServer(c *cli.Context) (*Server, error) {
 
 	mainRouter.Get(handler.EventsPath, handler.ChannelAccessMiddleware(svc, "consume", banTrackerInst)(handler.HandleEventsGet(broker, svc, c.Int("max-sse-connections"))).ServeHTTP)
 
-	// OIDC routes (registered dynamically from Raft config)
+	// OIDC routes: validate every configured provider at startup (fail fast on
+	// invalid config), then register generic routes that resolve the provider
+	// at request time so providers added/changed through the UI after boot get
+	// working /login and /callback routes without a restart.
 	providers, _ := svc.OIDCProviders(ctx)
 	for _, provider := range providers {
-		oidcHandler, err := handler.NewOIDCHandler(provider, sessionSecret, publicURL, cookieSecure)
-		if err != nil {
+		if _, err := handler.NewOIDCHandler(provider, sessionSecret, publicURL, cookieSecure); err != nil {
 			cancelStartup()
 			broker.Shutdown()
 			_ = rs.Shutdown()
 			return nil, fmt.Errorf("init OIDC handler for %s: %w", provider.ID, err)
 		}
-		oidcHandler.Resolver = svc
-		mainRouter.Get("/auth/oidc/"+provider.ID+"/login", oidcHandler.LoginHandler())
-		mainRouter.Get("/auth/oidc/"+provider.ID+"/callback", oidcHandler.CallbackHandler())
 	}
+	oidcResolver := newOIDCRouteResolver(svc, sessionSecret, publicURL, cookieSecure)
+	mainRouter.Get("/auth/oidc/{provider}/login", oidcResolver.LoginHandler())
+	mainRouter.Get("/auth/oidc/{provider}/callback", oidcResolver.CallbackHandler())
 
 	// SPA handler — all unmatched GET routes serve the SPA
 	mainRouter.NotFound(web.SPAHandler().ServeHTTP)
@@ -511,22 +526,17 @@ func NewServer(c *cli.Context) (*Server, error) {
 	// with the per-pod certificate, and followers authenticate to the leader
 	// with the same certificate material (F13).
 	forwardScheme := "http"
-	var forwardTransport *http.Transport
+	var forwardTLSProvider *transport.DynamicTLSProvider
 	if certFile != "" && certKey != "" && c.String("raft-tls-ca-cert") != "" {
-		provider := tlsreload.NewProvider(certFile, certKey, c.String("raft-tls-ca-cert"), 5*time.Second)
-		if err := provider.Load(); err != nil {
+		watcher, err := transport.NewFileWatcher(certFile, certKey, c.String("raft-tls-ca-cert"), 5*time.Second, pki.DefaultSafetyMargin, false, nil)
+		if err != nil {
 			cancelStartup()
 			broker.Shutdown()
 			_ = rs.Shutdown()
 			return nil, fmt.Errorf("leader-forward TLS: %w", err)
 		}
-		go provider.Start(ctx)
-		forwardTransport = &http.Transport{
-			TLSClientConfig:       provider.TLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}),
-			ResponseHeaderTimeout: 10 * time.Second,
-			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-			ForceAttemptHTTP2:     true,
-		}
+		go watcher.Start(startupCtx)
+		forwardTLSProvider = watcher.Provider()
 		forwardScheme = "https"
 	}
 
@@ -534,7 +544,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 	apiRouter := chi.NewRouter()
 	// Mutating requests must reach the Raft leader; in an HA deployment the
 	// Service load-balances over all replicas, so followers forward writes.
-	apiRouter.Use(handler.LeaderForwardMiddleware(rs, c.Int("port"), forwardTransport, forwardScheme))
+	apiRouter.Use(handler.LeaderForwardMiddleware(rs, c.Int("port"), forwardTLSProvider, forwardScheme))
 	apiRouter.Use(handler.MutationOriginValidation(svc))
 	apiRouter.Use(handler.RequireAuthDynamic(svc, sessionSecret, cookieSecure))
 	handler.RegisterAPIHandlers(apiRouter, svc)
@@ -556,6 +566,9 @@ func NewServer(c *cli.Context) (*Server, error) {
 		r.Get("/bans", handler.APIBansHandler(banTrackerInst))
 		r.With(handler.RequirePermission(svc, domain.PermGlobalWrite)).Delete("/bans/{ip}", handler.APIUnbanHandler(banTrackerInst))
 	})
+	// Unmatched /api/* routes return a JSON 404 instead of the SPA HTML
+	// fallback (which would surface as "Unexpected token '<'" in the UI).
+	apiRouter.NotFound(handler.NotFoundJSON)
 	mainRouter.Mount("/api", apiRouter)
 
 	finalRouter := chi.NewRouter()
@@ -588,6 +601,11 @@ func NewServer(c *cli.Context) (*Server, error) {
 		fmt.Fprintf(os.Stdout, "Public listener (webhook ingestion): %s\n", publicHTTPServer.Addr)
 	}
 
+	internalHTTPServer := newHTTPServer(cfg.internalAddr, finalRouter)
+	if forwardTLSProvider != nil {
+		internalHTTPServer.TLSConfig = forwardTLSProvider.ServerTLSConfig()
+	}
+
 	return &Server{
 		repo:             rs,
 		svc:              svc,
@@ -600,7 +618,7 @@ func NewServer(c *cli.Context) (*Server, error) {
 		certKey:          certKey,
 		autoCert:         autoCert,
 		cancelCtx:        cancelStartup,
-		httpServer:       newHTTPServer(cfg.internalAddr, finalRouter),
+		httpServer:       internalHTTPServer,
 		publicHTTPServer: publicHTTPServer,
 	}, nil
 }
@@ -619,6 +637,8 @@ func (s *Server) servers() []*http.Server {
 // internal listener; public is plain HTTP).
 func (s *Server) serve(srv *http.Server) error {
 	switch {
+	case srv == s.httpServer && srv.TLSConfig != nil && srv.TLSConfig.GetCertificate != nil:
+		return srv.ListenAndServeTLS("", "")
 	case srv == s.httpServer && s.certFile != "" && s.certKey != "":
 		return srv.ListenAndServeTLS(s.certFile, s.certKey)
 	case srv == s.httpServer && s.autoCert:
@@ -718,19 +738,6 @@ func applyBootstrapOnce(ctx context.Context, rs *repository.RaftStore, path, nam
 	return nil
 }
 
-// toRaftPeers parses legacy "id=addr" peer entries into discovery peers.
-func toRaftPeers(entries []string) []repository.RaftPeer {
-	peers := make([]repository.RaftPeer, 0, len(entries))
-	for _, e := range entries {
-		parts := strings.SplitN(e, "=", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			continue
-		}
-		peers = append(peers, repository.RaftPeer{ID: parts[0], Address: parts[1]})
-	}
-	return peers
-}
-
 // watchSingleNodeRecovery restarts the bootstrap node when the Raft cluster
 // has been leaderless for leaderWaitTimeout while the StatefulSet is scaled to
 // a single replica. A 3-voter cluster whose other two pods were removed cannot
@@ -739,7 +746,7 @@ func toRaftPeers(entries []string) []repository.RaftPeer {
 // via RecoverCluster. The Kubernetes replica count is the authorization: a
 // multi-replica deployment (e.g. two pods temporarily down) never triggers
 // this path.
-func watchSingleNodeRecovery(ctx context.Context, reader *statefulSetReplicaReader, rs *repository.RaftStore, leaderWaitTimeout time.Duration) {
+func watchSingleNodeRecovery(ctx context.Context, reader *replicaReaderAdapter, rs *repository.RaftStore, leaderWaitTimeout time.Duration) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -760,7 +767,7 @@ func watchSingleNodeRecovery(ctx context.Context, reader *statefulSetReplicaRead
 			if time.Since(leaderlessSince) < leaderWaitTimeout {
 				continue
 			}
-			replicas, ok := reader.replicas(ctx)
+			replicas, ok := reader.Replicas(ctx)
 			if !ok || replicas != 1 {
 				continue
 			}

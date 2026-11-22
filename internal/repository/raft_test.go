@@ -1,188 +1,21 @@
 package repository
 
 import (
+	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
-	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/disaster37/go-raft/pki"
+	"github.com/disaster37/go-raft/storage"
+	"github.com/disaster37/go-raft/testutil"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"gotest.tools/v3/assert"
 )
-
-func TestResolveBootstrapState_OrdinalZeroBootstraps(t *testing.T) {
-	cfg := RaftDiscoveryConfig{
-		StatefulSetName: "sts",
-		HeadlessService: "headless",
-		Namespace:       "ns",
-		ClusterDomain:   "cluster.local",
-		Replicas:        3,
-		RaftPort:        6001,
-	}
-	resolver := &dnsPeerResolver{cfg: cfg, clusterDomain: cfg.ClusterDomain, hostname: "sts-0"}
-
-	nodeID, shouldBootstrap, err := resolveBootstrapState(&RaftConfig{NodeID: "sts-0"}, resolver)
-	assert.NilError(t, err)
-	assert.Equal(t, nodeID, "sts-0")
-	assert.Assert(t, shouldBootstrap, "ordinal 0 must bootstrap")
-}
-
-func TestResolveBootstrapState_OthersDoNot(t *testing.T) {
-	cfg := RaftDiscoveryConfig{
-		StatefulSetName: "sts",
-		HeadlessService: "headless",
-		Namespace:       "ns",
-		ClusterDomain:   "cluster.local",
-		Replicas:        3,
-		RaftPort:        6001,
-	}
-	resolver := &dnsPeerResolver{cfg: cfg, clusterDomain: cfg.ClusterDomain, hostname: "sts-1"}
-
-	nodeID, shouldBootstrap, err := resolveBootstrapState(&RaftConfig{NodeID: "sts-1"}, resolver)
-	assert.NilError(t, err)
-	assert.Equal(t, nodeID, "sts-1")
-	assert.Assert(t, !shouldBootstrap, "non-first peer must not bootstrap")
-}
-
-func TestResolveBootstrapState_DefaultsNodeID(t *testing.T) {
-	resolver := &singleNodeResolver{cfg: RaftDiscoveryConfig{BindAddr: "127.0.0.1:6001"}}
-	nodeID, shouldBootstrap, err := resolveBootstrapState(&RaftConfig{}, resolver)
-	assert.NilError(t, err)
-	assert.Equal(t, nodeID, "node1")
-	assert.Assert(t, shouldBootstrap)
-}
-
-func TestAddrChanged(t *testing.T) {
-	tests := []struct {
-		name    string
-		current string
-		desired string
-		want    bool
-	}{
-		{"identical ip", "127.0.0.1:6001", "127.0.0.1:6001", false},
-		{"different ip", "127.0.0.1:6001", "127.0.0.1:6002", true},
-		{"dns resolves to same ip", "127.0.0.1:6001", "localhost:6001", false},
-		{"dns resolves to different ip", "10.0.0.1:6001", "localhost:6001", true},
-		{"unparseable desired", "127.0.0.1:6001", "not-an-addr", true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, addrChanged(tc.current, tc.desired), tc.want)
-		})
-	}
-}
-
-func TestCleanStateFromStats(t *testing.T) {
-	tests := []struct {
-		name  string
-		stats map[string]string
-		want  bool
-	}{
-		{
-			name:  "leader clean",
-			stats: map[string]string{"state": "Leader", "commit_index": "5", "applied_index": "5", "fsm_pending": "0"},
-			want:  true,
-		},
-		{
-			name:  "leader with zero commit is clean",
-			stats: map[string]string{"state": "Leader", "commit_index": "0", "applied_index": "0", "fsm_pending": "0"},
-			want:  true,
-		},
-		{
-			name:  "follower clean",
-			stats: map[string]string{"state": "Follower", "commit_index": "5", "applied_index": "5", "fsm_pending": "0", "last_contact": "1s"},
-			want:  true,
-		},
-		{
-			name:  "candidate not clean",
-			stats: map[string]string{"state": "Candidate", "commit_index": "5", "applied_index": "5", "fsm_pending": "0"},
-			want:  false,
-		},
-		{
-			name:  "unapplied entries",
-			stats: map[string]string{"state": "Leader", "commit_index": "5", "applied_index": "4", "fsm_pending": "0"},
-			want:  false,
-		},
-		{
-			name:  "pending fsm",
-			stats: map[string]string{"state": "Leader", "commit_index": "5", "applied_index": "5", "fsm_pending": "1"},
-			want:  false,
-		},
-		{
-			name:  "follower zero commit",
-			stats: map[string]string{"state": "Follower", "commit_index": "0", "applied_index": "0", "fsm_pending": "0", "last_contact": "1s"},
-			want:  false,
-		},
-		{
-			name:  "follower never contacted",
-			stats: map[string]string{"state": "Follower", "commit_index": "5", "applied_index": "5", "fsm_pending": "0", "last_contact": "never"},
-			want:  false,
-		},
-		{
-			name:  "follower stale contact",
-			stats: map[string]string{"state": "Follower", "commit_index": "5", "applied_index": "5", "fsm_pending": "0", "last_contact": "30s"},
-			want:  false,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, cleanStateFromStats(tc.stats), tc.want)
-		})
-	}
-}
-
-func TestClearRaftState(t *testing.T) {
-	seed := func(t *testing.T) string {
-		t.Helper()
-		dir := t.TempDir()
-		for _, name := range []string{"test-node.db", "peers.json"} {
-			assert.NilError(t, os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600))
-		}
-		assert.NilError(t, os.Mkdir(filepath.Join(dir, "snapshots"), 0o700))
-		return dir
-	}
-
-	t.Run("recovery mode off is a no-op", func(t *testing.T) {
-		dir := seed(t)
-		clearStaleRaftState(&RaftConfig{Dir: dir}, dir, "test-node")
-		for _, name := range []string{"test-node.db", "peers.json"} {
-			_, err := os.Stat(filepath.Join(dir, name))
-			assert.NilError(t, err)
-		}
-		_, err := os.Stat(filepath.Join(dir, "snapshots"))
-		assert.NilError(t, err)
-	})
-
-	t.Run("recovery mode on clears state", func(t *testing.T) {
-		dir := seed(t)
-		clearStaleRaftState(&RaftConfig{Dir: dir, RecoveryMode: true}, dir, "test-node")
-		for _, name := range []string{"test-node.db", "peers.json"} {
-			_, err := os.Stat(filepath.Join(dir, name))
-			assert.Assert(t, os.IsNotExist(err), "%s should be removed", name)
-		}
-		_, err := os.Stat(filepath.Join(dir, "snapshots"))
-		assert.Assert(t, os.IsNotExist(err), "snapshots should be removed")
-	})
-}
-
-func TestAdvertiseResolveRetry(t *testing.T) {
-	t.Run("resolvable address succeeds", func(t *testing.T) {
-		addr, err := resolveAdvertiseAddr("127.0.0.1:6001", time.Second, io.Discard)
-		assert.NilError(t, err)
-		assert.Assert(t, addr.IP.Equal(net.ParseIP("127.0.0.1")))
-	})
-
-	t.Run("unresolvable address errors within budget", func(t *testing.T) {
-		start := time.Now()
-		_, err := resolveAdvertiseAddr("pod-0.headless.ns.svc.cluster.local:6001", 300*time.Millisecond, io.Discard)
-		assert.Assert(t, err != nil, "expected resolution error")
-		assert.Assert(t, time.Since(start) < 5*time.Second, "retry budget not enforced")
-	})
-}
 
 func TestStepDown_SingleNodeNoop(t *testing.T) {
 	rs := newTestRaftStore(t)
@@ -191,15 +24,14 @@ func TestStepDown_SingleNodeNoop(t *testing.T) {
 
 func TestReconcileMembership(t *testing.T) {
 	nodes := buildPlainClusterNodes(t, 3)
-	bootstrapSingle(t, nodes)
 	leader := joinAll(t, nodes)
 
 	// Add a fourth (not running) voter: AddVoter only records the config
 	// entry and the 3 running nodes still satisfy the old quorum.
 	desired := []RaftPeer{
-		{ID: "node-0", Address: string(nodes[0].addr)},
-		{ID: "node-1", Address: string(nodes[1].addr)},
-		{ID: "node-2", Address: string(nodes[2].addr)},
+		{ID: "node-0", Address: nodes[0].addr},
+		{ID: "node-1", Address: nodes[1].addr},
+		{ID: "node-2", Address: nodes[2].addr},
 		{ID: "node-3", Address: "127.0.0.1:19998"},
 	}
 	added, updated, removed, err := leader.ReconcileMembership(desired, 5*time.Second)
@@ -211,28 +43,34 @@ func TestReconcileMembership(t *testing.T) {
 
 func newTestRaftStore(t *testing.T) *RaftStore {
 	t.Helper()
-	rs, err := NewRaftStore(RaftConfig{
-		Dir:      t.TempDir(),
-		NodeID:   "test-node",
-		BindAddr: freeTCPAddr(t),
-	})
+	return newTestRaftStoreWithConfig(t, RaftConfig{})
+}
+
+// newTestRaftStoreWithConfig builds a single-node store from cfg, filling the
+// same defaults as the storetest helper (temp dir, listener, fast timings).
+func newTestRaftStoreWithConfig(t *testing.T, cfg RaftConfig) *RaftStore {
+	t.Helper()
+	if cfg.Dir == "" {
+		cfg.Dir = t.TempDir()
+	}
+	if cfg.NodeID == "" {
+		cfg.NodeID = "test-node"
+	}
+	if cfg.BindAddr == "" && cfg.CustomListener == nil {
+		ln := testutil.FreeListener(t)
+		cfg.CustomListener = ln
+		cfg.BindAddr = testutil.FreeAddrFromListener(t, ln)
+	}
+	if cfg.PerformanceMultiplier == 0 {
+		cfg.PerformanceMultiplier = 0.2
+	}
+	rs, err := NewRaftStore(cfg)
 	assert.NilError(t, err)
 	t.Cleanup(func() { _ = rs.Shutdown() })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	assert.NilError(t, rs.WaitForLeader(ctx))
 	return rs
-}
-
-// freeTCPAddr returns a currently-free loopback host:port.
-func freeTCPAddr(t *testing.T) string {
-	t.Helper()
-	var lc net.ListenConfig
-	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	assert.NilError(t, err)
-	addr := l.Addr().String()
-	assert.NilError(t, l.Close())
-	return addr
 }
 
 func TestNewRaftStore_SingleNode(t *testing.T) {
@@ -529,4 +367,302 @@ func TestSetInternalAuthEnabled_RoundTrip(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Assert(t, flag != nil)
 	assert.Equal(t, *flag, true)
+}
+
+// TestRaftStore_TLSModes exercises the three TLS activation modes.
+func TestRaftStore_TLSModes(t *testing.T) {
+	t.Run("manual mTLS", func(t *testing.T) {
+		dir := t.TempDir()
+		tlsDir := filepath.Join(dir, "tls")
+		ca, err := pki.NewMintingCA("raft-ca", "gohookbridge-raft", 365*24*time.Hour)
+		assert.NilError(t, err)
+		writeClusterTLS(t, ca, tlsDir, "manual-node")
+
+		ln := testutil.FreeListener(t)
+		rs, err := NewRaftStore(RaftConfig{
+			Dir:                   dir,
+			NodeID:                "manual-node",
+			BindAddr:              testutil.FreeAddrFromListener(t, ln),
+			CustomListener:        ln,
+			PerformanceMultiplier: 0.2,
+			TLSEnabled:            true,
+			TLSDir:                tlsDir,
+			TLSCACertPath:         filepath.Join(tlsDir, "ca.crt"),
+			TLSCertPath:           filepath.Join(tlsDir, "tls.crt"),
+			TLSKeyPath:            filepath.Join(tlsDir, "tls.key"),
+		})
+		assert.NilError(t, err)
+		t.Cleanup(func() { _ = rs.Shutdown() })
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		assert.NilError(t, rs.WaitForLeader(ctx))
+		assert.Assert(t, rs.TLSProvider() != nil)
+		assert.Assert(t, rs.node.KeyringManager().CurrentKeyring() == nil, "manual mode must disable the keyring")
+	})
+
+	t.Run("single-node local auto-CA", func(t *testing.T) {
+		ln := testutil.FreeListener(t)
+		rs, err := NewRaftStore(RaftConfig{
+			Dir:                   t.TempDir(),
+			NodeID:                "auto-node",
+			BindAddr:              testutil.FreeAddrFromListener(t, ln),
+			CustomListener:        ln,
+			PerformanceMultiplier: 0.2,
+			TLSEnabled:            true,
+		})
+		assert.NilError(t, err)
+		t.Cleanup(func() { _ = rs.Shutdown() })
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		assert.NilError(t, rs.WaitForLeader(ctx))
+		assert.Assert(t, rs.TLSProvider() != nil)
+	})
+
+	t.Run("multi-node without manual certs rejected", func(t *testing.T) {
+		_, err := NewRaftStore(RaftConfig{
+			Dir:                   t.TempDir(),
+			NodeID:                "reject-node",
+			BindAddr:              "127.0.0.1:0",
+			Replicas:              3,
+			PerformanceMultiplier: 0.2,
+			TLSEnabled:            true,
+		})
+		assert.Assert(t, err != nil, "multi-node auto-CA must be rejected (F14)")
+	})
+}
+
+// TestRaftStore_CertRenewalLifecycle proves the single-node renewal/rotation
+// behaviors (leaf re-issue within the safety margin, manual FileWatcher hot
+// reload, and in-band phased keyring rotation).
+func TestRaftStore_CertRenewalLifecycle(t *testing.T) {
+	t.Run("leaf_reissued_within_safety_margin", func(t *testing.T) {
+		dir := t.TempDir()
+		tlsDir := filepath.Join(dir, "tls")
+		assert.NilError(t, os.MkdirAll(tlsDir, 0o700))
+		ca, err := pki.NewMintingCA("raft-ca", "gohookbridge-raft", 365*24*time.Hour)
+		assert.NilError(t, err)
+		caCertPEM, caKeyPEM, err := ca.EncodePEM()
+		assert.NilError(t, err)
+		assert.NilError(t, os.WriteFile(filepath.Join(tlsDir, "ca.crt"), caCertPEM, 0o600))
+		assert.NilError(t, os.WriteFile(filepath.Join(tlsDir, "ca.key"), caKeyPEM, 0o600))
+
+		// Pre-mint a leaf that expires within 48h; with a 1h safety margin it is
+		// immediately reusable, but a 7d margin forces re-issue.
+		certPEM, keyPEM, err := pki.IssueOrReuseNodeCert(tlsDir, ca, "renew-node", "gohookbridge-raft", []string{"renew-node", "localhost"}, nil, 48*time.Hour, time.Hour)
+		assert.NilError(t, err)
+		reusedCert, reusedKey, err := pki.IssueOrReuseNodeCert(tlsDir, ca, "renew-node", "gohookbridge-raft", []string{"renew-node", "localhost"}, nil, 48*time.Hour, time.Hour)
+		assert.NilError(t, err)
+		assert.Equal(t, string(certPEM), string(reusedCert), "within the safety margin the leaf must be reused")
+		assert.Equal(t, string(keyPEM), string(reusedKey))
+
+		before, err := pki.ParsePEMCert(certPEM)
+		assert.NilError(t, err)
+
+		ln := testutil.FreeListener(t)
+		rs, err := NewRaftStore(RaftConfig{
+			Dir:                   dir,
+			NodeID:                "renew-node",
+			BindAddr:              testutil.FreeAddrFromListener(t, ln),
+			CustomListener:        ln,
+			PerformanceMultiplier: 0.2,
+			TLSEnabled:            true,
+			TLSDir:                tlsDir,
+			TLSValidity:           30 * 24 * time.Hour,
+			TLSSafetyMargin:       7 * 24 * time.Hour,
+		})
+		assert.NilError(t, err)
+		t.Cleanup(func() { _ = rs.Shutdown() })
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		assert.NilError(t, rs.WaitForLeader(ctx))
+
+		served, err := rs.TLSProvider().GetCertificate(nil)
+		assert.NilError(t, err)
+		assert.Assert(t, served != nil && len(served.Certificate) > 0)
+		after, err := x509.ParseCertificate(served.Certificate[0])
+		assert.NilError(t, err)
+		assert.Assert(t, after.SerialNumber.Cmp(before.SerialNumber) != 0, "leaf must be re-issued within the 7d safety margin")
+		assert.Assert(t, after.NotAfter.After(time.Now().Add(29*24*time.Hour)), "re-issued leaf must carry the full validity")
+	})
+
+	t.Run("manual_certs_filewatcher_hot_reload", func(t *testing.T) {
+		dir := t.TempDir()
+		tlsDir := filepath.Join(dir, "tls")
+		ca1, err := pki.NewMintingCA("raft-ca-1", "gohookbridge-raft", 365*24*time.Hour)
+		assert.NilError(t, err)
+		writeClusterTLS(t, ca1, tlsDir, "hot-node")
+		cert1PEM := readFile(t, filepath.Join(tlsDir, "tls.crt"))
+		cert1, err := pki.ParsePEMCert(cert1PEM)
+		assert.NilError(t, err)
+
+		ln := testutil.FreeListener(t)
+		rs, err := NewRaftStore(RaftConfig{
+			Dir:                   dir,
+			NodeID:                "hot-node",
+			BindAddr:              testutil.FreeAddrFromListener(t, ln),
+			CustomListener:        ln,
+			PerformanceMultiplier: 0.2,
+			TLSEnabled:            true,
+			TLSDir:                tlsDir,
+			TLSCACertPath:         filepath.Join(tlsDir, "ca.crt"),
+			TLSCertPath:           filepath.Join(tlsDir, "tls.crt"),
+			TLSKeyPath:            filepath.Join(tlsDir, "tls.key"),
+			TLSReloadPollInterval: 25 * time.Millisecond,
+		})
+		assert.NilError(t, err)
+		t.Cleanup(func() { _ = rs.Shutdown() })
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		assert.NilError(t, rs.WaitForLeader(ctx))
+
+		assert.Assert(t, rs.node.KeyringManager().CurrentKeyring() == nil, "manual mode must disable the keyring")
+
+		// Corrupt the key file: the watcher must keep serving cert1.
+		assert.NilError(t, os.WriteFile(filepath.Join(tlsDir, "tls.key"), []byte("corrupt"), 0o600))
+		time.Sleep(80 * time.Millisecond)
+		served, err := rs.TLSProvider().GetCertificate(nil)
+		assert.NilError(t, err)
+		servedCert, err := x509.ParseCertificate(served.Certificate[0])
+		assert.NilError(t, err)
+		assert.Equal(t, servedCert.SerialNumber.String(), cert1.SerialNumber.String(), "a corrupt replacement must be rejected")
+
+		// Mint ca2 + cert2 and write dual-trust ca2||ca1.
+		ca2, err := pki.NewMintingCA("raft-ca-2", "gohookbridge-raft", 365*24*time.Hour)
+		assert.NilError(t, err)
+		ca2Cert, _, err := ca2.EncodePEM()
+		assert.NilError(t, err)
+		dualTrust := append(append([]byte{}, ca2Cert...), readFile(t, filepath.Join(tlsDir, "ca.crt"))...)
+		assert.NilError(t, os.WriteFile(filepath.Join(tlsDir, "ca.crt"), dualTrust, 0o600))
+		cert2PEM, key2PEM, err := ca2.IssuePeerCertificate("hot-node", "gohookbridge-raft", []string{"localhost"}, nil, time.Hour)
+		assert.NilError(t, err)
+		assert.NilError(t, os.WriteFile(filepath.Join(tlsDir, "tls.crt"), cert2PEM, 0o600))
+		assert.NilError(t, os.WriteFile(filepath.Join(tlsDir, "tls.key"), key2PEM, 0o600))
+		cert2, err := pki.ParsePEMCert(cert2PEM)
+		assert.NilError(t, err)
+
+		deadline := time.Now().Add(2 * time.Second)
+		hotSwapped := false
+		for time.Now().Before(deadline) {
+			served, err := rs.TLSProvider().GetCertificate(nil)
+			if err == nil && len(served.Certificate) > 0 {
+				if parsed, perr := x509.ParseCertificate(served.Certificate[0]); perr == nil && parsed.SerialNumber.String() == cert2.SerialNumber.String() {
+					hotSwapped = true
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		assert.Assert(t, hotSwapped, "valid replacement must hot-swap without restart")
+	})
+
+	t.Run("single_node_local_ca_phased_keyring_rotation", func(t *testing.T) {
+		sealer, err := storage.NewAESGCMKeeper("k1", map[string][]byte{"k1": randomKey(t)}, AtRestAAD)
+		assert.NilError(t, err)
+
+		ln := testutil.FreeListener(t)
+		rs, err := NewRaftStore(RaftConfig{
+			Dir:                      t.TempDir(),
+			NodeID:                   "rotate-node",
+			BindAddr:                 testutil.FreeAddrFromListener(t, ln),
+			CustomListener:           ln,
+			PerformanceMultiplier:    0.2,
+			TLSEnabled:               true,
+			AtRest:                   sealer,
+			TLSRotationPeriod:        150 * time.Millisecond,
+			TLSRotationCheckInterval: 40 * time.Millisecond,
+		})
+		assert.NilError(t, err)
+		t.Cleanup(func() { _ = rs.Shutdown() })
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		assert.NilError(t, rs.WaitForLeader(ctx))
+
+		// Wait for Term 1 to be seeded.
+		var initialKeyID string
+		var initialSerial string
+		seedDeadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(seedDeadline) {
+			if kr := rs.node.KeyringManager().CurrentKeyring(); kr != nil && len(kr.Keys) > 0 {
+				initialKeyID = kr.ActiveKeyID
+				if active := kr.GetActive(); active != nil {
+					if cert, perr := active.ParseCert(); perr == nil {
+						initialSerial = cert.SerialNumber.String()
+					}
+				}
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		assert.Assert(t, initialKeyID != "", "keyring Term 1 must be seeded")
+
+		// Wait for two rotations (Term >= 3) and a new active key.
+		rotateDeadline := time.Now().Add(15 * time.Second)
+		rotated := false
+		for time.Now().Before(rotateDeadline) {
+			kr := rs.node.KeyringManager().CurrentKeyring()
+			if kr != nil && kr.Term >= 3 && kr.ActiveKeyID != initialKeyID {
+				rotated = true
+				break
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		assert.Assert(t, rotated, "phased keyring rotation must advance the term and active key")
+
+		served, err := rs.TLSProvider().GetCertificate(nil)
+		assert.NilError(t, err)
+		servedCert, err := x509.ParseCertificate(served.Certificate[0])
+		assert.NilError(t, err)
+		assert.Assert(t, servedCert.SerialNumber.String() != initialSerial, "leaf must be re-minted after CA rotation")
+
+		// Writes keep succeeding after rotation.
+		assert.NilError(t, rs.CreateChannel(ctx, &domain.Channel{ID: "post-rotation"}))
+	})
+}
+
+// TestRaftStore_TypedNilSealer is a regression guard: a typed-nil
+// *storage.AESGCMKeeper stored in the storage.Sealer interface is non-nil, so
+// without normalization every rs.sealer == nil guard would evaluate false and
+// Seal/Open would panic on a nil receiver.
+func TestRaftStore_TypedNilSealer(t *testing.T) {
+	rs := newTestRaftStoreWithConfig(t, RaftConfig{AtRest: (*storage.AESGCMKeeper)(nil)})
+	ctx := context.Background()
+
+	assert.Assert(t, rs.sealer == nil, "a typed-nil sealer must be normalized to a nil interface")
+
+	// A sensitive field must round-trip as plaintext (no sealer configured).
+	assert.NilError(t, rs.CreateChannel(ctx, &domain.Channel{ID: "typed-nil", WebhookSecret: "plain-secret"}))
+
+	got, err := rs.GetChannel(ctx, "typed-nil")
+	assert.NilError(t, err)
+	assert.Equal(t, got.WebhookSecret, "plain-secret")
+
+	stored, err := rs.fsm.Get("/channels/typed-nil/")
+	assert.NilError(t, err)
+	assert.Assert(t, bytes.Contains(stored, []byte("plain-secret")), "without a sealer the value must be stored as plaintext")
+}
+
+// TestRaftStore_AtRestKeyFileFallback proves the AtRestKeyFile fallback loads a
+// keeper even when AtRest is a typed nil, so sensitive values are sealed on
+// write and opened on read.
+func TestRaftStore_AtRestKeyFileFallback(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "at-rest-key.json")
+	assert.NilError(t, storage.GenerateKeyFile(keyFile))
+
+	rs := newTestRaftStoreWithConfig(t, RaftConfig{
+		AtRest:        (*storage.AESGCMKeeper)(nil),
+		AtRestKeyFile: keyFile,
+	})
+	ctx := context.Background()
+
+	assert.Assert(t, rs.sealer != nil, "the AtRestKeyFile fallback must load a keeper")
+
+	assert.NilError(t, rs.CreateChannel(ctx, &domain.Channel{ID: "sealed", WebhookSecret: "sensitive-value"}))
+
+	got, err := rs.GetChannel(ctx, "sealed")
+	assert.NilError(t, err)
+	assert.Equal(t, got.WebhookSecret, "sensitive-value", "the value must be opened on read")
+
+	stored, err := rs.fsm.Get("/channels/sealed/")
+	assert.NilError(t, err)
+	assert.Assert(t, !bytes.Contains(stored, []byte("sensitive-value")), "the value must be sealed at rest")
 }

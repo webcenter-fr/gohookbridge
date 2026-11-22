@@ -10,9 +10,12 @@
 #   3. Rolling-restart the StatefulSet (one pod at a time).
 #   4. After the rollout, strip the old CA so only newCA remains.
 #
-# pkg/tlsreload hot-reloads the mounted files without a restart once the
-# Secrets are updated, so the restart in step 3 may be a no-op for certificate
-# pickup (it is still required for the JWT/session material).
+# go-raft/transport.FileWatcher hot-reloads the mounted files without a restart
+# once the Secrets are updated, so the restart in step 3 may be a no-op for
+# certificate pickup on direct file mounts. When pods mount certificates via
+# Kubernetes subPathExpr (as in helm/gohookbridge/templates/server-statefulset.yaml),
+# kubelet does NOT update the projected files in place, so the rolling restart
+# (step 3) is REQUIRED before the old certificates expire.
 set -euo pipefail
 
 OUT=""

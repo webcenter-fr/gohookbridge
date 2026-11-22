@@ -3,10 +3,10 @@ package storetest
 
 import (
 	"context"
-	"net"
 	"testing"
 	"time"
 
+	"github.com/disaster37/go-raft/testutil"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"github.com/webcenter-fr/gohookbridge/internal/repository"
 	"github.com/webcenter-fr/gohookbridge/internal/service"
@@ -25,8 +25,13 @@ func NewRaftStoreWithConfig(t *testing.T, cfg repository.RaftConfig) *repository
 	if cfg.NodeID == "" {
 		cfg.NodeID = "test-node"
 	}
-	if cfg.BindAddr == "" {
-		cfg.BindAddr = freeTCPAddr(t)
+	if cfg.BindAddr == "" && cfg.CustomListener == nil {
+		ln := testutil.FreeListener(t)
+		cfg.CustomListener = ln
+		cfg.BindAddr = testutil.FreeAddrFromListener(t, ln)
+	}
+	if cfg.PerformanceMultiplier == 0 {
+		cfg.PerformanceMultiplier = 0.2
 	}
 	rs, err := repository.NewRaftStore(cfg)
 	if err != nil {
@@ -39,21 +44,6 @@ func NewRaftStoreWithConfig(t *testing.T, cfg repository.RaftConfig) *repository
 		t.Fatalf("wait for raft leader: %v", err)
 	}
 	return rs
-}
-
-// freeTCPAddr returns a currently-free loopback host:port.
-func freeTCPAddr(t *testing.T) string {
-	t.Helper()
-	var lc net.ListenConfig
-	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := l.Addr().String()
-	if err := l.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return addr
 }
 
 func DefaultGlobalConfig() *domain.GlobalConfig {

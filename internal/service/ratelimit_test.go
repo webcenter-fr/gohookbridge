@@ -8,8 +8,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/disaster37/go-secguard/bantracker"
+	"github.com/disaster37/go-secguard/ratelimit"
+	"github.com/disaster37/go-secguard/testutil"
 	"gotest.tools/v3/assert"
 )
+
+// newFakeBanTracker returns a BanTracker backed by a manually-advanced clock so
+// window/ban expiry is deterministic (no time.Sleep).
+func newFakeBanTracker(clock *testutil.FakeClock) *BanTracker {
+	return bantracker.New(0, clock.Now)
+}
+
+func newFakeRateLimiter(clock *testutil.FakeClock) *RateLimiter {
+	return &RateLimiter{inner: ratelimit.NewRateLimiter(0, clock.Now)}
+}
 
 func TestRateLimiterAllowsUnderLimit(t *testing.T) {
 	rl := NewRateLimiter()
@@ -29,12 +42,13 @@ func TestRateLimiterRejectsOverLimit(t *testing.T) {
 }
 
 func TestRateLimiterWindowExpiry(t *testing.T) {
-	rl := NewRateLimiter()
+	clock := testutil.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	rl := newFakeRateLimiter(clock)
 
 	assert.Equal(t, true, rl.Allow("192.0.2.1", 1, 1))
 	assert.Equal(t, false, rl.Allow("192.0.2.1", 1, 1))
 
-	time.Sleep(1100 * time.Millisecond)
+	clock.Advance(1100 * time.Millisecond)
 
 	assert.Equal(t, true, rl.Allow("192.0.2.1", 1, 1))
 }
@@ -49,78 +63,73 @@ func TestRateLimiterDifferentIPs(t *testing.T) {
 
 func TestBanTrackerSameCredentialDoesNotTriggerBan(t *testing.T) {
 	bt := NewBanTracker()
-	window := 60
+	window := time.Minute
 
 	for i := 0; i < 100; i++ {
-		bt.recordFailure("192.0.2.1", "fingerprint-same", window)
+		bt.RecordAndBan("192.0.2.1", "fingerprint-same", 5, time.Hour, window)
 	}
 
-	banned := bt.banIfSuspicious("192.0.2.1", 5, 3600, window)
-	assert.Equal(t, false, banned)
+	assert.Equal(t, false, bt.IsBanned("192.0.2.1"))
 }
 
 func TestBanTrackerDifferentCredentialsTriggerBan(t *testing.T) {
 	bt := NewBanTracker()
-	window := 60
+	window := time.Minute
 
+	var banned bool
 	for i := 0; i < 5; i++ {
-		bt.recordFailure("192.0.2.1", "fingerprint-"+string(rune('a'+i)), window)
+		banned = bt.RecordAndBan("192.0.2.1", "fingerprint-"+string(rune('a'+i)), 5, time.Hour, window)
 	}
 
-	banned := bt.banIfSuspicious("192.0.2.1", 5, 3600, window)
 	assert.Equal(t, true, banned)
 	assert.Equal(t, true, bt.IsBanned("192.0.2.1"))
 }
 
 func TestBanTrackerMixSameAndDifferent(t *testing.T) {
 	bt := NewBanTracker()
-	window := 60
+	window := time.Minute
 
 	// Same credential 10 times - should be deduplicated to 1 unique fingerprint
 	for i := 0; i < 10; i++ {
-		bt.recordFailure("192.0.2.1", "fingerprint-config-error", window)
+		bt.RecordAndBan("192.0.2.1", "fingerprint-config-error", 5, time.Hour, window)
 	}
 
 	// 3 different credentials - total unique = 1 + 3 = 4, below threshold 5
+	var banned bool
 	for i := 0; i < 3; i++ {
-		bt.recordFailure("192.0.2.1", "fingerprint-attack-"+string(rune('a'+i)), window)
+		banned = bt.RecordAndBan("192.0.2.1", "fingerprint-attack-"+string(rune('a'+i)), 5, time.Hour, window)
 	}
-
-	banned := bt.banIfSuspicious("192.0.2.1", 5, 3600, window)
 	assert.Equal(t, false, banned)
 
 	// 4th different credential - total unique = 1 + 4 = 5, should trigger ban
-	bt.recordFailure("192.0.2.1", "fingerprint-attack-d", window)
-	banned = bt.banIfSuspicious("192.0.2.1", 5, 3600, window)
+	banned = bt.RecordAndBan("192.0.2.1", "fingerprint-attack-d", 5, time.Hour, window)
 	assert.Equal(t, true, banned)
 }
 
 func TestBanExpiresAfterDuration(t *testing.T) {
-	bt := NewBanTracker()
-	window := 60
+	clock := testutil.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	bt := newFakeBanTracker(clock)
+	window := time.Minute
 
+	var banned bool
 	for i := 0; i < 5; i++ {
-		bt.recordFailure("192.0.2.1", "fingerprint-"+string(rune('a'+i)), window)
+		banned = bt.RecordAndBan("192.0.2.1", "fingerprint-"+string(rune('a'+i)), 5, time.Second, window)
 	}
-
-	banned := bt.banIfSuspicious("192.0.2.1", 5, 1, window)
 	assert.Equal(t, true, banned)
 	assert.Equal(t, true, bt.IsBanned("192.0.2.1"))
 
-	time.Sleep(1100 * time.Millisecond)
+	clock.Advance(1100 * time.Millisecond)
 	assert.Equal(t, false, bt.IsBanned("192.0.2.1"))
 }
 
 func TestManualUnban(t *testing.T) {
 	bt := NewBanTracker()
-	window := 60
+	window := time.Minute
 
 	for i := 0; i < 5; i++ {
-		bt.recordFailure("192.0.2.1", "fingerprint-"+string(rune('a'+i)), window)
+		bt.RecordAndBan("192.0.2.1", "fingerprint-"+string(rune('a'+i)), 5, time.Hour, window)
 	}
 
-	banned := bt.banIfSuspicious("192.0.2.1", 5, 3600, window)
-	assert.Equal(t, true, banned)
 	assert.Equal(t, true, bt.IsBanned("192.0.2.1"))
 
 	bt.Unban("192.0.2.1")
@@ -129,12 +138,11 @@ func TestManualUnban(t *testing.T) {
 
 func TestListBans(t *testing.T) {
 	bt := NewBanTracker()
-	window := 60
+	window := time.Minute
 
 	for i := 0; i < 5; i++ {
-		bt.recordFailure("192.0.2.1", "fingerprint-"+string(rune('a'+i)), window)
+		bt.RecordAndBan("192.0.2.1", "fingerprint-"+string(rune('a'+i)), 5, time.Hour, window)
 	}
-	bt.banIfSuspicious("192.0.2.1", 5, 3600, window)
 
 	bans := bt.ListBans()
 	assert.Equal(t, 1, len(bans))
@@ -149,77 +157,58 @@ func TestFingerprintGeneration(t *testing.T) {
 
 	assert.Equal(t, fp1, fp2)
 	assert.Assert(t, fp1 != fp3)
+
+	// go-secguard normalizes username case/whitespace before hashing.
+	assert.Equal(t, fp1, FingerprintLogin("  ADMIN "))
 }
 
-func TestBanIfSuspiciousRespectsWindowSeconds(t *testing.T) {
-	mk := func() *BanTracker {
-		bt := NewBanTracker()
-		bt.failures["192.0.2.1"] = []banEntry{
-			{fingerprint: "fp-old-1", timestamp: time.Now().Add(-2 * time.Minute)},
-			{fingerprint: "fp-old-2", timestamp: time.Now().Add(-2 * time.Minute)},
-		}
-		return bt
-	}
+func TestBanTrackerRespectsWindowSeconds(t *testing.T) {
+	clock := testutil.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	bt := newFakeBanTracker(clock)
 
-	// A short window (e.g. 10s) expires both fingerprints → no ban.
-	assert.Equal(t, false, mk().banIfSuspicious("192.0.2.1", 2, 3600, 10))
+	// Two distinct failures recorded now.
+	bt.RecordAndBan("192.0.2.1", "fp-1", 2, time.Hour, time.Minute)
+	bt.RecordAndBan("192.0.2.1", "fp-2", 2, time.Hour, time.Minute)
+	assert.Equal(t, true, bt.IsBanned("192.0.2.1"))
 
-	// A long window (e.g. 600s) keeps them → ban.
-	assert.Equal(t, true, mk().banIfSuspicious("192.0.2.1", 2, 3600, 600))
+	// A fresh tracker with failures older than the window must not ban.
+	old := newFakeBanTracker(clock)
+	clock.Advance(-3 * time.Minute)
+	old.RecordAndBan("192.0.2.2", "fp-old-1", 2, time.Hour, time.Minute)
+	old.RecordAndBan("192.0.2.2", "fp-old-2", 2, time.Hour, time.Minute)
+	clock.Advance(3 * time.Minute)
+	// The window (60s) has elapsed, so the failures are expired: no ban.
+	assert.Equal(t, false, old.RecordAndBan("192.0.2.2", "fp-new", 2, time.Hour, time.Minute))
 }
 
 func TestRateLimiterSweepRemovesExpiredKeys(t *testing.T) {
-	rl := NewRateLimiter()
-	rl.entries["192.0.2.1"] = []time.Time{time.Now().Add(-10 * time.Minute)}
-	rl.entries["192.0.2.2"] = []time.Time{time.Now()}
+	clock := testutil.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	rl := newFakeRateLimiter(clock)
 
+	rl.Allow("192.0.2.2", 10, 60)
+	assert.Equal(t, 1, rl.Len())
+
+	// Age the entry past the sweep window.
+	clock.Advance(10 * time.Minute)
 	rl.Sweep(60)
 
-	assert.Equal(t, 1, len(rl.entries))
-	_, ok := rl.entries["192.0.2.2"]
-	assert.Equal(t, true, ok)
+	assert.Equal(t, 0, rl.Len())
 }
 
 func TestBanTrackerSweepRemovesExpired(t *testing.T) {
-	bt := NewBanTracker()
-	bt.failures["192.0.2.1"] = []banEntry{{fingerprint: "fp-old", timestamp: time.Now().Add(-10 * time.Minute)}}
-	bt.failures["192.0.2.2"] = []banEntry{{fingerprint: "fp-new", timestamp: time.Now()}}
-	bt.banned["192.0.2.3"] = time.Now().Add(-10 * time.Minute)
-	bt.banned["192.0.2.4"] = time.Now().Add(10 * time.Minute)
+	clock := testutil.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	bt := newFakeBanTracker(clock)
 
-	bt.Sweep(60)
+	bt.RecordAndBan("192.0.2.1", "fp-old", 5, time.Hour, time.Minute)
+	bt.RecordAndBan("192.0.2.2", "fp-new", 5, time.Hour, time.Minute)
+	bt.RecordAndBan("192.0.2.3", "fp-ban", 1, time.Second, time.Minute)
 
-	_, okOld := bt.failures["192.0.2.1"]
-	assert.Equal(t, false, okOld)
-	_, okNew := bt.failures["192.0.2.2"]
-	assert.Equal(t, true, okNew)
-	_, okBanOld := bt.banned["192.0.2.3"]
-	assert.Equal(t, false, okBanOld)
-	_, okBanNew := bt.banned["192.0.2.4"]
-	assert.Equal(t, true, okBanNew)
-}
+	clock.Advance(10 * time.Minute)
+	bt.Sweep(time.Minute)
 
-func TestBanTrackerMaybeSweepThrottled(t *testing.T) {
-	bt := NewBanTracker()
-	bt.failures["192.0.2.1"] = []banEntry{{fingerprint: "fp-old", timestamp: time.Now().Add(-10 * time.Minute)}}
-
-	// First sweep within the window removes the expired entry.
-	bt.maybeSweep(time.Now(), 60)
-	_, ok := bt.failures["192.0.2.1"]
-	assert.Equal(t, false, ok)
-
-	// A second sweep within the same window is throttled: the failure hot
-	// path must not pay a full-map scan on every attempt.
-	bt.failures["192.0.2.1"] = []banEntry{{fingerprint: "fp-old", timestamp: time.Now().Add(-10 * time.Minute)}}
-	bt.maybeSweep(time.Now(), 60)
-	_, ok = bt.failures["192.0.2.1"]
-	assert.Equal(t, true, ok, "sweep must be throttled within the same window")
-
-	// Once the window elapses the sweep runs again.
-	bt.lastSweep = time.Now().Add(-2 * time.Minute)
-	bt.maybeSweep(time.Now(), 60)
-	_, ok = bt.failures["192.0.2.1"]
-	assert.Equal(t, false, ok, "sweep must run again after the window elapses")
+	// The expired ban is gone, and the failure history is pruned.
+	assert.Equal(t, false, bt.IsBanned("192.0.2.3"))
+	assert.Equal(t, 0, len(bt.ListBans()))
 }
 
 func TestClampWindow(t *testing.T) {
@@ -239,9 +228,8 @@ func TestRateLimiterAndBanTrackerConcurrent(_ *testing.T) {
 			for j := 0; j < 50; j++ {
 				rl.Allow("192.0.2.1", 10, 60)
 				rl.Sweep(60)
-				bt.recordFailure("192.0.2.1", "fp", 60)
-				bt.banIfSuspicious("192.0.2.1", 5, 3600, 60)
-				bt.Sweep(60)
+				bt.RecordAndBan("192.0.2.1", "fp", 5, time.Hour, time.Minute)
+				bt.Sweep(time.Minute)
 				bt.IsBanned("192.0.2.1")
 			}
 		}()
@@ -291,8 +279,8 @@ func TestBanTrackerConcurrentSweep(_ *testing.T) {
 		go func(n int) {
 			defer func() { done <- struct{}{} }()
 			for j := 0; j < 100; j++ {
-				bt.recordAndBan("192.0.2.1", fmt.Sprintf("fp-%d", n), 5, 3600, 60)
-				bt.Sweep(60)
+				bt.RecordAndBan("192.0.2.1", fmt.Sprintf("fp-%d", n), 5, time.Hour, time.Minute)
+				bt.Sweep(time.Minute)
 				bt.IsBanned("192.0.2.1")
 				bt.ListBans()
 			}
@@ -333,4 +321,9 @@ func TestGetRealIPTrustedProxyCIDR(t *testing.T) {
 		assert.NilError(t, err)
 		assert.Equal(t, ip.String(), "192.168.1.1")
 	})
+}
+
+func TestValidateTrustedProxyCIDRs(t *testing.T) {
+	assert.NilError(t, ValidateTrustedProxyCIDRs([]string{"192.168.0.0/16", "10.0.0.1"}))
+	assert.Assert(t, ValidateTrustedProxyCIDRs([]string{"not-a-cidr"}) != nil)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	goraftfsm "github.com/disaster37/go-raft/fsm"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"gotest.tools/v3/assert"
 )
@@ -56,7 +57,7 @@ func TestTransactionalMultiRecordWrites(t *testing.T) {
 	// A batch containing an invalid key must not partially apply.
 	before, err := rs.GetUser(ctx, "u1")
 	assert.NilError(t, err)
-	err = rs.applyMulti([]fsmKV{
+	err = rs.applyMulti(ctx, []goraftfsm.KVEntry{
 		{Key: "/users/u1/", Value: []byte(`{"id":"u1","username":"evil"}`)},
 		{Key: "bad-key", Value: []byte("x")},
 	})

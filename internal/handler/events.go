@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/disaster37/go-raft/httpext"
 	"github.com/go-chi/chi/v5"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"github.com/webcenter-fr/gohookbridge/internal/service"
@@ -177,40 +178,32 @@ func sseLoop(w http.ResponseWriter, flusher http.Flusher, sub *nats.Subscriber, 
 	}
 }
 
-// raftHealth is the subset of the Raft store the health endpoints need. The
-// composition root passes the repository instance; handlers stay decoupled
-// from internal/repository.
-type raftHealth interface {
-	IsCleanState() bool
-	IsStarted() bool
-}
-
 // retReadyz reports readiness: the Raft layer must be a settled Leader/Follower
 // with no un-applied committed entries.
-func RetReadyz(rs raftHealth) http.HandlerFunc {
+func RetReadyz(rs httpext.ReadinessChecker) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", contentType)
-		if rs.IsCleanState() {
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
-			return
+		code, _ := httpext.ReadyzStatus(rs)
+		w.WriteHeader(code)
+		status := "not ready"
+		if code == http.StatusOK {
+			status = "ready"
 		}
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "not ready"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
 	}
 }
 
 // retStartup reports whether this node has joined the Raft cluster (voter or
 // leader). Used by the Kubernetes startupProbe.
-func RetStartup(rs raftHealth) http.HandlerFunc {
+func RetStartup(rs httpext.ReadinessChecker) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", contentType)
-		if rs.IsStarted() {
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]string{"status": "started"})
-			return
+		code, _ := httpext.StartupStatus(rs)
+		w.WriteHeader(code)
+		status := "starting"
+		if code == http.StatusOK {
+			status = "started"
 		}
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "starting"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
 	}
 }

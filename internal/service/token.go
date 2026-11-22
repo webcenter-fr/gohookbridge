@@ -3,30 +3,26 @@ package service
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"time"
 
+	"github.com/disaster37/go-auth/apitoken"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"github.com/webcenter-fr/gohookbridge/pkg/uuid"
 )
 
 func GenerateAccessToken() (raw, hash string, err error) {
-	b := make([]byte, 32)
+	b := make([]byte, apitoken.DefaultRandomBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", "", fmt.Errorf("generate access token: %w", err)
 	}
 	raw = hex.EncodeToString(b)
-	h := sha256.Sum256([]byte(raw))
-	hash = hex.EncodeToString(h[:])
-	return raw, hash, nil
+	return raw, apitoken.Hash(raw), nil
 }
 
 func HashToken(raw string) string {
-	h := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(h[:])
+	return apitoken.Hash(raw)
 }
 
 func (s *Service) CreateAccessToken(ctx context.Context, channelID, name, scope string) (raw string, token domain.ChannelAccessToken, err error) {
@@ -80,9 +76,9 @@ func (s *Service) ValidateChannelToken(ctx context.Context, channelID, rawToken,
 	if err != nil {
 		return false
 	}
-	hash := HashToken(rawToken)
+	hash := apitoken.Hash(rawToken)
 	for _, t := range ch.AccessTokens {
-		if subtle.ConstantTimeCompare([]byte(t.TokenHash), []byte(hash)) == 1 {
+		if apitoken.CompareHashConstantTime(t.TokenHash, hash) {
 			if t.Scope == "both" || t.Scope == requiredScope {
 				return true
 			}

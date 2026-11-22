@@ -9,7 +9,7 @@ This guide covers two deployment modes:
 
 ## Prerequisites
 
-- Go 1.25+ (for local build)
+- Go 1.27+ (for local build)
 - `make` (optional, used by the Makefile)
 - `kubectl` and a cluster (for Kubernetes deployment)
 - A webhook source (e.g., GitHub, GitLab) to send test events

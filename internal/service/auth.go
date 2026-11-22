@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	goauthpassword "github.com/disaster37/go-auth/password"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // IsInternalAuthEnabled reports whether username/password (internal) auth is
@@ -90,7 +90,7 @@ func (s *Service) BuildAuthConfig(ctx context.Context) *domain.AuthConfig {
 }
 
 func ValidatePassword(hash, password string) bool {
-	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+	return goauthpassword.Verify(hash, password)
 }
 
 // CreateDevAdmin creates the bootstrap admin user when the system is in setup
@@ -99,14 +99,14 @@ func (s *Service) CreateDevAdmin(ctx context.Context, password string) error {
 	if !s.IsSetupMode(ctx) {
 		return nil
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := goauthpassword.Hash(password)
 	if err != nil {
 		return err
 	}
 	user := &domain.User{
 		ID:           "admin",
 		Username:     "admin",
-		PasswordHash: string(hash),
+		PasswordHash: hash,
 		Roles:        []string{"admin"},
 		Channels:     []string{"*"},
 	}

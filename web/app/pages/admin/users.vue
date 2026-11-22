@@ -23,8 +23,13 @@
           <UFormField label="Username">
             <UInput v-model="form.username" :disabled="!!editingId" class="w-full" />
           </UFormField>
-          <UFormField v-if="!editingId || form.password" label="Password">
-            <UInput v-model="form.password" type="password" class="w-full" />
+          <UFormField label="Password">
+            <UInput
+              v-model="form.password"
+              type="password"
+              class="w-full"
+              :placeholder="editingId ? 'Leave empty to keep the current password' : 'Required'"
+            />
           </UFormField>
           <UFormField label="Roles">
             <USelectMenu v-model="form.roles" :items="roleOptions" value-key="value" multiple class="w-full" />
@@ -64,6 +69,7 @@ import { api, type User } from '~/utils/api'
 definePageMeta({ middleware: 'admin' })
 
 const toast = useToast()
+const auth = useAuthStore()
 
 const users = ref<User[]>([])
 const loading = ref(true)
@@ -144,9 +150,13 @@ async function handleSave() {
       const payload: any = { username: form.username, roles: form.roles, channels }
       if (form.password) payload.password = form.password
       await api.updateUser(editingId.value, payload)
-    } else {
-      await api.createUser({ username: form.username, password: form.password, roles: form.roles, channels })
+      showModal.value = false
+      toast.add({ title: 'Saved. All sessions were revoked — please sign in again.', color: 'info' })
+      await auth.logout()
+      await navigateTo('/login')
+      return
     }
+    await api.createUser({ username: form.username, password: form.password, roles: form.roles, channels })
     toast.add({ title: 'Saved', color: 'success' })
     showModal.value = false
     await fetchUsers()
@@ -163,9 +173,10 @@ function confirmDelete(id: string) {
 async function handleDelete() {
   try {
     await api.deleteUser(deleteTarget.value)
-    toast.add({ title: 'Deleted', color: 'success' })
     showDeleteModal.value = false
-    await fetchUsers()
+    toast.add({ title: 'Deleted. All sessions were revoked — please sign in again.', color: 'info' })
+    await auth.logout()
+    await navigateTo('/login')
   } catch (e: any) {
     toast.add({ title: e.message, color: 'error' })
   }

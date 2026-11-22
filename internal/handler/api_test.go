@@ -522,3 +522,115 @@ func TestGetMe_LocalEnabledReflectsFlag(t *testing.T) {
 	assert.NilError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Equal(t, body.AuthMethods.LocalEnabled, false)
 }
+
+// TestNotFoundJSON verifies unmatched API routes return a JSON 404.
+func TestNotFoundJSON(t *testing.T) {
+	w := httptest.NewRecorder()
+	NotFoundJSON(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/nope", nil))
+	assert.Equal(t, w.Code, http.StatusNotFound)
+	assert.Equal(t, w.Header().Get("Content-Type"), "application/json")
+	assert.Equal(t, strings.TrimSpace(w.Body.String()), `{"error":"not found"}`)
+}
+
+// TestUpdateOIDCProvider_PreservesSecret covers the redacted-secret regression:
+// editing a provider must never overwrite the stored client_secret with the
+// "<redacted>" placeholder (or an empty value), and write responses must be
+// redacted.
+func TestUpdateOIDCProvider_PreservesSecret(t *testing.T) {
+	const storedSecret = "real-client-secret"
+
+	seed := func(t *testing.T) (*service.Service, *chi.Mux) {
+		t.Helper()
+		svc, r := setupAPI(t)
+		err := svc.SetOIDCProviders(context.Background(), []domain.OIDCProvider{{
+			ID:           "google",
+			Name:         "Google",
+			ClientID:     "client-123",
+			ClientSecret: storedSecret,
+			IssuerURL:    "https://accounts.google.com",
+		}})
+		assert.NilError(t, err)
+		return svc, r
+	}
+
+	storedSecretOf := func(t *testing.T, svc *service.Service, id string) string {
+		t.Helper()
+		providers, err := svc.OIDCProviders(context.Background())
+		assert.NilError(t, err)
+		for _, p := range providers {
+			if p.ID == id {
+				return p.ClientSecret
+			}
+		}
+		t.Fatalf("provider %q not found", id)
+		return ""
+	}
+
+	t.Run("redacted placeholder preserves the stored secret", func(t *testing.T) {
+		svc, r := seed(t)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, apiRequest("PUT", "/oidc/providers/google", domain.OIDCProvider{
+			ID: "google", Name: "Google", ClientID: "client-123",
+			ClientSecret: redactedSecret, IssuerURL: "https://accounts.google.com",
+		}))
+		assert.Equal(t, w.Code, http.StatusOK)
+		assert.Equal(t, storedSecretOf(t, svc, "google"), storedSecret)
+	})
+
+	t.Run("empty secret preserves the stored secret", func(t *testing.T) {
+		svc, r := seed(t)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, apiRequest("PUT", "/oidc/providers/google", domain.OIDCProvider{
+			ID: "google", Name: "Google", ClientID: "client-123",
+			ClientSecret: "", IssuerURL: "https://accounts.google.com",
+		}))
+		assert.Equal(t, w.Code, http.StatusOK)
+		assert.Equal(t, storedSecretOf(t, svc, "google"), storedSecret)
+	})
+
+	t.Run("new secret replaces the stored secret", func(t *testing.T) {
+		svc, r := seed(t)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, apiRequest("PUT", "/oidc/providers/google", domain.OIDCProvider{
+			ID: "google", Name: "Google", ClientID: "client-123",
+			ClientSecret: "new-secret", IssuerURL: "https://accounts.google.com",
+		}))
+		assert.Equal(t, w.Code, http.StatusOK)
+		assert.Equal(t, storedSecretOf(t, svc, "google"), "new-secret")
+	})
+
+	t.Run("write response is redacted", func(t *testing.T) {
+		_, r := seed(t)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, apiRequest("PUT", "/oidc/providers/google", domain.OIDCProvider{
+			ID: "google", Name: "Google", ClientID: "client-123",
+			ClientSecret: "new-secret", IssuerURL: "https://accounts.google.com",
+		}))
+		assert.Equal(t, w.Code, http.StatusOK)
+		var body domain.OIDCProvider
+		assert.NilError(t, json.Unmarshal(w.Body.Bytes(), &body))
+		assert.Equal(t, body.ClientSecret, redactedSecret)
+	})
+
+	t.Run("update-all preserves secrets by id", func(t *testing.T) {
+		svc, r := seed(t)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, apiRequest("PUT", "/oidc/providers", []domain.OIDCProvider{{
+			ID: "google", Name: "Google", ClientID: "client-123",
+			ClientSecret: redactedSecret, IssuerURL: "https://accounts.google.com",
+		}}))
+		assert.Equal(t, w.Code, http.StatusOK)
+		assert.Equal(t, storedSecretOf(t, svc, "google"), storedSecret)
+	})
+
+	t.Run("list response is redacted", func(t *testing.T) {
+		_, r := seed(t)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, apiRequest("GET", "/oidc/providers", nil))
+		assert.Equal(t, w.Code, http.StatusOK)
+		var body []domain.OIDCProvider
+		assert.NilError(t, json.Unmarshal(w.Body.Bytes(), &body))
+		assert.Equal(t, len(body), 1)
+		assert.Equal(t, body[0].ClientSecret, redactedSecret)
+	})
+}

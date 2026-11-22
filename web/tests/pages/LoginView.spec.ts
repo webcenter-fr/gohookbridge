@@ -41,4 +41,28 @@ describe('LoginView', () => {
     expect(wrapper.find('input[autocomplete="username"]').exists()).toBe(true)
     expect(wrapper.text()).not.toContain('Login with')
   })
+
+  it('shows a friendly message when redirected with ?error=oidc_unavailable', async () => {
+    mockGetAuthMethods.mockResolvedValue({
+      local_enabled: true,
+      oidc_providers: [{ id: 'google', name: 'Google' }],
+    })
+
+    const wrapper = await mountSuspended(LoginView, { route: '/login?error=oidc_unavailable' })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('OIDC provider unavailable. Please try again or use another sign-in method.')
+  })
+
+  it('does not show the OIDC error message without the error query param', async () => {
+    mockGetAuthMethods.mockResolvedValue({
+      local_enabled: true,
+      oidc_providers: [{ id: 'google', name: 'Google' }],
+    })
+
+    const wrapper = await mountSuspended(LoginView, { route: '/login' })
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('OIDC provider unavailable')
+  })
 })

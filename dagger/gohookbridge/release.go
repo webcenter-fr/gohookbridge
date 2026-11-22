@@ -11,10 +11,10 @@ import (
 )
 
 // Release-side constants. golangImage is the Go toolchain base for Goreleaser
-// (matches go.mod's 1.26 line); nodeVersion/goreleaserVersion/craneVersion are
+// (matches go.mod's 1.27 line); nodeVersion/goreleaserVersion/craneVersion are
 // pinned release artifacts downloaded inside pipeline containers.
 const (
-	golangImage        = "golang:1.26"
+	golangImage        = "golang:1.27"
 	nodeVersion        = "v22.14.0"
 	goreleaserVersion  = "v2.18.2"
 	craneVersion       = "v0.20.3"

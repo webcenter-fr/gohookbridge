@@ -11,12 +11,17 @@ import (
 	"strings"
 	"time"
 
+	goauthpassword "github.com/disaster37/go-auth/password"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"github.com/webcenter-fr/gohookbridge/internal/service"
-	"golang.org/x/crypto/bcrypt"
 )
+
+// redactedSecret is the placeholder returned in OIDC provider responses in
+// place of a stored client_secret. A write carrying this exact value (or an
+// empty secret) preserves the stored secret instead of overwriting it.
+const redactedSecret = "<redacted>"
 
 type apiHandler struct {
 	svc *service.Service
@@ -503,7 +508,7 @@ func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	hash, err := goauthpassword.Hash(input.Password)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to hash password")
 		return
@@ -605,12 +610,12 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 		u.Username = input.Username
 	}
 	if input.Password != "" {
-		hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+		hash, err := goauthpassword.Hash(input.Password)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to hash password")
 			return
 		}
-		u.PasswordHash = string(hash)
+		u.PasswordHash = hash
 	}
 	if input.Roles != nil {
 		u.Roles = input.Roles
@@ -1005,12 +1010,7 @@ func (h *apiHandler) listOIDCProviders(w http.ResponseWriter, r *http.Request) {
 		providers = []domain.OIDCProvider{}
 	}
 	// Redact client_secret in list responses — only the write endpoints handle full secrets
-	for i := range providers {
-		if providers[i].ClientSecret != "" {
-			providers[i].ClientSecret = "<redacted>"
-		}
-	}
-	writeJSON(w, http.StatusOK, providers)
+	writeJSON(w, http.StatusOK, redactProviders(providers))
 }
 
 func (h *apiHandler) updateAllOIDCProviders(w http.ResponseWriter, r *http.Request) {
@@ -1022,9 +1022,23 @@ func (h *apiHandler) updateAllOIDCProviders(w http.ResponseWriter, r *http.Reque
 	if providers == nil {
 		providers = []domain.OIDCProvider{}
 	}
+	// Preserve stored secrets for existing providers when the request carries
+	// an empty or redacted client_secret.
+	existing, err := h.svc.OIDCProviders(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	existingByID := make(map[string]string, len(existing))
+	for _, p := range existing {
+		existingByID[p.ID] = p.ClientSecret
+	}
 	for i := range providers {
 		if providers[i].GroupsClaim == "" {
 			providers[i].GroupsClaim = "groups"
+		}
+		if stored, ok := existingByID[providers[i].ID]; ok && (providers[i].ClientSecret == "" || providers[i].ClientSecret == redactedSecret) {
+			providers[i].ClientSecret = stored
 		}
 	}
 	if !h.svc.IsInternalAuthEnabled(ctx) && len(providers) == 0 {
@@ -1037,7 +1051,7 @@ func (h *apiHandler) updateAllOIDCProviders(w http.ResponseWriter, r *http.Reque
 	}
 	// OIDC provider changes revoke outstanding sessions (F21, §3.4.4).
 	_ = h.svc.BumpAuthEpoch(ctx)
-	writeJSON(w, http.StatusOK, providers)
+	writeJSON(w, http.StatusOK, redactProviders(providers))
 }
 
 func (h *apiHandler) updateOIDCProvider(w http.ResponseWriter, r *http.Request) {
@@ -1052,11 +1066,16 @@ func (h *apiHandler) updateOIDCProvider(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if updated.GroupsClaim == "" {
+		updated.GroupsClaim = "groups"
+	}
 	found := false
 	for i, p := range providers {
 		if p.ID == id {
-			if updated.GroupsClaim == "" {
-				updated.GroupsClaim = "groups"
+			// Preserve the stored secret when the request omits it or echoes
+			// the redacted placeholder from the list endpoint.
+			if updated.ClientSecret == "" || updated.ClientSecret == redactedSecret {
+				updated.ClientSecret = p.ClientSecret
 			}
 			providers[i] = updated
 			found = true
@@ -1064,9 +1083,6 @@ func (h *apiHandler) updateOIDCProvider(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if !found {
-		if updated.GroupsClaim == "" {
-			updated.GroupsClaim = "groups"
-		}
 		providers = append(providers, updated)
 	}
 	if err := h.svc.SetOIDCProviders(ctx, providers); err != nil {
@@ -1075,7 +1091,26 @@ func (h *apiHandler) updateOIDCProvider(w http.ResponseWriter, r *http.Request) 
 	}
 	// OIDC provider changes revoke outstanding sessions (F21, §3.4.4).
 	_ = h.svc.BumpAuthEpoch(ctx)
-	writeJSON(w, http.StatusOK, updated)
+	writeJSON(w, http.StatusOK, redactProvider(updated))
+}
+
+// redactProvider returns a copy of p with its client_secret replaced by the
+// redacted placeholder (empty stays empty).
+func redactProvider(p domain.OIDCProvider) domain.OIDCProvider {
+	if p.ClientSecret != "" {
+		p.ClientSecret = redactedSecret
+	}
+	return p
+}
+
+// redactProviders redacts every provider's client_secret in place.
+func redactProviders(providers []domain.OIDCProvider) []domain.OIDCProvider {
+	for i := range providers {
+		if providers[i].ClientSecret != "" {
+			providers[i].ClientSecret = redactedSecret
+		}
+	}
+	return providers
 }
 
 func (h *apiHandler) deleteOIDCProvider(w http.ResponseWriter, r *http.Request) {
@@ -1161,6 +1196,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// NotFoundJSON answers unmatched /api/* routes with a JSON 404 instead of the
+// SPA HTML fallback, so API clients never receive text/html for an unknown
+// endpoint.
+func NotFoundJSON(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusNotFound, "not found")
 }
 
 func writeCSV(w http.ResponseWriter, channels []*domain.Channel) {
