@@ -7,7 +7,7 @@ require (
 	github.com/disaster37/go-auth v1.0.0
 	github.com/disaster37/go-raft v1.0.0
 	github.com/disaster37/go-secguard v1.0.0
-	github.com/go-chi/chi/v5 v5.3.0
+	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-playground/validator/v10 v10.26.0
 	github.com/google/go-github/v57 v57.0.0
 	github.com/hashicorp/raft v1.7.3
