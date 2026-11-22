@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+
+	sgheaders "github.com/disaster37/go-secguard/headers"
 )
 
 // The embed directive below works ONLY because nuxt.config.ts sets
@@ -30,11 +32,9 @@ func spaHandlerFrom(fsys fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(fsys))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := w.Header()
-		h.Set("X-Frame-Options", "DENY")
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+		for name, value := range sgheaders.DefaultSecurityHeaders("/", r.TLS != nil) {
+			w.Header().Set(name, value)
+		}
 
 		p := strings.TrimPrefix(r.URL.Path, "/")
 		if p != "" {
