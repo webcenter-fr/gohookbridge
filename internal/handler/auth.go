@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/disaster37/go-auth/httpcookie"
@@ -35,10 +36,15 @@ func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, spec.ToStdlib())
 }
 
-// unauthorizedResponse clears the session cookie and answers GETs with a
-// redirect to the login page and other methods with 401.
+// unauthorizedResponse clears the session cookie. API requests always receive
+// a JSON 401 (so the UI never parses the SPA HTML fallback as JSON); non-API
+// GETs redirect to the login page and other methods return a plain 401.
 func unauthorizedResponse(w http.ResponseWriter, r *http.Request, secure bool) {
 	clearSessionCookie(w, secure)
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	if r.Method == http.MethodGet {
 		redirectURL := r.URL.String()
 		//nolint:gosec

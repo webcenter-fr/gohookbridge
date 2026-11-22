@@ -9,14 +9,17 @@ import (
 	sgheaders "github.com/disaster37/go-secguard/headers"
 )
 
-// The embed directive below works ONLY because nuxt.config.ts sets
-// app.buildAssetsDir to "/assets/" (no leading underscore). Go's embed
-// package silently excludes files and directories whose names begin with
-// "_" or ".", so Nuxt's default "/_nuxt/" directory would be missing from
-// the binary. See web/scripts/copy-to-static.mjs, which fails the build if
-// such entries appear in the generated output.
+// The embed directive below uses the "all:" prefix, which embeds every file
+// under static/ including files and directories whose names begin with "_" or
+// "." at any depth. This is required because Vite emits content-hashed chunks
+// named like "assets/_LzBFbKv.js"; a plain "static/*" directive would silently
+// exclude them, and the server would then return the SPA HTML fallback for the
+// missing chunk (MIME type text/html), breaking dynamic imports.
 //
-//go:embed static/*
+// nuxt.config.ts still sets app.buildAssetsDir to "/assets/" (no leading
+// underscore) for cleaner URLs, but with "all:" it is no longer embed-critical.
+//
+//go:embed all:static
 var spaAssets embed.FS
 
 // SPAHandler serves the embedded Nuxt static SPA.

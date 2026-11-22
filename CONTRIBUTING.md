@@ -489,7 +489,9 @@ The SSE endpoint (`GET /events/{channel}`) checks access control but does not en
 
 ### Static output and `go:embed`
 
-`web/nuxt.config.ts` sets `app.buildAssetsDir: '/assets/'`. This is **required**: Go's `go:embed` silently excludes files and directories whose names begin with `_` or `.`, so Nuxt's default `/_nuxt/` directory would be missing from the binary. `web/scripts/copy-to-static.mjs` fails the build if any such entry appears at the root of `.output/public`. Do not rename `buildAssetsDir` back to `/_nuxt/`.
+`internal/web/handler.go` embeds the SPA with `//go:embed all:static`. The `all:` prefix includes files and directories whose names begin with `_` or `.` at any depth, so Vite content-hashed chunks such as `assets/_LzBFbKv.js` are embedded and served correctly. A plain `static/*` directive would silently exclude them, and the server would return the SPA HTML fallback (MIME type `text/html`) for the missing chunk, breaking dynamic imports.
+
+`web/nuxt.config.ts` still sets `app.buildAssetsDir: '/assets/'` for cleaner URLs, but with `all:` it is no longer embed-critical. `web/scripts/copy-to-static.mjs` no longer needs an exclusion guard.
 
 ## Testing
 

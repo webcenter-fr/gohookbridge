@@ -556,6 +556,9 @@ func NewServer(c *cli.Context) (*Server, error) {
 		r.Get("/bans", handler.APIBansHandler(banTrackerInst))
 		r.With(handler.RequirePermission(svc, domain.PermGlobalWrite)).Delete("/bans/{ip}", handler.APIUnbanHandler(banTrackerInst))
 	})
+	// Unmatched /api/* routes return a JSON 404 instead of the SPA HTML
+	// fallback (which would surface as "Unexpected token '<'" in the UI).
+	apiRouter.NotFound(handler.NotFoundJSON)
 	mainRouter.Mount("/api", apiRouter)
 
 	finalRouter := chi.NewRouter()

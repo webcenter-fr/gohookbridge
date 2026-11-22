@@ -21,3 +21,6 @@ SECURITY_AUDIT_REPORT.md
 !**/testdata/**/*.key
 at-rest-key.json
 *.audit-allowlist.local.json
+
+# Playwright MCP session artifacts (local tooling)
+.playwright-mcp/

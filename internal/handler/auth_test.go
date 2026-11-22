@@ -775,3 +775,40 @@ func TestFullProtectedFlow(t *testing.T) {
 		assert.Equal(t, w.Code, http.StatusOK)
 	})
 }
+
+// F21: an unauthenticated API request must receive a JSON 401 (not the SPA HTML
+// fallback), so the UI never parses HTML as JSON after a session is revoked.
+func TestRequireAuthAPIUnauthorizedJSON(t *testing.T) {
+	secret := service.DeriveSessionSecret("test-secret-for-api-401-tests-32")
+
+	r := chi.NewRouter()
+	r.Use(RequireAuth(nil, secret, true))
+	r.Get("/api/channels", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	t.Run("api GET without cookie returns JSON 401", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/channels", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		assert.Equal(t, w.Code, http.StatusUnauthorized)
+		assert.Equal(t, w.Header().Get("Content-Type"), "application/json")
+		assert.Assert(t, strings.Contains(w.Body.String(), `"error"`))
+	})
+
+	t.Run("api GET with invalid session returns JSON 401", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/channels", nil)
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "not-a-valid-token"})
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		assert.Equal(t, w.Code, http.StatusUnauthorized)
+		assert.Equal(t, w.Header().Get("Content-Type"), "application/json")
+	})
+
+	t.Run("non-api GET still redirects", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/channels", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		assert.Equal(t, w.Code, http.StatusFound)
+	})
+}
