@@ -59,6 +59,12 @@ const errorMsg = ref('')
 const oidcProviders = ref<{ id: string; name: string }[]>([])
 const localEnabled = ref(false)
 
+// A failed OIDC login redirects back here with ?error=oidc_unavailable so the
+// user sees a friendly message instead of the raw 502 JSON body.
+if (route.query.error === 'oidc_unavailable') {
+  errorMsg.value = 'OIDC provider unavailable. Please try again or use another sign-in method.'
+}
+
 onMounted(async () => {
   try {
     const methods = await api.getAuthMethods()

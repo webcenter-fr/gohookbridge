@@ -266,24 +266,59 @@ func TestRingBufferPerChannelTTLEvictionMixed(t *testing.T) {
 func TestClusterTLSAndAuthConfigured(t *testing.T) {
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	opts, err := buildServerOptions(&Config{
-		NodeID:          "n1",
-		Port:            4222,
-		ClusterPort:     6222,
-		Routes:          []string{"nats://nats-0.nats:6222"},
-		ClusterName:     "gohookbridge",
-		ClusterUsername: "route-user",
-		ClusterPassword: "route-pass",
-		ClusterTLS:      tlsCfg,
+		NodeID:           "n1",
+		Port:             4222,
+		ClusterPort:      6222,
+		Routes:           []string{"nats://nats-0.nats:6222"},
+		ClusterName:      "gohookbridge",
+		ClusterUsername:  "route-user",
+		ClusterPassword:  "route-pass",
+		ClusterTLS:       tlsCfg,
+		ClusterAdvertise: "nats-0.nats:6222",
 	})
 	assert.NilError(t, err)
 	assert.Equal(t, opts.Cluster.Username, "route-user")
 	assert.Equal(t, opts.Cluster.Password, "route-pass")
 	assert.Equal(t, opts.Cluster.TLSConfig, tlsCfg)
 	assert.Assert(t, opts.Cluster.TLSTimeout > 0)
+	assert.Equal(t, opts.Cluster.Advertise, "nats-0.nats:6222")
 	assert.Equal(t, 1, len(opts.Routes))
 	assert.Equal(t, "route-user", opts.Routes[0].User.Username())
 	pass, _ := opts.Routes[0].User.Password()
 	assert.Equal(t, "route-pass", pass)
+}
+
+func TestClusterAdvertiseConfigured(t *testing.T) {
+	// Set: the advertised host:port is wired through so gossiped route INFOs
+	// use the DNS name that matches the certificate SANs.
+	opts, err := buildServerOptions(&Config{
+		NodeID:           "n1",
+		Port:             4222,
+		ClusterPort:      6222,
+		ClusterAdvertise: "nats-0.nats:6222",
+	})
+	assert.NilError(t, err)
+	assert.Equal(t, opts.Cluster.Advertise, "nats-0.nats:6222")
+
+	// Unset: NATS falls back to the observed address (empty here).
+	opts, err = buildServerOptions(&Config{
+		NodeID:      "n1",
+		Port:        4222,
+		ClusterPort: 6222,
+	})
+	assert.NilError(t, err)
+	assert.Equal(t, opts.Cluster.Advertise, "")
+
+	// Disabled cluster: no advertise even when configured.
+	opts, err = buildServerOptions(&Config{
+		NodeID:           "n1",
+		Port:             4222,
+		ClusterPort:      6222,
+		ClusterAdvertise: "nats-0.nats:6222",
+		DisableCluster:   true,
+	})
+	assert.NilError(t, err)
+	assert.Equal(t, opts.Cluster.Advertise, "")
 }
 
 func TestDisableClusterSingleNode(t *testing.T) {

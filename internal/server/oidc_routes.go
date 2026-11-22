@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"strconv"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
@@ -121,7 +123,12 @@ func (o *oidcRouteResolver) resolve(w http.ResponseWriter, r *http.Request) (*ha
 
 	oidcHandler, err := o.newHandler(*provider, o.sessionSecret, o.publicURL, o.cookieSecure)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "oidc provider discovery failed")
+		// Discovery/config failure: the browser must not see raw JSON. Log the
+		// real cause server-side and send the user back to the login page with
+		// a friendly, actionable error. Quote the provider id (URL-controlled)
+		// so it cannot inject newlines into the log.
+		log.Printf("oidc provider %s unavailable: %v", strconv.Quote(id), err)
+		http.Redirect(w, r, "/login?error=oidc_unavailable", http.StatusFound)
 		return nil, false
 	}
 	oidcHandler.Resolver = o.svc

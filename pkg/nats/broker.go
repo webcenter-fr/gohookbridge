@@ -32,6 +32,12 @@ type Config struct {
 	ClusterPassword string
 	// ClusterTLS, when set, wraps cluster route connections in TLS.
 	ClusterTLS *tls.Config
+	// ClusterAdvertise is the host:port advertised to cluster peers; set to the
+	// pod's stable DNS name so gossiped route INFOs use DNS names matching the
+	// certificate SANs. Without it gossiped route INFOs carry the observed pod
+	// IP, which cannot be matched against the DNS-name routes and whose IP SANs
+	// are absent from the cert, causing a continuous implicit-reconnect storm.
+	ClusterAdvertise string
 	// DisableCluster disables the cluster listener and routes entirely
 	// (single-node deployments).
 	DisableCluster bool
@@ -149,6 +155,9 @@ func buildServerOptions(cfg *Config) (*server.Options, error) {
 		if cfg.ClusterTLS != nil {
 			opts.Cluster.TLSConfig = cfg.ClusterTLS
 			opts.Cluster.TLSTimeout = 2.0
+		}
+		if cfg.ClusterAdvertise != "" {
+			opts.Cluster.Advertise = cfg.ClusterAdvertise
 		}
 	}
 	return opts, nil

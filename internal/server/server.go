@@ -329,6 +329,14 @@ func NewServer(c *cli.Context) (*Server, error) {
 		SubQueueDepth:   c.Int("sse-queue-depth"),
 		SubQueueBytes:   c.Int("sse-queue-bytes"),
 	}
+	// Advertise the pod's stable DNS name (the same host Raft advertises) with
+	// the NATS cluster port so gossiped route INFOs match the DNS-name routes
+	// and the certificate's DNS SANs. Without this, peers gossip the observed
+	// pod IP, which fails route-TLS verification and triggers an endless
+	// implicit-reconnect storm.
+	if host, _, err := net.SplitHostPort(advertise); err == nil {
+		natsCfg.ClusterAdvertise = net.JoinHostPort(host, strconv.Itoa(c.Int("nats-cluster-port")))
+	}
 	if caFile, certFile, keyFile := c.String("nats-cluster-tls-ca"), c.String("nats-cluster-tls-cert"), c.String("nats-cluster-tls-key"); caFile != "" || certFile != "" || keyFile != "" {
 		if caFile == "" || certFile == "" || keyFile == "" {
 			cancelStartup()

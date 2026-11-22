@@ -172,5 +172,8 @@ func TestOIDCRouteResolver_DiscoveryFailure(t *testing.T) {
 	resolver := newOIDCRouteResolver(svc, [32]byte{}, "http://localhost", false)
 	w := httptest.NewRecorder()
 	resolver.LoginHandler().ServeHTTP(w, requestWithProvider("broken"))
-	assert.Equal(t, w.Code, http.StatusBadGateway)
+	// The browser must not receive raw JSON; it is redirected to the login page
+	// with a friendly error code instead.
+	assert.Equal(t, w.Code, http.StatusFound)
+	assert.Equal(t, w.Header().Get("Location"), "/login?error=oidc_unavailable")
 }
