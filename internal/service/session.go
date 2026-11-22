@@ -2,110 +2,42 @@ package service
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"io"
-	"strings"
 	"time"
 
-	"golang.org/x/crypto/hkdf"
+	goauthjwt "github.com/disaster37/go-auth/jwt"
 )
 
 // SessionToken is the signed session payload stored in the session cookie.
-// UserID/Issuer/Subject bind the session to a resolved principal; Username is
-// display-only and must never be used for authorization decisions.
-type SessionToken struct {
-	UserID    string   `json:"user_id,omitempty"`
-	Username  string   `json:"username,omitempty"`
-	Method    string   `json:"method"` // "internal" | "oidc"
-	Provider  string   `json:"provider,omitempty"`
-	Issuer    string   `json:"issuer,omitempty"`
-	Subject   string   `json:"subject,omitempty"`
-	ExpiresAt int64    `json:"expires_at"`
-	Groups    []string `json:"groups,omitempty"`
-	SessionID string   `json:"sid,omitempty"`
-	AuthEpoch int64    `json:"auth_epoch,omitempty"`
-}
+type SessionToken = goauthjwt.SessionToken
 
-const sessionSecretKDFInfo = "gohookbridge.session.signing.v1"
+const (
+	sessionSecretKDFInfo   = "gohookbridge.session.signing.v1"
+	MinSessionSecretLength = goauthjwt.MinSecretLength
+)
 
-// DeriveSessionSecret derives the HMAC-SHA256 signing key from the configured
-// session secret using HKDF-SHA256 (extract+expand with a domain-separation
-// info string). SHA-256 alone is not a KDF; HKDF is the standard extractor for
-// turning a shared secret into keying material.
+// DeriveSessionSecret derives the 32-byte HMAC-SHA256 signing key via go-auth/jwt
+// using gohookbridge's domain-separation info string for cookie compatibility.
 func DeriveSessionSecret(secret string) [32]byte {
-	var key [32]byte
-	r := hkdf.New(sha256.New, []byte(secret), nil, []byte(sessionSecretKDFInfo))
-	if _, err := io.ReadFull(r, key[:]); err != nil {
-		// Cannot happen for HKDF-SHA256 (returns exactly the requested bytes).
+	key, err := goauthjwt.DeriveSigningKey(secret, sessionSecretKDFInfo)
+	if err != nil {
 		panic("service: derive session secret: " + err.Error())
 	}
 	return key
 }
 
-// MinSessionSecretLength is the minimum accepted length for a configured
-// session secret (32+ hex/base64 chars provide >= 128 bits of keyspace).
-const MinSessionSecretLength = 32
-
-// ValidateSessionSecret rejects weak session secrets (CWE-326). An empty
-// secret is allowed (the server auto-generates a 32-byte random one). A
-// 32+ character hex/base64 secret provides >= 128 bits of keyspace.
+// ValidateSessionSecret rejects weak session secrets (< 32 chars) via go-auth/jwt.
 func ValidateSessionSecret(secret string) error {
-	if secret == "" {
-		return nil
-	}
-	if len(secret) < MinSessionSecretLength {
-		return fmt.Errorf("session_secret must be at least %d characters (got %d)", MinSessionSecretLength, len(secret))
-	}
-	return nil
+	return goauthjwt.ValidateSecret(secret)
 }
 
-// EncodeSession signs and encodes a session token as
-// base64url(payload).base64url(hmac).
+// EncodeSession signs and encodes a session token via go-auth/jwt.
 func EncodeSession(token *SessionToken, secret [32]byte) (string, error) {
-	data, err := json.Marshal(token)
-	if err != nil {
-		return "", err
-	}
-	encoded := base64.RawURLEncoding.EncodeToString(data)
-	mac := hmac.New(sha256.New, secret[:])
-	mac.Write([]byte(encoded))
-	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return encoded + "." + sig, nil
+	return goauthjwt.EncodeSession(token, secret)
 }
 
-// DecodeSession verifies and decodes a session cookie value.
+// DecodeSession verifies and decodes a session cookie value via go-auth/jwt.
 func DecodeSession(tokenStr string, secret [32]byte) (*SessionToken, error) {
-	parts := strings.SplitN(tokenStr, ".", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid token format")
-	}
-	encoded := parts[0]
-	sigB64 := parts[1]
-
-	mac := hmac.New(sha256.New, secret[:])
-	mac.Write([]byte(encoded))
-	expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(sigB64), []byte(expectedSig)) {
-		return nil, fmt.Errorf("invalid token signature")
-	}
-
-	data, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
-		return nil, err
-	}
-	var token SessionToken
-	if err := json.Unmarshal(data, &token); err != nil {
-		return nil, err
-	}
-	if token.ExpiresAt < time.Now().Unix() {
-		return nil, fmt.Errorf("token expired")
-	}
-	return &token, nil
+	return goauthjwt.DecodeSession(tokenStr, secret, time.Now().UTC())
 }
 
 // GetAuthEpoch returns the current session/auth epoch (0 on error).
@@ -122,9 +54,7 @@ func (s *Service) BumpAuthEpoch(ctx context.Context) error {
 	return s.repo.BumpAuthEpoch(ctx)
 }
 
-// SessionEpochValid reports whether the session was minted under the current
-// auth epoch. Stale sessions (e.g. after a password reset or role change) are
-// rejected.
+// SessionEpochValid reports whether the session was minted under the current auth epoch.
 func (s *Service) SessionEpochValid(ctx context.Context, tok *SessionToken) bool {
 	if tok == nil {
 		return false
@@ -134,9 +64,5 @@ func (s *Service) SessionEpochValid(ctx context.Context, tok *SessionToken) bool
 
 // GenerateRandomHex returns a random 16-byte value encoded as 32 hex chars.
 func GenerateRandomHex() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("generate random hex: %w", err)
-	}
-	return fmt.Sprintf("%x", b), nil
+	return goauthjwt.GenerateRandomHex()
 }

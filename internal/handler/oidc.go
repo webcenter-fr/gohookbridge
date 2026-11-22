@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,6 +12,8 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/disaster37/go-auth/httpcookie"
+	"github.com/disaster37/go-auth/oauth"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"github.com/webcenter-fr/gohookbridge/internal/service"
 )
@@ -20,61 +21,11 @@ import (
 const (
 	oidcStateCookieName = "oidc_state"
 	oidcNonceCookieName = "oidc_nonce"
-	// oidcMaxBody caps provider responses (discovery/token/userinfo).
-	oidcMaxBody = 1 << 20 // 1 MiB
 )
 
-// newOIDCHTTPClient returns a bounded HTTP client: 10s overall timeout, 5s
-// response-header timeout, and no cross-origin redirects (F22).
-func newOIDCHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: 10 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) > 0 && req.URL.Host != via[0].URL.Host {
-				return fmt.Errorf("cross-origin redirect refused: %s", req.URL.Host)
-			}
-			return nil
-		},
-		Transport: &http.Transport{
-			ResponseHeaderTimeout: 5 * time.Second,
-			DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-		},
-	}
-}
-
-// readCapped reads at most limit bytes from r, erroring when the body exceeds
-// it.
-func readCapped(r io.Reader, limit int64) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(r, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("response body exceeds %d bytes", limit)
-	}
-	return data, nil
-}
-
-func isLoopbackHost(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-// validateIssuer enforces https issuers (loopback http allowed, or http with
-// AllowInsecureIssuer) and validates the security-sensitive endpoints against
-// the allowlist.
-func validateIssuer(provider domain.OIDCProvider) error {
-	u, err := url.Parse(provider.IssuerURL)
-	if err != nil {
-		return fmt.Errorf("parse issuer_url: %w", err)
-	}
-	if u.Scheme != "https" && !provider.AllowInsecureIssuer && !isLoopbackHost(u.Hostname()) {
-		return fmt.Errorf("issuer_url must use https (set allow_insecure_issuer only for trusted loopback/dev providers)")
-	}
-	return nil
+// safeRedirectPath validates a post-login redirect target via go-auth/httpcookie.
+func safeRedirectPath(redirect string) string {
+	return httpcookie.SafeRedirectPath(redirect, "/")
 }
 
 func endpointAllowed(provider domain.OIDCProvider, endpoint string) bool {
@@ -131,10 +82,25 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 	if provider.GroupsClaim == "" {
 		provider.GroupsClaim = "groups"
 	}
-	if err := validateIssuer(provider); err != nil {
+	// Validate the issuer config (https required unless loopback or
+	// AllowInsecureIssuer) via go-auth/oauth.
+	if _, err := oauth.NewOIDCOAuthService(oauth.OIDCConfig{
+		ProviderID:          provider.ID,
+		ClientID:            provider.ClientID,
+		ClientSecret:        provider.ClientSecret,
+		RedirectURL:         publicURL + "/auth/oidc/" + provider.ID + "/callback",
+		IssuerURL:           provider.IssuerURL,
+		AllowInsecureIssuer: provider.AllowInsecureIssuer,
+		AllowedEndpoints:    provider.AllowedEndpoints,
+		Scopes:              provider.Scopes,
+		GroupsClaim:         provider.GroupsClaim,
+	}, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		return nil, err
 	}
-	client := newOIDCHTTPClient()
+	client, err := oauth.NewOAuthHTTPClient("", oidcDiscoveryTimeout)
+	if err != nil {
+		return nil, err
+	}
 
 	// Bound the startup fetches: a hanging issuer must not block boot. The
 	// verifier's JWKS refresh uses its own background context (go-oidc), so
@@ -155,7 +121,7 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("oidc discovery returned %d", resp.StatusCode)
 	}
-	body, err := readCapped(resp.Body, oidcMaxBody)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -187,23 +153,6 @@ func NewOIDCHandler(provider domain.OIDCProvider, sessionSecret [32]byte, public
 	}, nil
 }
 
-// safeRedirectPath validates a post-login redirect target. Only same-site
-// relative paths are allowed; absolute URLs, protocol-relative URLs ("//") and
-// backslash tricks are rejected to prevent open redirects (CWE-601).
-func safeRedirectPath(redirect string) string {
-	if redirect == "" {
-		return "/"
-	}
-	if strings.HasPrefix(redirect, "/") &&
-		!strings.HasPrefix(redirect, "//") &&
-		!strings.HasPrefix(redirect, "/\\") &&
-		!strings.Contains(redirect, "\r") &&
-		!strings.Contains(redirect, "\n") {
-		return redirect
-	}
-	return "/"
-}
-
 func (h *OIDCHandler) LoginHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		redirect := safeRedirectPath(r.URL.Query().Get("redirect"))
@@ -220,26 +169,24 @@ func (h *OIDCHandler) LoginHandler() http.HandlerFunc {
 		}
 
 		stateValue := fmt.Sprintf("%s|%s", state, redirect)
-		//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
-		http.SetCookie(w, &http.Cookie{
+		http.SetCookie(w, httpcookie.Spec{
 			Name:     oidcStateCookieName,
 			Value:    stateValue,
 			Path:     "/",
-			HttpOnly: true,
-			Secure:   h.SecureCookies,
-			SameSite: http.SameSiteLaxMode,
 			MaxAge:   300,
-		})
-		//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
-		http.SetCookie(w, &http.Cookie{
+			Secure:   h.SecureCookies,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		}.ToStdlib())
+		http.SetCookie(w, httpcookie.Spec{
 			Name:     oidcNonceCookieName,
 			Value:    nonce,
 			Path:     "/",
-			HttpOnly: true,
-			Secure:   h.SecureCookies,
-			SameSite: http.SameSiteLaxMode,
 			MaxAge:   300,
-		})
+			Secure:   h.SecureCookies,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		}.ToStdlib())
 
 		scopes := strings.Join(h.Provider.Scopes, " ")
 		redirectURI := h.PublicURL + "/auth/oidc/" + h.Provider.ID + "/callback"
@@ -431,7 +378,7 @@ func (h *OIDCHandler) exchangeCode(code string, r *http.Request) (map[string]any
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("token endpoint returned %d", resp.StatusCode)
 	}
-	body, err := readCapped(resp.Body, oidcMaxBody)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -456,7 +403,7 @@ func (h *OIDCHandler) getUserInfo(ctx context.Context, accessToken string) (map[
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("userinfo endpoint returned %d", resp.StatusCode)
 	}
-	body, err := readCapped(resp.Body, oidcMaxBody)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -468,29 +415,25 @@ func (h *OIDCHandler) getUserInfo(ctx context.Context, accessToken string) (map[
 }
 
 func clearOIDCStateCookie(w http.ResponseWriter, secure bool) {
-	//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, httpcookie.Spec{
 		Name:     oidcStateCookieName,
-		Value:    "",
 		Path:     "/",
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
-	})
+		Secure:   secure,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}.ToStdlib())
 }
 
 func clearOIDCNonceCookie(w http.ResponseWriter, secure bool) {
-	//nolint:gosec // Secure reflects the effective TLS deployment, derived once at startup
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, httpcookie.Spec{
 		Name:     oidcNonceCookieName,
-		Value:    "",
 		Path:     "/",
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
-	})
+		Secure:   secure,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}.ToStdlib())
 }
 
 func extractGroupsFromToken(token map[string]any, claimName string) []string {

@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
+	goauthpassword "github.com/disaster37/go-auth/password"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
 	"github.com/webcenter-fr/gohookbridge/internal/domain"
 	"github.com/webcenter-fr/gohookbridge/internal/service"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type apiHandler struct {
@@ -503,7 +503,7 @@ func (h *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	hash, err := goauthpassword.Hash(input.Password)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to hash password")
 		return
@@ -605,12 +605,12 @@ func (h *apiHandler) updateUser(w http.ResponseWriter, r *http.Request) {
 		u.Username = input.Username
 	}
 	if input.Password != "" {
-		hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+		hash, err := goauthpassword.Hash(input.Password)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to hash password")
 			return
 		}
-		u.PasswordHash = string(hash)
+		u.PasswordHash = hash
 	}
 	if input.Roles != nil {
 		u.Roles = input.Roles
