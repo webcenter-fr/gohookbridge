@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mountSuspended, mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { flushPromises } from '@vue/test-utils'
 import UsersView from '~/pages/admin/users.vue'
@@ -37,6 +37,12 @@ describe('UsersView', () => {
     mockListRoles.mockResolvedValue([{ name: 'admin' }])
   })
 
+  afterEach(() => {
+    // UModal teleports its content to document.body; clear it so leaked modal
+    // markup from one test cannot satisfy another test's query.
+    document.body.innerHTML = ''
+  })
+
   it('shows the password field when editing an existing user', async () => {
     const wrapper = await mountSuspended(UsersView)
     await flushPromises()
@@ -49,10 +55,10 @@ describe('UsersView', () => {
 
     // The password field must be present in the edit modal (regression: it was
     // hidden until form.password was non-empty, making password changes
-    // impossible from the UI).
-    const passwordInput = wrapper.find('input[type="password"]')
-    expect(passwordInput.exists()).toBe(true)
-    expect(passwordInput.attributes('placeholder')).toBe('Leave empty to keep the current password')
+    // impossible from the UI). UModal teleports its content to document.body.
+    const passwordInput = document.body.querySelector('input[type="password"]')
+    expect(passwordInput).toBeTruthy()
+    expect(passwordInput!.getAttribute('placeholder')).toBe('Leave empty to keep the current password')
   })
 
   it('shows a required password placeholder when creating a user', async () => {
@@ -64,8 +70,8 @@ describe('UsersView', () => {
     await newButton!.trigger('click')
     await flushPromises()
 
-    const passwordInput = wrapper.find('input[type="password"]')
-    expect(passwordInput.exists()).toBe(true)
-    expect(passwordInput.attributes('placeholder')).toBe('Required')
+    const passwordInput = document.body.querySelector('input[type="password"]')
+    expect(passwordInput).toBeTruthy()
+    expect(passwordInput!.getAttribute('placeholder')).toBe('Required')
   })
 })

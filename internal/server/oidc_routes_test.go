@@ -133,6 +133,33 @@ func TestOIDCRouteResolver_EvictsRemovedProviders(t *testing.T) {
 	assert.Equal(t, 0, len(resolver.cache))
 }
 
+func TestProviderFingerprint_SecretAffectsHash(t *testing.T) {
+	base := domain.OIDCProvider{ID: "google", Name: "Google", ClientID: "cid", ClientSecret: "sec", IssuerURL: "https://issuer"}
+
+	fp, err := providerFingerprint(base)
+	assert.NilError(t, err)
+
+	// Identical config yields an identical fingerprint (stable cache key).
+	same, err := providerFingerprint(base)
+	assert.NilError(t, err)
+	assert.Equal(t, fp, same)
+
+	// A secret-only change must change the fingerprint so the cached handler
+	// rebuilds, even though the secret is never marshaled.
+	rotated := base
+	rotated.ClientSecret = "sec2"
+	rotatedFP, err := providerFingerprint(rotated)
+	assert.NilError(t, err)
+	assert.Assert(t, fp != rotatedFP, "secret rotation must change the fingerprint")
+
+	// A non-secret config change must also change the fingerprint.
+	renamed := base
+	renamed.Name = "Google Renamed"
+	renamedFP, err := providerFingerprint(renamed)
+	assert.NilError(t, err)
+	assert.Assert(t, fp != renamedFP, "config change must change the fingerprint")
+}
+
 func TestOIDCRouteResolver_DiscoveryFailure(t *testing.T) {
 	rs := storetest.NewRaftStore(t)
 	svc := service.NewService(rs, nil)

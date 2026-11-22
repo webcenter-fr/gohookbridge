@@ -157,12 +157,20 @@ func (o *oidcRouteResolver) evictLocked(providers []domain.OIDCProvider) {
 // providerFingerprint returns a stable hash of the provider config so a changed
 // provider rebuilds its handler.
 func providerFingerprint(provider domain.OIDCProvider) (string, error) {
+	// The client secret is hashed separately so it is never marshaled (gosec
+	// G117 flags marshaling struct fields that look like secrets).
+	secret := provider.ClientSecret
+	provider.ClientSecret = ""
+
+	h := sha256.New()
+	//nolint:gosec // G117: ClientSecret is blanked above; the hash is never logged or stored.
 	data, err := json.Marshal(provider)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	h.Write(data)
+	h.Write([]byte(secret))
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // writeJSONError writes `{"error": msg}` with the given status.

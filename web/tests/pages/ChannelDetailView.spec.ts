@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { defineComponent, h } from 'vue'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { flushPromises } from '@vue/test-utils'
 import ChannelDetailView from '~/pages/channels/[id].vue'
@@ -39,6 +40,22 @@ class FakeEventSource {
 }
 
 vi.stubGlobal('EventSource', FakeEventSource)
+
+// Minimal USelect stand-in. The real Nuxt UI USelect renders reka-ui SelectItems,
+// and one of the page's options ("None" for encryption mode) has an empty string
+// value, which reka-ui rejects with an unhandled error. The stub keeps the
+// v-model contract (modelValue prop + update:model-value event) so the test can
+// drive the access-mode select without pulling in reka-ui.
+const USelectStub = defineComponent({
+  name: 'USelect',
+  props: {
+    modelValue: { type: [String, Number], default: '' },
+  },
+  emits: ['update:model-value'],
+  setup() {
+    return () => h('div')
+  },
+})
 
 describe('ChannelDetailView', () => {
   beforeEach(() => {
@@ -140,18 +157,33 @@ describe('ChannelDetailView', () => {
   it('reverts the access-mode select when the update is rejected', async () => {
     mockUpdateAccessMode.mockRejectedValue(new Error('cannot enable token access without tokens'))
 
-    const wrapper = await mountSuspended(ChannelDetailView, { route: '/channels/test-chan' })
+    const wrapper = await mountSuspended(ChannelDetailView, {
+      route: '/channels/test-chan',
+      global: { stubs: { USelect: USelectStub } },
+    })
     await flushPromises()
 
-    const select = wrapper.findComponent({ name: 'USelect' })
-    expect(select.exists()).toBe(true)
+    // The Access Mode select lives in the Settings tab, which is not active by
+    // default (the Data tab is). Activate it before locating the select.
+    const settingsTab = wrapper.findAll('button').find(b => b.text() === 'Settings')
+    expect(settingsTab).toBeTruthy()
+    await settingsTab!.trigger('mousedown')
+    await settingsTab!.trigger('click')
+    await flushPromises()
+
+    // The Settings tab renders several USelects (body size, encryption mode,
+    // access mode); the access mode one is bound to form.access_mode, which
+    // starts at the server-confirmed value "public".
+    const select = wrapper.findAllComponents({ name: 'USelect' })
+      .find(s => s.props('modelValue') === 'public')
+    expect(select).toBeTruthy()
 
     // The user picks "token"; the server rejects it.
-    select.vm.$emit('update:model-value', 'token')
+    select!.vm.$emit('update:model-value', 'token')
     await flushPromises()
 
     expect(mockUpdateAccessMode).toHaveBeenCalledWith('test-chan', 'token')
     // The select must fall back to the last confirmed value (public).
-    expect(select.props('modelValue')).toBe('public')
+    expect(select!.props('modelValue')).toBe('public')
   })
 })
