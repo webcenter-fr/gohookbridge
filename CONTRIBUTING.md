@@ -16,12 +16,8 @@
 │   │   ├── errors.go                 # ErrNotFound, ErrAlreadyExists, ErrInvalidArgument
 │   │   └── repository.go             # ChannelRepository, UserRepository, RBACRepository, ConfigRepository, Repository
 │   ├── repository/                   # persistence: Raft + BoltDB + FSM — implements domain.Repository
-│   │   ├── raft.go                   # RaftStore, RaftConfig, lifecycle + CRUD (ctx + domain errors)
-│   │   ├── bolt.go                   # boltLogStore, boltStableStore, Snapshot, FSM data helpers
-│   │   ├── fsm.go                    # FSM, fsmCommand, bootstrap payloads
-│   │   ├── raft_discovery.go         # RaftPeer, PeerResolver, resolvers, PodSANs
-│   │   ├── raft_streamlayer.go       # hostAddr, plain/tls/retrying stream layers
-│   │   ├── raft_tls.go               # RaftTLSConfig, LoadOrBuildRaftTLS, MintingCA
+│   │   ├── raft.go                   # RaftStore wrapping go-raft's Node + storage.AESGCMKeeper
+│   │   ├── fsm.go                    # compatFSM over go-raft/fsm.BoltKVFSM (legacy log/snapshot replay)
 │   │   ├── bootstrap.go              # BootstrapConfig, LoadBootstrap, ApplyBootstrap
 │   │   ├── migrate.go                # MigrateRBAC (in-code data migration)
 │   │   └── storetest/                # test helpers (NewRaftStore, ...)
@@ -29,28 +25,28 @@
 │   │   ├── service.go                # Service struct, NewService(repo, notifier)
 │   │   ├── repository.go             # CRUD passthrough (delegates to domain.Repository)
 │   │   ├── channel.go                # ResolveChannel*, ProtectedChannels
-│   │   ├── auth.go                   # BuildAuthConfig, ValidatePassword, CreateDevAdmin, IsSetupMode
+│   │   ├── auth.go                   # BuildAuthConfig, ValidatePassword, CreateDevAdmin, IsSetupMode (go-auth/password)
 │   │   ├── authorization.go          # UserHasPermission, UserChannels, IsAdmin, GetUserPermissions, HasChannelRole
-│   │   ├── token.go                  # GenerateAccessToken, HashToken, CreateAccessToken, DeleteAccessToken, ValidateChannelToken
-│   │   ├── session.go                # SessionToken, EncodeSession/DecodeSession, DeriveSessionSecret, GenerateRandomHex
-│   │   └── ratelimit.go              # RateLimiter, BanTracker, BanInfo, fingerprints, RecordCredentialFailure
+│   │   ├── token.go                  # GenerateAccessToken, HashToken, CreateAccessToken, DeleteAccessToken, ValidateChannelToken (go-auth/apitoken)
+│   │   ├── session.go                # SessionToken, EncodeSession/DecodeSession, DeriveSessionSecret, GenerateRandomHex (go-auth/jwt)
+│   │   └── ratelimit.go              # RateLimiter, BanTracker, BanInfo, fingerprints, RecordCredentialFailure (go-secguard)
 │   ├── handler/                      # HTTP adapters — depends on service + domain + pkg/*
 │   │   ├── api.go                    # RegisterAPIHandlers, admin CRUD handlers, DTOs, writeJSON/writeError
 │   │   ├── webhook.go                # handleWebhookPost, signature validators, replay, encryption key
-│   │   ├── events.go                 # handleEventsGet, sseLoop, retVersion, retReadyz, retStartup
+│   │   ├── events.go                 # handleEventsGet, sseLoop, retVersion, retReadyz, retStartup (go-raft/httpext)
 │   │   ├── auth.go                   # cookies, RequireAuth, RequireAuthDynamic, LogoutHandler, apiLogin/Logout/AuthMethods
-│   │   ├── oidc.go                   # OIDCHandler + handlers
+│   │   ├── oidc.go                   # OIDCHandler + handlers (go-auth/oauth + httpcookie)
 │   │   ├── middleware.go             # RequirePermission, RequireChannelACLPermission, SetupMode/AdaptiveAuth, ipRestrict, channelAccess, context keys
-│   │   ├── ratelimit.go              # banMiddleware, rateLimitMiddleware, apiBansHandler, apiUnbanHandler
-│   │   ├── leader_forward.go         # leaderForwardMiddleware, leaderInfo interface
+│   │   ├── ratelimit.go              # banMiddleware, rateLimitMiddleware, apiBansHandler, apiUnbanHandler (go-secguard/nethttp)
+│   │   ├── security.go               # securityHeadersMiddleware, mutationOriginValidation (go-secguard/headers)
+│   │   ├── leader_forward.go         # leaderForwardMiddleware, leaderInfo interface (go-raft/httpext)
 │   │   └── logging.go                # safeLogger, safeLogFormatter
 │   ├── server/                       # composition root — imports repository + service + handler + nats + app
 │   │   ├── server.go                 # Server struct, NewServer, Run, applyBootstrapOnce, watchSingleNodeRecovery, brokerTTLNotifier, initDevAdmin
 │   │   ├── command.go                # server.Command()
 │   │   ├── migrate.go                # migrateConfig (migrate-config subcommand)
-│   │   ├── k8s.go                    # newK8sClientset, statefulSetReplicaReader
-│   │   ├── raft_generation.go        # raftGenerationStore
-│   │   └── raft_tls.go               # buildRaftTLSConfig, effectiveNamespace
+│   │   ├── k8s.go                    # newK8sClientset, replicaReaderAdapter, softGenerationFencer (go-raft/k8s)
+│   │   └── atrest.go                 # loadAtRestKeeper (go-raft/storage)
 │   ├── app/                          # CLI framework (flags, MakeApp, logger, completions, keygen)
 │   │   ├── app.go
 │   │   ├── flags.go
@@ -136,7 +132,7 @@ The Go backend follows strict clean-architecture dependency direction:
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.27+
 - Node.js 22+ and npm 10+
 - `make` (GNU Make)
 - `golangci-lint` (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`)
@@ -327,8 +323,10 @@ Security-sensitive changes (session secret handling, cookie flags, OIDC ID-token
   repository interfaces. Depends only on the stdlib + validator. Never
   imports another internal package.
 - **`internal/repository/`** — Persistence and Raft consensus. The
-  `RaftStore` implements `domain.Repository`; implementations live in
-  `raft.go`, `bolt.go`, `fsm.go`, and the raft discovery/stream/TLS files.
+  `RaftStore` implements `domain.Repository`; it wraps `go-raft`'s `Node`,
+  `storage.AESGCMKeeper`, and a `compatFSM` (`fsm.go`) over
+  `go-raft/fsm.BoltKVFSM`. `bootstrap.go` and `migrate.go` hold the bootstrap
+  saga and in-code data migrations.
 - **`internal/service/`** — Application business logic as a single `Service`
   type depending only on `domain` (and `pkg/*`). No repository or handler
   imports.
@@ -353,22 +351,35 @@ Security-sensitive changes (session secret handling, cookie flags, OIDC ID-token
 
 ### Raft HA and mTLS
 
-The Raft layer supports multi-node HA on Kubernetes:
+The Raft layer supports multi-node HA on Kubernetes. Consensus, BoltDB
+storage, DNS/static peer discovery, dynamic mTLS, hot-reload, K8s generation
+fencing, and single-replica recovery are provided by
+`github.com/disaster37/go-raft`; `gohookbridge` wires it through
+`repository.RaftStore` and the `internal/server` composition root.
 
-- **Peer discovery** (`internal/repository/raft_discovery.go`) — `NewPeerResolver` selects a
-  `staticPeerResolver` (`--raft-peers`), a `dnsPeerResolver`
+- **Peer discovery** (`go-raft/discovery`) — `NewPeerResolver` selects a
+  static resolver (`--raft-peers`), a DNS resolver
   (`--raft-statefulset-name` + `--raft-headless-service`), or a
-  `singleNodeResolver` (local dev). Only the first resolved peer (ordinal 0)
+  single-node resolver (local dev). Only the first resolved peer (ordinal 0)
   bootstraps, seeding only itself; the leader's join loop adds the rest.
-- **Bind/advertise separation** (`internal/repository/raft_streamlayer.go`) — bind on
-  `0.0.0.0:6001`, advertise the pod FQDN. A custom `raft.StreamLayer` keeps
+- **Bind/advertise separation** (`go-raft/transport`) — bind on
+  `0.0.0.0:6001`, advertise the pod FQDN. The custom `StreamLayer` keeps
   the DNS name in the Raft configuration and re-resolves it on every dial.
-- **mTLS** (`internal/repository/raft_tls.go`) — the internal CA is minted by ordinal 0 via
+- **mTLS** (`go-raft/pki` + `go-raft/transport`) — the internal CA is minted by ordinal 0 via
   `github.com/disaster37/goca` and shared through a K8s Secret; each node
   issues/reuses its own leaf cert. Requires `k8s.io/client-go` and
   `k8s.io/apimachinery`.
+- **Certificate renewal and rotation** — single-node auto-CA deployments
+  (`--raft-tls-enabled` with no manual paths and no `--raft-tls-ca-secret`)
+  re-issue the node leaf within the `7d` safety margin at startup
+  (`pki.IssueOrReuseNodeCert`) and rotate the active `shared-ca` plus leaf
+  in-process every `24h` (`keyring.PhasedRotator`, CA key sealed in Raft).
+  Multi-node manual certs (`--raft-tls-ca-cert`/`--raft-tls-cert`/`--raft-tls-key`)
+  keep in-band rotation disabled and hot-reload replaced PEM files via
+  `transport.FileWatcher` (`5s` poll, `7d` expiry warning) across Raft, NATS,
+  leader forwarding, and internal HTTPS.
 - **Single-replica recovery and generation fencing** (`internal/server/k8s.go`,
-  `internal/server/raft_generation.go`, `internal/repository/raft.go`) — when the StatefulSet is
+  `internal/repository/raft.go`) — when the StatefulSet is
   scaled to 1, the leaderless survivor waits `--raft-leader-wait-timeout`,
   confirms `spec.replicas == 1` through the K8s API (RBAC-scoped `get`),
   restarts itself, and forces a single-voter configuration with
@@ -414,13 +425,17 @@ The server router is assembled in `internal/server/server.go` (composition root)
 
 ### Rate limiting and ban patterns
 
-`internal/handler/ratelimit.go` + `internal/service/ratelimit.go` contain three components:
+`internal/handler/ratelimit.go` + `internal/service/ratelimit.go` wrap the
+`go-secguard` guardrails:
 
-- **`rateLimiter`** — Sliding window counter per IP (`map[string][]time.Time`). Exposes `allow(ip, maxRequests, windowSeconds) bool`. Used by `rateLimitMiddleware`.
-- **`banTracker`** — Credential failure counter with deduplication per IP. Tracks unique credential fingerprints (SHA-256 hashes) to distinguish misconfiguration from attacks. Exposes `recordFailure(ip, fingerprint)`, `banIfSuspicious(ip, maxUnique, banDuration)`, `isBanned(ip)`, `listBans()`, and `unban(ip)`.
-- **Middlewares** — `banMiddleware` (403 if banned) and `rateLimitMiddleware` (429 if over limit). Both use `getRealIP()` for proxy-aware IP resolution.
+- **`RateLimiter`** — Bounded sliding-window counter per IP, delegating to
+  `go-secguard/ratelimit.RateLimiter`. Exposes `Allow(ip, maxRequests, windowSeconds) bool`. Used by `RateLimitMiddleware`.
+- **`BanTracker`** — Credential failure counter with deduplication per IP
+  (`go-secguard/bantracker`). Tracks unique credential fingerprints (SHA-256 hashes) to distinguish misconfiguration from attacks. Exposes `RecordAndBan(ip, fingerprint, maxUnique, banDuration, window)`, `IsBanned(ip)`, `ListBans()`, and `Unban(ip)`.
+- **`LoginThrottle`** — Per-account failed-login throttle (`go-secguard/ratelimit.LoginThrottle`), keyed by a login fingerprint.
+- **Middlewares** — `BanMiddleware` (403 if banned) and `RateLimitMiddleware` (429 if over limit). Both use `service.GetRealIP()` (`go-secguard/realip`) for proxy-aware IP resolution.
 
-The middlewares are wired in `internal/server/server.go`: `banMiddleware`/`rateLimitMiddleware` on `mainRouter`, and ban + rate-limit + IP-restrict inside `buildWebhookRouter`, which is mounted on both the internal `restrictedRouter` and the public listener (see "Listener split (public vs internal)").
+The middlewares are wired in `internal/server/server.go`: `BanMiddleware`/`RateLimitMiddleware` on `mainRouter`, and ban + rate-limit + IP-restrict inside `buildWebhookRouter`, which is mounted on both the internal `restrictedRouter` and the public listener (see "Listener split (public vs internal)").
 
 ### Channel access token authentication
 
@@ -513,9 +528,9 @@ internal/
 │   ├── token.go       → token_test.go
 │   └── session.go     → session_test.go
 ├── repository/
-│   ├── bolt.go        → bolt_test.go
 │   ├── raft.go        → raft_test.go
-│   └── fsm.go         → fsm_test.go
+│   ├── fsm.go         → fsm_test.go
+│   └── bootstrap.go   → bootstrap_test.go
 └── domain/
     └── errors.go      → errors_test.go
 pkg/
@@ -709,7 +724,8 @@ set. Follow them for any new route, DTO, or persisted field.
   an error, never a plaintext publish.
 
 ### At-rest encryption
-- Sensitive fields listed in `SECURITY.md` are sealed by `CryptoKeeper` before
+- Sensitive fields listed in `SECURITY.md` are sealed by `go-raft/storage.AESGCMKeeper`
+  (`repository.RaftStore.sealer`, AAD `gohookbridge.at-rest.v1`) before
   persistence and opened on read. Add new sensitive fields to
   `sealChannel`/`openChannel` (or the config/OIDC equivalent).
 - Data files are `0700` (dir) / `0600` (files); snapshots contain only sealed

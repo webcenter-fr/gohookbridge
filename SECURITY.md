@@ -333,7 +333,7 @@ The IP ban system automatically detects and blocks IP addresses that attempt to 
 ### How It Works
 
 1. Each authentication failure logs the IP and a **SHA-256 hash** of the credential type + value (never stores raw credentials).
-2. Credential fingerprints are **deduplicated per IP** — an IP failing 100 times with the same password only generates **one unique fingerprint**.
+2. Credential fingerprints are **deduplicated per IP** — an IP failing 100 times with the same password only generates **one unique fingerprint**. Login fingerprints normalize the username (lowercased and trimmed) before hashing so case/whitespace variants of the same account are not counted as distinct credentials.
 3. If the count of **unique fingerprints** from one IP within the observation window reaches the threshold, the IP is banned.
 4. Banned IPs receive HTTP 403 for all requests during the ban duration.
 
@@ -341,7 +341,7 @@ The IP ban system automatically detects and blocks IP addresses that attempt to 
 
 | Failure Type | Fingerprint Formula |
 |---|---|
-| Invalid login (username/password) | `SHA-256("login:" + username)` |
+| Invalid login (username/password) | `SHA-256("login:" + lower(trim(username)))` |
 | Invalid channel access token | `SHA-256("token:" + token)` |
 | Invalid webhook signature | `SHA-256("signature:" + channel + ":" + signatureValue)` |
 
@@ -586,8 +586,9 @@ change set. It supersedes any conflicting statement above.
   health/`POST /{channel}`.
 - NATS cluster routes support TLS + username/password auth and can be disabled
   for single-node (`--nats-disable-cluster`).
-- Leader forwarding uses mutual TLS (client cert + CA pool via `pkg/tlsreload`);
-  inbound `X-Gohookbridge-Leader-Forwarded` markers are stripped.
+- Leader forwarding uses mutual TLS (client cert + CA pool via `go-raft/transport`
+  `FileWatcher` + `DynamicTLSProvider`); inbound `X-Gohookbridge-Leader-Forwarded`
+  markers are stripped.
 - Multi-node uses **manual pre-provisioned per-node certificates** (offline CA,
   `scripts/generate-raft-certs.sh` / `rotate-raft-certs.sh`); the shared auto-CA
   and its namespace-wide Secret write RBAC were removed. The CA private key
@@ -598,6 +599,29 @@ change set. It supersedes any conflicting statement above.
 - All workloads run non-root with `allowPrivilegeEscalation:false`,
   `readOnlyRootFilesystem:true`, all capabilities dropped, and
   `seccompProfile: RuntimeDefault`.
+
+### Certificate Renewal & Rotation Lifecycle
+
+- **Safety margin / warning window.** Leaves are re-issued when their remaining
+  TTL drops below the `7d` safety margin (`pki.DefaultSafetyMargin`). The
+  `FileWatcher` logs `WARN "tls file watcher: certificate expires soon"` on every
+  poll tick once `time.Until(NotAfter) < 7d`.
+- **Single-node auto-CA (local or `--raft-tls-ca-secret`).** At startup
+  `pki.IssueOrReuseNodeCert` re-issues the node leaf within the `7d` margin. At
+  runtime `keyring.PhasedRotator` performs a Vault-style two-phase rotation of
+  the active `shared-ca` and node leaf every `24h`; the CA private key is sealed
+  in Raft via `storage.AESGCMKeeper`. A long-running pod therefore never expires.
+- **Multi-node manual certs (F14).** In-band keyring rotation is disabled
+  (`KeyringRotationEnabled=false`) so operator-mounted certs are never
+  clobbered. `transport.FileWatcher` (`5s` poll) validates and hot-swaps
+  replaced PEM files across Raft, NATS, leader forwarding, and internal HTTPS,
+  rejecting corrupt/expired replacements while keeping the last good
+  certificate. Operators rotate with the offline CA and
+  `scripts/rotate-raft-certs.sh` (dual-trust `newCA || oldCA` bundle, then roll
+  out new leaves and strip `oldCA`). Kubernetes `subPathExpr` Secret mounts are
+  not updated in place by kubelet, so step 2 of the script
+  (`kubectl rollout restart statefulset/<name>-server`) is required before
+  expiry.
 
 ### Sessions, throttling, budgets (F11, F12, F19, F21, F24, F25, F26)
 - Sessions carry a `sid` and `auth_epoch`; deleting a user, resetting a
