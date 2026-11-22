@@ -93,6 +93,7 @@ import { api, type Binding, type RoleMapping } from '~/utils/api'
 definePageMeta({ middleware: 'admin' })
 
 const toast = useToast()
+const auth = useAuthStore()
 
 const bindings = ref<Binding[]>([])
 const loading = ref(true)
@@ -206,9 +207,10 @@ async function handleBindingSave() {
   const channels = bindingForm.channelsStr.split(',').map(s => s.trim()).filter(Boolean)
   try {
     await api.updateBinding(editingUserId.value!, { roles: bindingForm.roles, channels })
-    toast.add({ title: 'Saved', color: 'success' })
     showBindingModal.value = false
-    await fetchBindings()
+    toast.add({ title: 'Saved. All sessions were revoked — please sign in again.', color: 'info' })
+    await auth.logout()
+    await navigateTo('/login')
   } catch (e: any) {
     toast.add({ title: e.message, color: 'error' })
   }

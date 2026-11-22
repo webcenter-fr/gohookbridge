@@ -25,19 +25,24 @@
     <UModal v-model:open="showModal" :title="editingId ? 'Edit Provider' : 'New Provider'">
       <template #body>
         <div class="flex flex-col gap-4">
-          <UFormField label="ID">
+          <UFormField label="ID" :error="errors.id">
             <UInput v-model="form.id" :disabled="!!editingId" class="w-full" />
           </UFormField>
-          <UFormField label="Name">
+          <UFormField label="Name" :error="errors.name">
             <UInput v-model="form.name" class="w-full" />
           </UFormField>
-          <UFormField label="Client ID">
+          <UFormField label="Client ID" :error="errors.client_id">
             <UInput v-model="form.client_id" class="w-full" />
           </UFormField>
-          <UFormField label="Client Secret">
-            <UInput v-model="form.client_secret" type="password" class="w-full" />
+          <UFormField label="Client Secret" :error="errors.client_secret">
+            <UInput
+              v-model="form.client_secret"
+              type="password"
+              class="w-full"
+              :placeholder="editingId ? 'Leave empty to keep the current secret' : ''"
+            />
           </UFormField>
-          <UFormField label="Issuer URL">
+          <UFormField label="Issuer URL" :error="errors.issuer_url">
             <UInput v-model="form.issuer_url" placeholder="https://accounts.google.com" class="w-full" />
           </UFormField>
           <UFormField label="Scopes">
@@ -75,10 +80,12 @@
 import { ref, onMounted, reactive } from 'vue'
 import type { TableColumn } from '@nuxt/ui'
 import { api, type OIDCProvider } from '~/utils/api'
+import { oidcProviderErrors, hasErrors, type OIDCProviderErrors } from '~/utils/validation'
 
 definePageMeta({ middleware: 'admin' })
 
 const toast = useToast()
+const auth = useAuthStore()
 
 const providers = ref<OIDCProvider[]>([])
 const loading = ref(true)
@@ -98,6 +105,22 @@ const form = reactive({
   scopesStr: 'openid profile email',
   groups_claim: 'groups',
 })
+
+const errors = reactive<OIDCProviderErrors>({
+  id: '',
+  name: '',
+  client_id: '',
+  client_secret: '',
+  issuer_url: '',
+})
+
+function resetErrors() {
+  errors.id = ''
+  errors.name = ''
+  errors.client_id = ''
+  errors.client_secret = ''
+  errors.issuer_url = ''
+}
 
 const columns: TableColumn<OIDCProvider>[] = [
   { accessorKey: 'id', header: 'ID' },
@@ -153,6 +176,7 @@ function openCreate() {
   form.issuer_url = ''
   form.scopesStr = 'openid profile email'
   form.groups_claim = 'groups'
+  resetErrors()
   showModal.value = true
 }
 
@@ -161,14 +185,30 @@ function openEdit(provider: OIDCProvider) {
   form.id = provider.id
   form.name = provider.name
   form.client_id = provider.client_id
-  form.client_secret = provider.client_secret
+  // Never prefill the redacted placeholder: an empty secret keeps the stored one.
+  form.client_secret = ''
   form.issuer_url = provider.issuer_url
   form.scopesStr = provider.scopes?.join(' ') || 'openid profile email'
   form.groups_claim = provider.groups_claim || 'groups'
+  resetErrors()
   showModal.value = true
 }
 
 async function handleSave() {
+  const validation = oidcProviderErrors(
+    {
+      id: form.id,
+      name: form.name,
+      client_id: form.client_id,
+      client_secret: form.client_secret,
+      issuer_url: form.issuer_url,
+    },
+    !!editingId.value,
+  )
+  Object.assign(errors, validation)
+  if (hasErrors(validation)) {
+    return
+  }
   try {
     await api.updateOIDCProvider(form.id, {
       id: form.id,
@@ -179,9 +219,10 @@ async function handleSave() {
       scopes: form.scopesStr.split(' ').filter(Boolean),
       groups_claim: form.groups_claim || 'groups',
     })
-    toast.add({ title: 'OIDC provider saved', color: 'success' })
     showModal.value = false
-    await fetchProviders()
+    toast.add({ title: 'Saved. All sessions were revoked — please sign in again.', color: 'info' })
+    await auth.logout()
+    await navigateTo('/login')
   } catch (e: any) {
     toast.add({ title: e.message, color: 'error' })
   }
@@ -195,9 +236,10 @@ function confirmDelete(id: string) {
 async function handleDelete() {
   try {
     await api.deleteOIDCProvider(deleteTarget.value)
-    toast.add({ title: 'OIDC provider deleted', color: 'success' })
     showDeleteModal.value = false
-    await fetchProviders()
+    toast.add({ title: 'Deleted. All sessions were revoked — please sign in again.', color: 'info' })
+    await auth.logout()
+    await navigateTo('/login')
   } catch (e: any) {
     toast.add({ title: e.message, color: 'error' })
   }

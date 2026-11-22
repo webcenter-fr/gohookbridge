@@ -110,6 +110,9 @@ class ApiClient {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       ...options,
     })
+    if (res.status === 401) {
+      throw new Error('session expired — please sign in again')
+    }
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: res.statusText }))
       throw new Error(body.error || `HTTP ${res.status}`)
