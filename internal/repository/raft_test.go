@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"errors"
@@ -42,14 +43,28 @@ func TestReconcileMembership(t *testing.T) {
 
 func newTestRaftStore(t *testing.T) *RaftStore {
 	t.Helper()
-	ln := testutil.FreeListener(t)
-	rs, err := NewRaftStore(RaftConfig{
-		Dir:                   t.TempDir(),
-		NodeID:                "test-node",
-		BindAddr:              testutil.FreeAddrFromListener(t, ln),
-		CustomListener:        ln,
-		PerformanceMultiplier: 0.2,
-	})
+	return newTestRaftStoreWithConfig(t, RaftConfig{})
+}
+
+// newTestRaftStoreWithConfig builds a single-node store from cfg, filling the
+// same defaults as the storetest helper (temp dir, listener, fast timings).
+func newTestRaftStoreWithConfig(t *testing.T, cfg RaftConfig) *RaftStore {
+	t.Helper()
+	if cfg.Dir == "" {
+		cfg.Dir = t.TempDir()
+	}
+	if cfg.NodeID == "" {
+		cfg.NodeID = "test-node"
+	}
+	if cfg.BindAddr == "" && cfg.CustomListener == nil {
+		ln := testutil.FreeListener(t)
+		cfg.CustomListener = ln
+		cfg.BindAddr = testutil.FreeAddrFromListener(t, ln)
+	}
+	if cfg.PerformanceMultiplier == 0 {
+		cfg.PerformanceMultiplier = 0.2
+	}
+	rs, err := NewRaftStore(cfg)
 	assert.NilError(t, err)
 	t.Cleanup(func() { _ = rs.Shutdown() })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -602,4 +617,52 @@ func TestRaftStore_CertRenewalLifecycle(t *testing.T) {
 		// Writes keep succeeding after rotation.
 		assert.NilError(t, rs.CreateChannel(ctx, &domain.Channel{ID: "post-rotation"}))
 	})
+}
+
+// TestRaftStore_TypedNilSealer is a regression guard: a typed-nil
+// *storage.AESGCMKeeper stored in the storage.Sealer interface is non-nil, so
+// without normalization every rs.sealer == nil guard would evaluate false and
+// Seal/Open would panic on a nil receiver.
+func TestRaftStore_TypedNilSealer(t *testing.T) {
+	rs := newTestRaftStoreWithConfig(t, RaftConfig{AtRest: (*storage.AESGCMKeeper)(nil)})
+	ctx := context.Background()
+
+	assert.Assert(t, rs.sealer == nil, "a typed-nil sealer must be normalized to a nil interface")
+
+	// A sensitive field must round-trip as plaintext (no sealer configured).
+	assert.NilError(t, rs.CreateChannel(ctx, &domain.Channel{ID: "typed-nil", WebhookSecret: "plain-secret"}))
+
+	got, err := rs.GetChannel(ctx, "typed-nil")
+	assert.NilError(t, err)
+	assert.Equal(t, got.WebhookSecret, "plain-secret")
+
+	stored, err := rs.fsm.Get("/channels/typed-nil/")
+	assert.NilError(t, err)
+	assert.Assert(t, bytes.Contains(stored, []byte("plain-secret")), "without a sealer the value must be stored as plaintext")
+}
+
+// TestRaftStore_AtRestKeyFileFallback proves the AtRestKeyFile fallback loads a
+// keeper even when AtRest is a typed nil, so sensitive values are sealed on
+// write and opened on read.
+func TestRaftStore_AtRestKeyFileFallback(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "at-rest-key.json")
+	assert.NilError(t, storage.GenerateKeyFile(keyFile))
+
+	rs := newTestRaftStoreWithConfig(t, RaftConfig{
+		AtRest:        (*storage.AESGCMKeeper)(nil),
+		AtRestKeyFile: keyFile,
+	})
+	ctx := context.Background()
+
+	assert.Assert(t, rs.sealer != nil, "the AtRestKeyFile fallback must load a keeper")
+
+	assert.NilError(t, rs.CreateChannel(ctx, &domain.Channel{ID: "sealed", WebhookSecret: "sensitive-value"}))
+
+	got, err := rs.GetChannel(ctx, "sealed")
+	assert.NilError(t, err)
+	assert.Equal(t, got.WebhookSecret, "sensitive-value", "the value must be opened on read")
+
+	stored, err := rs.fsm.Get("/channels/sealed/")
+	assert.NilError(t, err)
+	assert.Assert(t, !bytes.Contains(stored, []byte("sensitive-value")), "the value must be sealed at rest")
 }

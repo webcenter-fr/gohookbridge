@@ -214,6 +214,22 @@ func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
 		})
 	}
 
+	// Resolve the at-rest sealer before constructing the node. A typed-nil
+	// *storage.AESGCMKeeper wrapped in the storage.Sealer interface is non-nil,
+	// so it would defeat the nil guards below and panic on Seal/Open (and defeat
+	// go-raft's own nil-sealer fallback).
+	sealer := cfg.AtRest
+	if keeper, ok := sealer.(*storage.AESGCMKeeper); ok && keeper == nil {
+		sealer = nil
+	}
+	if sealer == nil && cfg.AtRestKeyFile != "" {
+		keeper, err := storage.LoadAESGCMKeeper(cfg.AtRestKeyFile, AtRestAAD)
+		if err != nil {
+			return nil, fmt.Errorf("load at-rest keeper: %w", err)
+		}
+		sealer = keeper
+	}
+
 	cfsm := newCompatFSM(nil)
 	node, err := goraft.NewNode(context.Background(), &goraftCfg, goraft.NodeOptions{
 		FSM:                    cfsm,
@@ -221,7 +237,7 @@ func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
 		BootstrapProvider:      cfg.BootstrapProvider,
 		GenerationFencer:       cfg.GenerationFencer,
 		ReplicaCountAuthorizer: cfg.ReplicaCountAuthorizer,
-		Sealer:                 cfg.AtRest,
+		Sealer:                 sealer,
 		CustomListener:         cfg.CustomListener,
 	})
 	if err != nil {
@@ -235,16 +251,6 @@ func NewRaftStore(cfg RaftConfig) (*RaftStore, error) {
 	})
 	if err := node.Start(context.Background()); err != nil {
 		return nil, err
-	}
-
-	sealer := cfg.AtRest
-	if sealer == nil && cfg.AtRestKeyFile != "" {
-		keeper, err := storage.LoadAESGCMKeeper(cfg.AtRestKeyFile, AtRestAAD)
-		if err != nil {
-			_ = node.Close()
-			return nil, fmt.Errorf("load at-rest keeper: %w", err)
-		}
-		sealer = keeper
 	}
 
 	return &RaftStore{node: node, fsm: cfsm, sealer: sealer}, nil

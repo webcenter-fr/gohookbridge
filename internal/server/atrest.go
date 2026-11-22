@@ -13,7 +13,12 @@ import (
 // must supply --at-rest-key-file. A single-node dev deployment with no key file
 // auto-generates one under the Raft directory (with a warning); production
 // records are always encrypted.
-func loadAtRestKeeper(keyFile string, replicas int, raftDir string) (*storage.AESGCMKeeper, error) {
+//
+// It returns the storage.Sealer interface (not the concrete *storage.AESGCMKeeper)
+// so the disabled path returns an explicit nil interface rather than a typed nil
+// pointer, which would be non-nil when stored in an interface and defeat the
+// nil-sealer guards in repository.RaftStore.
+func loadAtRestKeeper(keyFile string, replicas int, raftDir string) (storage.Sealer, error) {
 	if keyFile == "" {
 		if replicas > 1 {
 			fmt.Fprintf(os.Stderr, "WARNING: at-rest encryption disabled on a multi-node deployment (set --at-rest-key-file)\n")
