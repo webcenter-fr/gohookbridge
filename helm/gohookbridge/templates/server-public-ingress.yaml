@@ -9,9 +9,13 @@ metadata:
   name: {{ include "gohookbridge.fullname" . }}-server-public
   labels:
     {{- include "gohookbridge.labels" . | nindent 4 }}
-  {{- with .Values.server.publicIngress.annotations }}
+  {{- if or .Values.server.publicIngress.annotations }}
   annotations:
-    {{- toYaml . | nindent 4 }}
+    # cert-manager HTTP-01: edit this Ingress in place instead of creating a
+    # solver Ingress (the F5 NGINX Ingress Controller rejects ingresses
+    # sharing a host; harmless for other controllers).
+    acme.cert-manager.io/http01-edit-in-place: "true"
+    {{- toYaml .Values.server.publicIngress.annotations | nindent 4 }}
   {{- end }}
 spec:
   {{- if .Values.server.publicIngress.className }}

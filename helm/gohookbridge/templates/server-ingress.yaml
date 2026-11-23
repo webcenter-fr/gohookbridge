@@ -12,6 +12,10 @@ metadata:
     {{- include "gohookbridge.labels" . | nindent 4 }}
   {{- if or .Values.server.ingress.annotations $allowlist $backendHTTPS }}
   annotations:
+    # cert-manager HTTP-01: edit this Ingress in place instead of creating a
+    # solver Ingress (the F5 NGINX Ingress Controller rejects ingresses
+    # sharing a host; harmless for other controllers).
+    acme.cert-manager.io/http01-edit-in-place: "true"
     {{- with .Values.server.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -21,6 +25,8 @@ metadata:
     {{- if $backendHTTPS }}
     # The internal listener serves HTTPS in multi-node TLS mode (F13).
     nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    # F5 NGINX Ingress Controller equivalent (ignored by the community controller).
+    nginx.org/ssl-services: "{{ include "gohookbridge.fullname" . }}-server"
     {{- end }}
   {{- end }}
 spec:
